@@ -1,25 +1,20 @@
-# TODO: The maintainer of this repo has not yet edited this file
-
-**REPO OWNER**: Do you want Customer Service & Support (CSS) support for this product/project?
-
-- **No CSS support:** Fill out this template with information about how to file issues and get help.
-- **Yes CSS support:** Fill out an intake form at [aka.ms/onboardsupport](https://aka.ms/onboardsupport). CSS will work with/help you to determine next steps.
-- **Not sure?** Fill out an intake as though the answer were "Yes". CSS will help you decide.
-
-*Then remove this first heading from this SUPPORT.MD file before publishing your repo.*
-
 # Support
 
-## How to file issues and get help  
+## Issues and questions
 
-This project uses GitHub Issues to track bugs and feature requests. Please search the existing 
-issues before filing new issues to avoid duplicates.  For new issues, file your bug or 
-feature request as a new Issue.
+For bugs, feature requests and non-security questions, use
+[GitHub Issues on this repository](https://github.com/Azure/aks-durable-agents/issues).
+Please search existing issues before opening a new one. Do not include credentials,
+tokens or private data in an issue.
 
-For help and questions about using this project, please **REPO MAINTAINER: INSERT INSTRUCTIONS HERE 
-FOR HOW TO ENGAGE REPO OWNERS OR COMMUNITY FOR HELP. COULD BE A STACK OVERFLOW TAG OR OTHER
-CHANNEL. WHERE WILL YOU HELP PEOPLE?**.
+## Experimental support
 
-## Microsoft Support Policy  
+This repository contains experimental source, not a qualified preview release or a
+production service. Support is provided through GitHub Issues on a best-effort
+basis, with no SLA, guaranteed response time or production support commitment.
 
-Support for this **PROJECT or PRODUCT** is limited to the resources listed above.
+## Security
+
+Do not report security vulnerabilities in public GitHub Issues. Follow
+[SECURITY.md](SECURITY.md) to report privately to the Microsoft Security Response
+Center (MSRC).

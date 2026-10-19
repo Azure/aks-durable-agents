@@ -1,0 +1,7 @@
+apiVersion: v2
+name: aks-durable-agents
+description: Loopback sessions host and co-located harness on an existing AKS cluster
+type: application
+version: 0.1.0-experimental.1
+appVersion: "experimental"
+kubeVersion: ">=1.37.0-0"

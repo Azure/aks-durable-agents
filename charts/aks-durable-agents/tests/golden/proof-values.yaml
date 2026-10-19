@@ -1,0 +1,476 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-aks-durable-agents-deny
+  namespace: agents
+spec:
+  egress: []
+  ingress: []
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: test
+      app.kubernetes.io/name: aks-durable-agents
+  policyTypes:
+  - Ingress
+  - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-aks-durable-agents-host-egress
+  namespace: agents
+spec:
+  egress:
+  - ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+  - ports:
+    - port: 443
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 0.0.0.0/8
+        - 10.0.0.0/8
+        - 100.64.0.0/10
+        - 127.0.0.0/8
+        - 169.254.0.0/16
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 224.0.0.0/4
+        - 240.0.0.0/4
+  - ports:
+    - port: 9000
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: agents
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/component: harness
+          app.kubernetes.io/instance: test
+          app.kubernetes.io/name: aks-durable-agents
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: host
+      app.kubernetes.io/instance: test
+      app.kubernetes.io/name: aks-durable-agents
+  policyTypes:
+  - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-aks-durable-agents-harness-ingress
+  namespace: agents
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: agents
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/component: host
+          app.kubernetes.io/instance: test
+          app.kubernetes.io/name: aks-durable-agents
+    ports:
+    - port: 9000
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: harness
+      app.kubernetes.io/instance: test
+      app.kubernetes.io/name: aks-durable-agents
+  policyTypes:
+  - Ingress
+---
+apiVersion: v1
+automountServiceAccountToken: false
+kind: ServiceAccount
+metadata:
+  annotations:
+    azure.workload.identity/client-id: 55555555-5555-5555-5555-555555555555
+  labels:
+    app.kubernetes.io/instance: test
+    app.kubernetes.io/name: aks-durable-agents
+  name: test-aks-durable-agents-host
+  namespace: agents
+---
+apiVersion: v1
+automountServiceAccountToken: false
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/instance: test
+    app.kubernetes.io/name: aks-durable-agents
+  name: test-aks-durable-agents-harness
+  namespace: agents
+---
+apiVersion: v1
+data:
+  model-policy.json: '{"deployment":"test-deployment","ledgerPath":"/data/real-attempts.db","pricing":{"asOf":"2026-10-18","extraMicroUSDPerCall":0,"inputMicroUSDPerMillionTokens":225000,"outputMicroUSDPerMillionTokens":500000,"source":"https://azure.microsoft.com/en-us/blog/gpt-6-astra-sol-and-luna-for-production-agents-in-microsoft-foundry/"},"runID":"fixture-test-proof","version":1}'
+immutable: true
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/instance: test
+    app.kubernetes.io/name: aks-durable-agents
+  name: test-aks-durable-agents-model-policy
+  namespace: agents
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/instance: test
+    app.kubernetes.io/name: aks-durable-agents
+  name: test-aks-durable-agents-harness
+  namespace: agents
+spec:
+  ports:
+  - name: grpc
+    port: 9000
+    protocol: TCP
+    targetPort: 9000
+  selector:
+    app.kubernetes.io/component: harness
+    app.kubernetes.io/instance: test
+    app.kubernetes.io/name: aks-durable-agents
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: harness
+    app.kubernetes.io/instance: test
+    app.kubernetes.io/name: aks-durable-agents
+  name: test-aks-durable-agents-harness
+  namespace: agents
+spec:
+  progressDeadlineSeconds: 300
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: harness
+      app.kubernetes.io/instance: test
+      app.kubernetes.io/name: aks-durable-agents
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: harness
+        app.kubernetes.io/instance: test
+        app.kubernetes.io/name: aks-durable-agents
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - args:
+        - harness
+        - --scenario
+        - v2
+        - --addr
+        - 0.0.0.0:9000
+        - --instructions
+        - /data/instructions.txt
+        - --node-name
+        - $(NODE_NAME)
+        - --pod-uid
+        - $(POD_UID)
+        command:
+        - /session-fixture
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        image: example.invalid/harness@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        imagePullPolicy: IfNotPresent
+        name: fixture-harness
+        readinessProbe:
+          exec:
+            command:
+            - /session-fixture
+            - network-probe
+            - --address
+            - 127.0.0.1:9000
+            - --expect
+            - allowed
+          periodSeconds: 5
+          timeoutSeconds: 4
+        resources:
+          limits:
+            cpu: 1000m
+            ephemeral-storage: 128Mi
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            ephemeral-storage: 16Mi
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsGroup: 65532
+          runAsNonRoot: true
+          runAsUser: 65532
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /data
+          name: data
+          subPath: fixture-v2
+        - mountPath: /tmp
+          name: data
+          subPath: fixture-v2/tmp-fixture-harness
+      - args:
+        - executor
+        - --scenario
+        - v2
+        - --socket
+        - /data/publish.sock
+        - --database
+        - /data/publications.db
+        command:
+        - /session-fixture
+        image: example.invalid/harness@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        imagePullPolicy: IfNotPresent
+        name: executor
+        resources:
+          limits:
+            cpu: 1000m
+            ephemeral-storage: 128Mi
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            ephemeral-storage: 16Mi
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsGroup: 65532
+          runAsNonRoot: true
+          runAsUser: 65532
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /data
+          name: data
+          subPath: fixture-v2
+        - mountPath: /tmp
+          name: data
+          subPath: fixture-v2/tmp-executor
+      - args:
+        - fake
+        - --addr
+        - 127.0.0.1:9001
+        - --ledger
+        - /data/fake-calls.jsonl
+        command:
+        - /session-fixture
+        image: example.invalid/harness@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        imagePullPolicy: IfNotPresent
+        name: fake
+        resources:
+          limits:
+            cpu: 1000m
+            ephemeral-storage: 128Mi
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            ephemeral-storage: 16Mi
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsGroup: 65532
+          runAsNonRoot: true
+          runAsUser: 65532
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /data
+          name: data
+          subPath: fixture-v2
+        - mountPath: /tmp
+          name: data
+          subPath: fixture-v2/tmp-fake
+      enableServiceLinks: false
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
+      nodeSelector:
+        kubernetes.io/arch: amd64
+        kubernetes.io/os: linux
+      securityContext:
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: test-aks-durable-agents-harness
+      terminationGracePeriodSeconds: 20
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: sessions-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: host
+    app.kubernetes.io/instance: test
+    app.kubernetes.io/name: aks-durable-agents
+  name: test-aks-durable-agents-host
+  namespace: agents
+spec:
+  progressDeadlineSeconds: 300
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: host
+      app.kubernetes.io/instance: test
+      app.kubernetes.io/name: aks-durable-agents
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: host
+        app.kubernetes.io/instance: test
+        app.kubernetes.io/name: aks-durable-agents
+        azure.workload.identity/use: 'true'
+    spec:
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/component: harness
+                app.kubernetes.io/instance: test
+                app.kubernetes.io/name: aks-durable-agents
+            namespaces:
+            - agents
+            topologyKey: kubernetes.io/hostname
+      automountServiceAccountToken: false
+      containers:
+      - args:
+        - -addr=127.0.0.1:8080
+        - -health-addr=127.0.0.1:8081
+        - -harness-service=test-aks-durable-agents-harness.agents.svc.cluster.local:9000
+        - -harness=release-notes=test-aks-durable-agents-harness.agents.svc.cluster.local:9000
+        - -peer-node-file=/data/fixture-node.json
+        - -node-name=$(NODE_NAME)
+        - -model-policy=/config/model-policy.json
+        - -auth-mode=off
+        - -journal=/data/journal.db
+        - -tool-executors=/data/tools.json
+        - -model=test-deployment
+        - -model-base-url=https://example-resource.openai.azure.com/openai/v1/
+        - -model-scope=https://ai.azure.com/.default
+        command:
+        - /host
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        image: example.invalid/host@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        imagePullPolicy: IfNotPresent
+        name: daemon
+        readinessProbe:
+          exec:
+            command:
+            - /session-fixture
+            - network-probe
+            - --address
+            - 127.0.0.1:8081
+            - --expect
+            - allowed
+          periodSeconds: 5
+          timeoutSeconds: 4
+        resources:
+          limits:
+            cpu: 1000m
+            ephemeral-storage: 128Mi
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            ephemeral-storage: 16Mi
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsGroup: 65532
+          runAsNonRoot: true
+          runAsUser: 65532
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /data
+          name: data
+          subPath: fixture-v2
+        - mountPath: /tmp
+          name: data
+          subPath: fixture-v2/tmp-daemon
+        - mountPath: /config
+          name: model-policy
+          readOnly: true
+      enableServiceLinks: false
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
+      nodeSelector:
+        kubernetes.io/arch: amd64
+        kubernetes.io/os: linux
+      securityContext:
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: test-aks-durable-agents-host
+      terminationGracePeriodSeconds: 20
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: sessions-data
+      - configMap:
+          defaultMode: 292
+          name: test-aks-durable-agents-model-policy
+        name: model-policy

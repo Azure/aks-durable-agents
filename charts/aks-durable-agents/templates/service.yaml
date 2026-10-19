@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agents.name" . }}-harness
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "agents.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agents.labels" . | nindent 4 }}
+    app.kubernetes.io/component: harness
+  ports:
+    {{- if .Values.harness.native.enabled }}
+    {{- range $i, $entry := .Values.harness.native.entries }}
+    - name: grpc-{{ $i }}
+      port: {{ $entry.port }}
+      targetPort: {{ $entry.port }}
+      protocol: TCP
+    {{- end }}
+    {{- else }}
+    - name: grpc
+      port: 9000
+      targetPort: 9000
+      protocol: TCP
+    {{- end }}

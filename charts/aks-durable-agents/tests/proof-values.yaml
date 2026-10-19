@@ -1,0 +1,42 @@
+{
+  "image": {
+    "host": {
+      "repository": "example.invalid/host",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "includesHealthProbe": true
+    },
+    "harness": {
+      "repository": "example.invalid/harness",
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  "auth": {
+    "mode": "off",
+    "trustedNetwork": true
+  },
+  "workloadIdentity": {
+    "clientID": "55555555-5555-5555-5555-555555555555"
+  },
+  "model": {
+    "endpoint": "https://example-resource.openai.azure.com/openai/v1/",
+    "deployment": "test-deployment",
+    "scope": "https://ai.azure.com/.default",
+    "policy": {
+      "runID": "fixture-test-proof",
+      "pricing": {
+        "inputMicroUSDPerMillionTokens": 225000,
+        "outputMicroUSDPerMillionTokens": 500000,
+        "extraMicroUSDPerCall": 0,
+        "source": "https://azure.microsoft.com/en-us/blog/gpt-6-astra-sol-and-luna-for-production-agents-in-microsoft-foundry/",
+        "asOf": "2026-10-18"
+      }
+    }
+  },
+  "persistence": {
+    "existingClaim": "sessions-data",
+    "subPath": "fixture-v2"
+  },
+  "workloads": {
+    "enabled": true
+  }
+}

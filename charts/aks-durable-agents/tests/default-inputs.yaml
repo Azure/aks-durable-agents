@@ -1,0 +1,53 @@
+{
+  "image": {
+    "host": {
+      "repository": "example.invalid/host",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "includesHealthProbe": true
+    },
+    "harness": {
+      "repository": "example.invalid/harness",
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  "auth": {
+    "mode": "required",
+    "trustedNetwork": false,
+    "tenantID": "11111111-1111-1111-1111-111111111111",
+    "issuer": "https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/v2.0",
+    "audience": "22222222-2222-2222-2222-222222222222",
+    "allowedClientIDs": [
+      "33333333-3333-3333-3333-333333333333"
+    ],
+    "requiredScope": "sessions.access",
+    "subjectClaim": "oid",
+    "approvers": [
+      {
+        "issuer": "https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/v2.0",
+        "subject": "44444444-4444-4444-4444-444444444444"
+      }
+    ],
+    "tlsSecretName": "test-tls"
+  },
+  "workloadIdentity": {
+    "clientID": "55555555-5555-5555-5555-555555555555"
+  },
+  "model": {
+    "endpoint": "https://model.example.invalid/openai/v1/",
+    "deployment": "test-deployment",
+    "scope": "https://ai.azure.com/.default",
+    "policy": {
+      "runID": "test-run",
+      "pricing": {
+        "inputMicroUSDPerMillionTokens": 225000,
+        "outputMicroUSDPerMillionTokens": 500000,
+        "extraMicroUSDPerCall": 0,
+        "source": "https://azure.microsoft.com/en-us/blog/test-pricing",
+        "asOf": "2026-10-18"
+      }
+    }
+  },
+  "persistence": {
+    "subPath": "sessions-v1"
+  }
+}
