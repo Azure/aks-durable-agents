@@ -35,6 +35,10 @@ model:
   scope: https://ai.azure.com/.default
   policy:
     runID: ""
+    # Total dispatch attempts, not retries: 2 selects policy v1; 3 selects v2.
+    maxAttempts: 2
+    # Opt-in for a new run only; omission retains the 8192 input-token bound.
+    # maxInputTokens: 32768
     pricing:
       inputMicroUSDPerMillionTokens: 0
       outputMicroUSDPerMillionTokens: 0

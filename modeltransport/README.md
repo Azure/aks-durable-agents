@@ -6,7 +6,7 @@ Policy.Close() error. Config.Endpoint, Scope, Deployment, Credential and Transpo
 retain their existing meanings. A nil Policy deliberately preserves the legacy,
 unbounded library API; CLI assembly must require a policy separately.
 
-Version 1 of the policy file is a strict JSON object, with exactly these names:
+Version 1 of the policy file is a strict JSON object. Its required fields are:
 
     {
       "version": 1,
@@ -35,21 +35,31 @@ Version 2 uses the same fields with `"version": 2` and the additional required
 `"maxAttempts": 3`. It explicitly permits a three-turn writer/reviewer/revision
 run. No other count is supported; version 1 must omit `maxAttempts` and retains
 its two-attempt limit. `Policy.AttemptLimit()` reports the selected ceiling.
-Existing version-1 snapshot bytes are unchanged. Changing versions/counts against
-an existing ledger is refused, not a way to replenish its budget.
+Both versions optionally accept `"maxInputTokens": 32768`. Omission retains the
+8192 input bound; no other explicit value (including 8192) is supported.
+`Policy.InputLimit()` reports the selected bound. Version selects the attempt
+count, not the input bound. Completion remains fixed at 4096, including reasoning.
+
+Omitted-field snapshots for both versions remain byte-identical. Adding/removing
+the opt-in or changing versions/counts against an existing ledger is refused,
+not a way to replenish its budget. Use a new run with a separate ledger; do not
+reset or migrate historical evidence. Older binaries reject the new field rather
+than silently applying a smaller limit. The bound does not alter outgoing request
+bytes or hashes, or neutral requests recorded by Sessions.
 
 ## Reservation and input accounting
 
 Before any model call, the immutable snapshot reserves the full rational amount
-(version 1 below; version 2 replaces the multiplier 2 with 3):
+using the selected attempt count (2 or 3) and input bound (8192 or 32768):
 
-    2 * (8192 * inputMicroUSDPerMillionTokens
-       + 4096 * outputMicroUSDPerMillionTokens) / 1,000,000 microUSD
+    attempts * (inputLimit * inputMicroUSDPerMillionTokens
+              + 4096 * outputMicroUSDPerMillionTokens) / 1,000,000 microUSD
 
 The numerator must be <= 2,000,000,000,000, exactly (USD 2); arbitrary-precision
 integer arithmetic avoids rounding and overflow. The illustrated rates reserve
 5734.4 microUSD (USD 0.0057344) for version 1, or 8601.6 microUSD
-(USD 0.0086016) for version 2. Reservation is a conservative bound, not a claim
+(USD 0.0086016) for version 2, with the default 8192 input bound. Version 2 with
+32768 input reserves 15974.4 microUSD (USD 0.0159744). Reservation is a conservative bound, not a claim
 of actual billing. Reasoning tokens are included in completion tokens, not added
 again. The explicit zero extra-charge assumption must match the selected SKU.
 
@@ -66,10 +76,11 @@ The complete conversation is bounded, not only its latest message:
 + bytes(encoded response_format), when present.
 One token per text byte plus deliberately generous framing is conservative for
 the supported text-only Chat form. This is not a general tokenizer guarantee for
-arbitrary deployments or provider-specific formats. Requests above 8192 are
-refused before credential acquisition or network activity. Raw request size is
-also capped at 64 KiB. Response usage is independently checked against
-8192 input / 4096 output; reasoning counts, when present, must be within output.
+arbitrary deployments or provider-specific formats. Requests above the selected
+input bound are refused before ledger reservation, credential acquisition or
+network activity. Raw request size is also capped at 64 KiB. Response usage is
+independently checked against the same selected input bound and 4096 output;
+reasoning counts, when present, must be within output.
 
 ## Structured output
 

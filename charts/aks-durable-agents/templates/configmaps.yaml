@@ -1,6 +1,13 @@
 {{- $name := include "agents.name" . -}}
 {{- $pricing := .Values.model.policy.pricing -}}
 {{- $policy := dict "version" 1 "runID" .Values.model.policy.runID "ledgerPath" "/data/real-attempts.db" "deployment" .Values.model.deployment "pricing" $pricing -}}
+{{- if eq (int (default 2 .Values.model.policy.maxAttempts)) 3 -}}
+{{- $_ := set $policy "version" 2 -}}
+{{- $_ := set $policy "maxAttempts" 3 -}}
+{{- end -}}
+{{- if hasKey .Values.model.policy "maxInputTokens" -}}
+{{- $_ := set $policy "maxInputTokens" .Values.model.policy.maxInputTokens -}}
+{{- end -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:

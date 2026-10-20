@@ -1,0 +1,15 @@
+{
+  "deployment": "test-deployment",
+  "ledgerPath": "/data/real-attempts.db",
+  "maxAttempts": 3,
+  "maxInputTokens": 32768,
+  "pricing": {
+    "asOf": "2026-10-18",
+    "extraMicroUSDPerCall": 0,
+    "inputMicroUSDPerMillionTokens": 225000,
+    "outputMicroUSDPerMillionTokens": 500000,
+    "source": "https://azure.microsoft.com/en-us/blog/test-pricing"
+  },
+  "runID": "test-run",
+  "version": 2
+}

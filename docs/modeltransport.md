@@ -58,7 +58,8 @@ and a successful `stop` finish. Buffered responses are checked before adapter
 decoding. Streamed content frames reach the adapter as they arrive; a missing or
 non-`stop` finish fails the call, but callers may already have seen streamed prefixes.
 The [policy reference](../modeltransport/README.md) defines complete-input schema
-accounting, streamed finish rules, and opt-in policy-version-2 three-attempt budgets.
+accounting, streamed finish rules, opt-in policy-version-2 three-attempt budgets,
+and the explicit 32768 input bound (omission retains 8192; completion stays 4096).
 These are fake-provider-tested contracts, not live model/schema compatibility or
 AKS qualification.
 

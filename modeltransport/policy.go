@@ -28,12 +28,13 @@ const (
 )
 
 type policySnapshot struct {
-	Version     int     `json:"version"`
-	MaxAttempts *int    `json:"maxAttempts,omitempty"`
-	RunID       string  `json:"runID"`
-	LedgerPath  string  `json:"ledgerPath"`
-	Deployment  string  `json:"deployment"`
-	Pricing     pricing `json:"pricing"`
+	Version        int     `json:"version"`
+	MaxAttempts    *int    `json:"maxAttempts,omitempty"`
+	MaxInputTokens *int    `json:"maxInputTokens,omitempty"`
+	RunID          string  `json:"runID"`
+	LedgerPath     string  `json:"ledgerPath"`
+	Deployment     string  `json:"deployment"`
+	Pricing        pricing `json:"pricing"`
 }
 type pricing struct {
 	Input  int64  `json:"inputMicroUSDPerMillionTokens"`
@@ -71,7 +72,8 @@ func OpenPolicyFile(path string) (*Policy, error) {
 		return nil, errors.New("modeltransport: invalid policy schema")
 	}
 	validVersion := (c.Version == 1 && c.MaxAttempts == nil) || (c.Version == 2 && c.MaxAttempts != nil && *c.MaxAttempts == 3)
-	if !validVersion || strings.TrimSpace(c.RunID) == "" || len(c.RunID) > 256 || strings.TrimSpace(c.RunID) != c.RunID || strings.TrimSpace(c.Deployment) == "" || len(c.Deployment) > 256 || strings.TrimSpace(c.Deployment) != c.Deployment || !filepath.IsAbs(c.LedgerPath) || filepath.Clean(c.LedgerPath) != c.LedgerPath || c.Pricing.Input <= 0 || c.Pricing.Output <= 0 || c.Pricing.Extra == nil || *c.Pricing.Extra != 0 {
+	validInput := c.MaxInputTokens == nil || *c.MaxInputTokens == 32768
+	if !validVersion || !validInput || strings.TrimSpace(c.RunID) == "" || len(c.RunID) > 256 || strings.TrimSpace(c.RunID) != c.RunID || strings.TrimSpace(c.Deployment) == "" || len(c.Deployment) > 256 || strings.TrimSpace(c.Deployment) != c.Deployment || !filepath.IsAbs(c.LedgerPath) || filepath.Clean(c.LedgerPath) != c.LedgerPath || c.Pricing.Input <= 0 || c.Pricing.Output <= 0 || c.Pricing.Extra == nil || *c.Pricing.Extra != 0 {
 		return nil, errors.New("modeltransport: invalid policy values or pricing")
 	}
 	u, err := url.Parse(c.Pricing.Source)
@@ -86,20 +88,32 @@ func OpenPolicyFile(path string) (*Policy, error) {
 	if c.MaxAttempts != nil {
 		limit = *c.MaxAttempts
 	}
-	// Compare rational microUSD directly: limit*(8192*input+4096*output)/1e6
-	// <= 2,000,000. No rounding down, floats, or overflowing int64 products.
-	input := new(big.Int).Mul(big.NewInt(c.Pricing.Input), big.NewInt(maxInputTokens))
+	inputLimit := maxInputTokens
+	if c.MaxInputTokens != nil {
+		inputLimit = *c.MaxInputTokens
+	}
+	// Reserve every attempt at the selected input bound and 4096 output tokens.
+	// Compare rational microUSD against USD2 without rounding or int64 overflow.
+	input := new(big.Int).Mul(big.NewInt(c.Pricing.Input), big.NewInt(int64(inputLimit)))
 	output := new(big.Int).Mul(big.NewInt(c.Pricing.Output), big.NewInt(maxOutputTokens))
 	reservation := new(big.Int).Mul(new(big.Int).Add(input, output), big.NewInt(int64(limit)))
 	if reservation.Cmp(big.NewInt(2000000000000)) > 0 {
 		return nil, errors.New("modeltransport: full run reservation exceeds USD 2")
 	}
 	snapshot, _ := json.Marshal(c)
-	ledger, err := openBudgetLedger(c.LedgerPath, string(snapshot), limit)
+	ledger, err := openBudgetLedger(c.LedgerPath, string(snapshot), limit, inputLimit)
 	if err != nil {
 		return nil, err
 	}
 	return &Policy{config: c, ledger: ledger}, nil
+}
+
+// InputLimit reports the immutable input bound; omission preserves the legacy bound.
+func (p *Policy) InputLimit() int {
+	if p.config.MaxInputTokens != nil {
+		return *p.config.MaxInputTokens
+	}
+	return maxInputTokens
 }
 
 // AttemptLimit reports the immutable policy's total dispatch-attempt ceiling.
@@ -245,7 +259,7 @@ func (p *Policy) prepare(req *http.Request) ([]byte, string, bool, bool, error) 
 			return nil, "", false, false, errors.New("modeltransport: message content required")
 		}
 		tokens += 64 + len(m.Role) + len(*m.Content)
-		if tokens > maxInputTokens {
+		if tokens > p.InputLimit() {
 			return nil, "", false, false, errors.New("modeltransport: full context exceeds input bound")
 		}
 	}

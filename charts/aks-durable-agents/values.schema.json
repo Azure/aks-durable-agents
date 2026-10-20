@@ -271,6 +271,14 @@
             "pricing"
           ],
           "properties": {
+            "maxAttempts": {
+              "type": "integer",
+              "enum": [2, 3]
+            },
+            "maxInputTokens": {
+              "type": "integer",
+              "const": 32768
+            },
             "runID": {
               "type": "string",
               "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
