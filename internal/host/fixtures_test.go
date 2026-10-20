@@ -234,7 +234,13 @@ func newHostFixture(t *testing.T) *hostFixture {
 
 func (f *hostFixture) start(t *testing.T) (*application, *client.Client, func()) {
 	t.Helper()
-	app, err := newApplication(t.Context(), f.config, fixtureCredential{t}, slog.New(slog.DiscardHandler))
+	return f.startWith(t, t.Context(), slog.New(slog.DiscardHandler))
+}
+
+// startWith takes the host lifetime context (Run's signal context) and logger.
+func (f *hostFixture) startWith(t *testing.T, ctx context.Context, logger *slog.Logger) (*application, *client.Client, func()) {
+	t.Helper()
+	app, err := newApplication(ctx, f.config, fixtureCredential{t}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

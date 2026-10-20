@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -43,6 +44,13 @@ type Config struct {
 	// Its transport must honor context cancellation and not log credentials.
 	// The client is copied; timeout and redirect policy are always enforced.
 	HTTPClient *http.Client
+	// OnRefreshError, if set, reports each failed background key refresh
+	// (scheduled or unknown-key) with a fixed DebugReason code and the current
+	// snapshot expiry, which a failure never extends. It is not called for the
+	// initial load (New returns that error) or a refresh ended by Close or
+	// lifetime cancellation. It runs on the refresh goroutine, which Close
+	// joins: it must return promptly and must not call Close.
+	OnRefreshError func(reason string, keysExpire time.Time)
 }
 
 type options struct {
@@ -274,9 +282,15 @@ func (e *verificationError) Is(target error) bool {
 	return (e.reason == "canceled" && target == context.Canceled) || (e.reason == "deadline" && target == context.DeadlineExceeded)
 }
 func failure(reason string) error { return &verificationError{reason: reason} }
+
+// contextFailure classifies an ended context. A cancellation whose cause is
+// DeadlineExceeded is reported as a deadline.
 func contextFailure(ctx context.Context) error {
 	switch ctx.Err() {
 	case context.Canceled:
+		if errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
+			return failure("deadline")
+		}
 		return failure("canceled")
 	case context.DeadlineExceeded:
 		return failure("deadline")
