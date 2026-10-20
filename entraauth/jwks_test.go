@@ -432,7 +432,9 @@ func TestScheduledRefreshAndClose(t *testing.T) {
 	key, rotated := testKeys(t)
 	ticks := make(chan time.Time, 1)
 	stopped := make(chan struct{})
-	v, err := newVerifier(context.Background(), f.config(), options{now: f.clock, schedule: func(d time.Duration) (<-chan time.Time, func()) {
+	c := f.config()
+	c.OnRefreshError = func(reason string, _ time.Time) { t.Errorf("successful refresh or Close reported %q", reason) }
+	v, err := newVerifier(context.Background(), c, options{now: f.clock, schedule: func(d time.Duration) (<-chan time.Time, func()) {
 		if d != time.Hour {
 			t.Errorf("refresh interval = %v", d)
 		}
@@ -539,6 +541,82 @@ func TestRefreshInitiatorAndWaiterCancellation(t *testing.T) {
 	}
 }
 
+// Background refresh failures reach the optional hook as fixed codes with the
+// unextended snapshot expiry. The initial load does not (New returns it).
+func TestRefreshErrorHook(t *testing.T) {
+	key, other := testKeys(t)
+	t.Run("initial load", func(t *testing.T) {
+		f := fixture(t)
+		f.status = http.StatusServiceUnavailable
+		c := f.config()
+		c.OnRefreshError = func(string, time.Time) { t.Error("initial load failure reached refresh hook") }
+		v, err := New(context.Background(), c)
+		if v != nil {
+			v.Close()
+		}
+		safeFailure(t, err)
+	})
+	for _, tc := range []struct {
+		name      string
+		scheduled bool
+		breakSet  func(*trustFixture)
+		want      string
+	}{
+		{"scheduled outage", true, func(f *trustFixture) { f.status = http.StatusServiceUnavailable }, "fetch"},
+		{"scheduled foreign issuer", true, func(f *trustFixture) { f.metadataIssuer = secret }, "discovery"},
+		{"scheduled unsupported key", true, func(f *trustFixture) {
+			k := jwk(other, secret)
+			k["kty"] = "EC"
+			f.keys = append(f.keys, k)
+		}, "jwks"},
+		{"unknown-key outage", false, func(f *trustFixture) { f.status = http.StatusServiceUnavailable }, "fetch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := fixture(t)
+			type report struct {
+				reason  string
+				expires time.Time
+			}
+			reports := make(chan report, 4)
+			c := f.config()
+			c.OnRefreshError = func(reason string, expires time.Time) { reports <- report{reason, expires} }
+			ticks := make(chan time.Time, 1)
+			v, err := newVerifier(context.Background(), c, options{now: f.clock, schedule: func(time.Duration) (<-chan time.Time, func()) {
+				return ticks, func() {}
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer v.Close()
+			expires := f.clock().Add(24 * time.Hour)
+			f.mu.Lock()
+			tc.breakSet(f)
+			f.mu.Unlock()
+			f.now.Add(int64(23 * time.Hour / time.Second))
+			if tc.scheduled {
+				ticks <- f.clock()
+			} else {
+				_, err := v.Verify(incoming(signed(t, claims(f.clock()), "unknown", key, nil)))
+				safeFailure(t, err)
+			}
+			select {
+			case r := <-reports:
+				if r.reason != tc.want || strings.Contains(r.reason, secret) {
+					t.Fatalf("refresh reason = %q, want fixed %q", r.reason, tc.want)
+				}
+				if !r.expires.Equal(expires) {
+					t.Fatalf("reported expiry %v, want unextended %v", r.expires, expires)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("refresh failure not reported")
+			}
+			if _, err := v.Verify(incoming(signed(t, claims(f.clock()), "initial", key, nil))); err != nil {
+				t.Fatal("failed refresh discarded good snapshot", err)
+			}
+		})
+	}
+}
+
 // Close and parent cancellation cancel active trust I/O and join the worker.
 func TestLifecycleCancellationDuringRefresh(t *testing.T) {
 	for _, parentCancel := range []bool{false, true} {
@@ -546,7 +624,9 @@ func TestLifecycleCancellationDuringRefresh(t *testing.T) {
 			f := fixture(t)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			v, err := newVerifier(ctx, f.config(), options{now: f.clock})
+			c := f.config()
+			c.OnRefreshError = func(reason string, _ time.Time) { t.Errorf("shutdown reported as refresh failure %q", reason) }
+			v, err := newVerifier(ctx, c, options{now: f.clock})
 			if err != nil {
 				t.Fatal(err)
 			}

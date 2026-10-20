@@ -41,6 +41,13 @@ type Config struct {
 	// Its transport must honor context cancellation and not log credentials.
 	// The client is copied; timeout and redirect policy are always enforced.
 	HTTPClient *http.Client
+	// OnRefreshError, if set, reports each failed background key refresh
+	// (scheduled or unknown-key) with a fixed DebugReason code and the current
+	// snapshot expiry, which a failure never extends. It is not called for the
+	// initial load (New returns that error) or a refresh ended by Close or
+	// lifetime cancellation. It runs on the refresh goroutine, which Close
+	// joins: it must return promptly and must not call Close.
+	OnRefreshError func(reason string, keysExpire time.Time)
 }
 
 type options struct {
