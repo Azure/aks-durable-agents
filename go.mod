@@ -6,7 +6,7 @@ toolchain go1.27.2
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.3
-	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.14.0
+	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.15.0
 	github.com/agent-primitives/sessions v0.2.1-0.20261019224537-f18a2cb1454d
 	github.com/agent-primitives/sessions/integrations/substrate v0.0.0-20261019224537-f18a2cb1454d
 	github.com/agent-substrate/substrate v0.4.1-0.20261013053953-96dffb287919
@@ -18,7 +18,7 @@ require (
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.13.0 // indirect
-	github.com/AzureAD/microsoft-authentication-library-for-go v1.8.0 // indirect
+	github.com/AzureAD/microsoft-authentication-library-for-go v1.10.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gowebpki/jcs v1.0.2 // indirect
