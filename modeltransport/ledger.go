@@ -15,9 +15,10 @@ import (
 type budgetLedger struct {
 	db          *sql.DB
 	maxAttempts int
+	inputLimit  int
 }
 
-func openBudgetLedger(path, snapshot string, maxAttempts int) (*budgetLedger, error) {
+func openBudgetLedger(path, snapshot string, maxAttempts, inputLimit int) (*budgetLedger, error) {
 	// The final directory is scenario-only and private. Refuse symlinks at every
 	// existing path component; never chmod an operator's existing directory/file.
 	parent := filepath.Dir(path)
@@ -130,7 +131,7 @@ func openBudgetLedger(path, snapshot string, maxAttempts int) (*budgetLedger, er
 	if _, err = conn.ExecContext(context.Background(), "COMMIT"); err != nil {
 		return fail()
 	}
-	return &budgetLedger{db: db, maxAttempts: maxAttempts}, nil
+	return &budgetLedger{db: db, maxAttempts: maxAttempts, inputLimit: inputLimit}, nil
 }
 
 func (l *budgetLedger) reserve(hash string) (int64, error) {
@@ -145,7 +146,7 @@ func (l *budgetLedger) reserve(hash string) (int64, error) {
 	}
 	defer conn.ExecContext(ctx, "ROLLBACK")
 	var count, bad int
-	if err = conn.QueryRowContext(ctx, "SELECT count(*),coalesce(sum(CASE WHEN outcome != 'succeeded' OR finished_at IS NULL OR input_tokens IS NULL OR output_tokens IS NULL OR input_tokens < 0 OR input_tokens > 8192 OR output_tokens < 0 OR output_tokens > 4096 OR reasoning_tokens < 0 OR reasoning_tokens > output_tokens THEN 1 ELSE 0 END),0) FROM model_attempts").Scan(&count, &bad); err != nil || count >= l.maxAttempts || bad != 0 {
+	if err = conn.QueryRowContext(ctx, "SELECT count(*),coalesce(sum(CASE WHEN outcome != 'succeeded' OR finished_at IS NULL OR input_tokens IS NULL OR output_tokens IS NULL OR input_tokens < 0 OR input_tokens > ? OR output_tokens < 0 OR output_tokens > ? OR reasoning_tokens < 0 OR reasoning_tokens > output_tokens THEN 1 ELSE 0 END),0) FROM model_attempts", l.inputLimit, maxOutputTokens).Scan(&count, &bad); err != nil || count >= l.maxAttempts || bad != 0 {
 		return 0, ledgerError()
 	}
 	result, err := conn.ExecContext(ctx, "INSERT INTO model_attempts(request_hash,started_at,outcome) VALUES(?,?,'reserved')", hash, time.Now().UTC().Format(time.RFC3339Nano))

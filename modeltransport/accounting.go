@@ -120,8 +120,8 @@ func uniqueResponseValue(d *json.Decoder, foldKeys bool) error {
 	_, err = d.Token()
 	return err
 }
-func (u tokenUsage) valid() bool {
-	return u.Input != nil && u.Output != nil && *u.Input >= 0 && *u.Input <= maxInputTokens && *u.Output >= 0 && *u.Output <= maxOutputTokens && (u.Reasoning == nil || (*u.Reasoning >= 0 && *u.Reasoning <= *u.Output))
+func (u tokenUsage) valid(inputLimit int) bool {
+	return u.Input != nil && u.Output != nil && *u.Input >= 0 && *u.Input <= int64(inputLimit) && *u.Output >= 0 && *u.Output <= maxOutputTokens && (u.Reasoning == nil || (*u.Reasoning >= 0 && *u.Reasoning <= *u.Output))
 }
 
 // accountingBody observes, but does not delay, the streaming bytes consumed by
@@ -174,7 +174,7 @@ func (b *accountingBody) finishLocked(success bool) {
 	}
 	b.final = true
 	outcome := "unknown"
-	if success && b.usage.valid() && b.ctx.Err() == nil {
+	if success && b.usage.valid(b.policy.InputLimit()) && b.ctx.Err() == nil {
 		outcome = "succeeded"
 	} else {
 		b.result = safeError(b.ctx, "modeltransport: response usage or completion unknown")

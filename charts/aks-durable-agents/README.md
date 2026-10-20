@@ -63,9 +63,40 @@ values as one compatible set. Do not reset a ledger to adopt new example values.
   `model.policy` with an immutable run ID and dated, verified pricing in integer
   microUSD per million tokens. `extraMicroUSDPerCall` must be zero. The host
   additionally checks real calendar dates and the USD2 full-run reservation.
-  The existing host caps requests at 8192 input/4096 completion tokens and two
-  attempts; failed/unknown outcomes lock further dispatch. Reservations are not
-  bills. Credentials remain workload-identity-only, not values.
+  The host defaults to 8192 input/4096 completion tokens and two attempts;
+  the explicit input/attempt opt-ins below reserve the selected full-run budget.
+  Failed/unknown outcomes lock further dispatch. Reservations are not bills.
+  Credentials remain workload-identity-only, not values.
+
+### Explicit model-policy limits
+
+For a new three-turn writer/reviewer/revision run with the larger input bound:
+
+```yaml
+model:
+  policy:
+    maxAttempts: 3
+    maxInputTokens: 32768
+```
+
+`maxAttempts` defaults to 2, which renders policy version 1 without a
+`maxAttempts` field. Setting 3 renders version 2 with `maxAttempts: 3`; these are
+total dispatch attempts, not retries. Omit `maxInputTokens` to retain 8192;
+32768 is the only accepted explicit value. Completion remains 4096, including
+reasoning. The host uses the selected limits in request/usage checks and its
+USD2 worst-case reservation. Older host binaries reject the input-limit field;
+use an image supporting it. This configuration is not live-model qualification.
+
+Helm removes null keys during values coalescing. An explicit null for either
+setting selects that setting's safe default (two attempts or 8192 input), not
+unlimited calls/tokens. The host's policy JSON itself rejects null.
+
+Default rendered policy bytes are unchanged. Limits are part of the immutable
+policy snapshot: do not change them on an existing run/ledger. Prepare a new run
+ID and `persistence.subPath`, fence old writers and deliberately replace the
+immutable ConfigMap as described below; an in-place Helm upgrade is not a budget
+reset. Retain the prior journal/ledger and evidence. Input limits do not alter
+historical requests or their hashes.
 
 ### Retained storage: no automatic initialization
 

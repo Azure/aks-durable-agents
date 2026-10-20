@@ -81,7 +81,7 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 			return nil, fmt.Errorf("open bounded model policy: %w", err)
 		}
 		if logger != nil {
-			logger.Info("explicit host model policy enabled", "input_limit", 8192, "max_completion_tokens", 4096, "max_posts", a.modelPolicy.AttemptLimit(), "model_deadline_seconds", 25, "ledger", "durable")
+			logger.Info("explicit host model policy enabled", "input_limit", a.modelPolicy.InputLimit(), "max_completion_tokens", 4096, "max_posts", a.modelPolicy.AttemptLimit(), "model_deadline_seconds", 25, "ledger", "durable")
 		}
 	}
 	model, err := newChatModel(c, a.modelPolicy, credential)

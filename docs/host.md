@@ -122,20 +122,25 @@ ledger. Rates are integer **micro-USD per million tokens**, not per-token USD:
 Those example rates describe the dated Luna Global Standard short-context offer;
 verify the actual deployment SKU and billable terms before using them. They are
 not defaults for other deployments. Explicit zero extra charges is required;
-unknown/additional-charge models are refused. The entire two-call worst-case
+unknown/additional-charge models are refused. Version 1 permits two attempts;
+version 2 requires `"maxAttempts": 3` for a three-turn run. Either version may
+explicitly opt in to `"maxInputTokens": 32768`; omission keeps 8192, and other
+explicit values are refused. The entire selected-count/selected-input worst-case
 reservation must fit USD 2. It is a reservation, not a bill or a claim that a
 failed/unknown attempt was free. Never reset or replace a run ledger to retry.
 
 The policy explicitly rewrites outgoing Chat JSON to set
 `max_completion_tokens: 4096` (including reasoning) and request streaming usage.
 It checks the entire supported text-only conversation with a conservative
-UTF-8-byte-plus-framing input bound of 8192 before credential/network I/O.
+UTF-8-byte-plus-framing input bound of 8192, or the explicit 32768 opt-in,
+before ledger reservation or credential/network I/O. Provider-reported input
+usage must fit that same bound.
 Tools, multimodal and unsupported request forms are refused rather than silently
 uncounted. This is host policy, logged at startup—not adapter support or a change
 to the neutral request recorded by sessions. Response usage is recorded durably;
 missing usage is unknown, not zero. A failed, incomplete or unknown attempt stops
-further dispatch, including replay of an identical request. There are at most two
-durable attempt slots across host restarts. The count is a conservative attempt
+further dispatch, including replay of an identical request. The selected two or
+three durable attempt slots survive host restarts. The count is a conservative attempt
 count, not proof that the provider received or billed every reserved dispatch.
 
 Both model functions have a 25-second context including token acquisition and
@@ -174,8 +179,11 @@ remain lossless; request-schema property names stay case-sensitive.
 Buffered responses are checked before adapter decoding; streaming callbacks may
 have seen prefixes before a later finish check fails. Prefixes are not completed
 results or accepted proposals. See the [bounded policy reference](../modeltransport/README.md)
-for schema accounting and explicit version-2 three-attempt budgets; version 1
-remains two attempts with unchanged snapshot bytes. Native controller replay does
+for schema accounting and selected input/attempt budgets. Omitted-field snapshots
+for both versions retain their exact bytes; changing a bound or count against an
+existing ledger fails closed. Use a new run and ledger for an opt-in, never reset
+the prior budget. Older binaries reject the new field. Neither opt-in rewrites
+historical neutral requests or outgoing request hashes. Native controller replay does
 not enter the live transport and must leave the attempt ledger unchanged.
 
 ## Native document producer routes

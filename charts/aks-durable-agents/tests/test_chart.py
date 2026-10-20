@@ -62,6 +62,60 @@ class ChartTests(unittest.TestCase):
                 expected = golden.read_text()
                 self.assertEqual(actual, expected, "".join(difflib.unified_diff(expected.splitlines(True), actual.splitlines(True))))
 
+    def model_policy(self, values):
+        docs = self.documents(values)
+        config = next(d for d in docs if d["kind"] == "ConfigMap"
+                      and "model-policy.json" in d.get("data", {}))
+        self.assertTrue(config["immutable"])
+        return json.loads(config["data"]["model-policy.json"])
+
+    def test_model_policy_limits(self):
+        baseline = {
+            "version": 1, "runID": self.defaults["model"]["policy"]["runID"],
+            "ledgerPath": "/data/real-attempts.db",
+            "deployment": self.defaults["model"]["deployment"],
+            "pricing": self.defaults["model"]["policy"]["pricing"],
+        }
+        for settings in ({}, {"maxAttempts": 2}, {"maxAttempts": 3},
+                         {"maxInputTokens": 32768},
+                         {"maxAttempts": 3, "maxInputTokens": 32768}):
+            with self.subTest(settings=settings):
+                values = copy.deepcopy(self.defaults)
+                values["model"]["policy"].update(settings)
+                expected = copy.deepcopy(baseline)
+                if settings.get("maxAttempts") == 3:
+                    expected.update(version=2, maxAttempts=3)
+                if "maxInputTokens" in settings:
+                    expected["maxInputTokens"] = 32768
+                actual = self.model_policy(values)
+                self.assertEqual(actual, expected)
+                if settings == {"maxAttempts": 3, "maxInputTokens": 32768}:
+                    # Go opens this same fixture, binding chart output to host parsing.
+                    fixture = json.loads((CHART / "tests/model-policy-three-calls.json").read_text())
+                    self.assertEqual(actual, fixture)
+
+    def test_model_policy_null_uses_safe_defaults(self):
+        baseline = self.model_policy(self.defaults)
+        for settings in ({"maxAttempts": None}, {"maxInputTokens": None},
+                         {"maxAttempts": None, "maxInputTokens": None}):
+            with self.subTest(settings=settings):
+                values = copy.deepcopy(self.defaults)
+                values["model"]["policy"].update(settings)
+                self.assertEqual(self.model_policy(values), baseline)
+
+    def test_model_policy_limit_refusals(self):
+        for key, invalid in (
+            ("maxAttempts", (0, 1, 4, 3.5, "3", True)),
+            ("maxInputTokens", (0, -1, 8192, 8193, 32769, 32768.5, "32768", True)),
+        ):
+            for value in invalid:
+                with self.subTest(key=key, value=value):
+                    values = copy.deepcopy(self.defaults)
+                    values["model"]["policy"][key] = value
+                    result = render(values)
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn(key, result.stderr)
+
     def test_bare_defaults_refuse_missing_inputs(self):
         result = helm("template", "test", CHART)
         self.assertNotEqual(result.returncode, 0)
