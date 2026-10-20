@@ -1,4 +1,4 @@
-// Command host runs the experimental loopback-only Azure sessions host.
+// Command host runs the experimental Azure sessions host, loopback by default.
 package main
 
 import (
@@ -38,6 +38,7 @@ func parse(args []string) (host.Config, error) {
 	fs := flag.NewFlagSet("host", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&c.Addr, "addr", "127.0.0.1:8080", "loopback Sessions listener")
+	fs.BoolVar(&c.TrustedNetworkSessions, "sessions-trusted-network", false, "explicit auth-off private IPv4 Sessions listener; requires TLS, identity not exercised")
 	fs.StringVar(&c.HealthAddr, "health-addr", "127.0.0.1:8081", "separate loopback health/reflection listener")
 	fs.StringVar(&c.Journal, "journal", "/data/journal.db", "single-writer SQLite journal")
 	fs.StringVar(&c.Deployment, "model", "", "Azure model deployment")

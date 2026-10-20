@@ -4,7 +4,10 @@
 
 **Experimental proof only.** Sessions does not yet invoke `Authorizer` in its RPC
 handlers. This host does not fork those handlers or invent a replacement
-ownership/policy activation contract. Both listeners must be **literal loopback IPs**, even with authentication enabled.
+ownership/policy activation contract. By default both listeners must be **literal
+loopback IPs**, even with authentication enabled. The explicit auth-off private
+TLS exception below changes only the Sessions listener, never health or required
+mode.
 Remote harness addresses are loopback-only unless the explicit split-pod Service
 override described below is configured. The optional [Substrate backend](substrate.md)
 uses a separately installed private runtime and one stateless-replay harness; it
@@ -25,7 +28,8 @@ What the host enforces:
   before session lookup, disclosure or journal mutation. Request `IdentityRef`
   remains untrusted provenance; this host does not claim verified audit attribution.
 - `-auth-mode=off` disables authentication and the approval gate for trusted-network
-  local development only, with an explicit startup warning. Required mode also
+  development only, with an explicit startup warning. Private pod access requires
+  the separate opt-in below; it does not authenticate callers. Required mode also
   warns that owner isolation and durable policy activation are absent.
 - Health and gRPC reflection are registered only on `-health-addr`; that listener
   has no Sessions service. It is plaintext loopback operator access, not a public
@@ -151,7 +155,8 @@ After lost responses/timeouts, stop new mutations and reconcile the original
 session/execution, journal head/pending tuple, real-attempt ledger and publication
 receipts. Do not retry, create a replacement session or automatically Resume.
 
-Sessions and health listeners stay loopback-only. For a split-pod deployment,
+Sessions and health listeners stay loopback-only unless the explicit private
+Sessions TLS opt-in below is selected. For a split-pod deployment,
 `-harness-service=service.namespace.svc.cluster.local:9000` permits exactly that
 configured non-loopback harness address. Repeat this flag for multiple exact
 Service/port pairs; each route must match a listed endpoint. Arbitrary IPs,
@@ -204,6 +209,51 @@ not marker attestation. See the chart's [native profile](../charts/aks-durable-a
 literal loopback address and canonical nonzero port. It does not initialize
 identity, policy or journal state and does not prove authorization or inference
 readiness. The native chart uses it without requiring a fixture binary.
+
+## Explicit private Sessions TLS for the hosted engine
+
+`-sessions-trusted-network=true` is a narrow opt-in for the
+[chart's private Canvas profile](../charts/aks-durable-agents/README.md#private-canvas-engine-profile),
+not a remote-authenticated mode. It is accepted only with `-auth-mode=off`, both
+`-tls-cert` and `-tls-key`, and `-addr=0.0.0.0:<numeric-port>` (port 1–65535;
+0 is also accepted for ephemeral local tests).
+For the chart this is `-addr=0.0.0.0:8080`; `-health-addr=127.0.0.1:8081` stays
+literal loopback. Missing TLS, another bind address, invalid ports, or required
+auth with the flag fail before journal/identity initialization. Without the flag,
+existing loopback validation is unchanged. Required-auth TLS and admission rules
+are unchanged; the flag does not enable wildcard required-auth listeners.
+
+The host serves TLS even though caller authentication is off. Its leaf must
+contain the exact chart Sessions Service DNS SAN:
+`<agents.name>-sessions.<namespace>.svc.cluster.local`. Use the rendered name
+because long release names are shortened/hashed. The engine dials this name on
+8080 with an explicit CA and hostname verification, never insecure TLS or a
+plaintext fallback. The existing host TLS Secret contains `tls.crt`, `tls.key`
+and `ca.crt`; only the CA item is projected into the engine. The engine's own
+TLS certificate/key come from a different Secret with IP SAN `127.0.0.1`, for
+its loopback HTTPS API and the operator's local port-forward/CA-verified adapter.
+No Secret material belongs in values or ConfigMaps. Secret rotation requires
+explicit restarts of affected processes; no live reload is promised.
+
+**Identity is not exercised.** Sessions resource ownership and authenticated
+approval are not introduced by TLS or by label-selected NetworkPolicies. Limit
+private TCP8080 ingress to this release's engine in the same namespace and
+verify all additive policies and enforcement before enabling workloads. Do not
+expose this listener through Ingress, NodePort, LoadBalancer or an untrusted proxy.
+Host model/WI configuration and exact harness egress remain host-owned; the engine
+receives no model credentials or workload identity. Health remains a separate
+plaintext loopback operator endpoint with no Sessions service. Neither readiness
+nor a successful TLS connection proves authorization, inference or replay.
+
+Use one retained host disk and a separate retained Azure Disk/POSIX Filesystem
+RWOP engine disk, prepared for UID65532; no automatic ownership repair or state
+migration is performed. Fence previous writers before force recovery. The engine
+creates its private 0700 child `/data/state` and binds instance, definition and
+Sessions endpoint there. Binding the DNS endpoint **does not detect a new host
+journal behind the same DNS name**. Preserve/fence the original host journal and
+ledger; missing/moved session evidence must fail closed, not trigger replacement
+sessions or implicit Resume. See the chart guide for preparation, local TLS
+port-forward setup and the policy-first zero-replica installation gate.
 
 ## What still belongs upstream
 

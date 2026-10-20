@@ -1,0 +1,99 @@
+{{- include "agents.validateCanvas" . -}}
+{{- if (.Values.canvas | default dict).enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agents.name" . }}-canvas
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "agents.labels" . | nindent 4 }}
+    app.kubernetes.io/component: canvas
+spec:
+  replicas: {{ ternary 1 0 .Values.workloads.enabled }}
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 1
+  progressDeadlineSeconds: 300
+  selector:
+    matchLabels:
+      {{- include "agents.labels" . | nindent 6 }}
+      app.kubernetes.io/component: canvas
+  template:
+    metadata:
+      labels:
+        {{- include "agents.labels" . | nindent 8 }}
+        app.kubernetes.io/component: canvas
+    spec:
+      serviceAccountName: {{ include "agents.name" . }}-canvas
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      nodeSelector:
+        kubernetes.io/os: linux
+        kubernetes.io/arch: amd64
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsUser: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: canvas-engine
+          image: {{ printf "%s@%s" .Values.image.canvas.repository .Values.image.canvas.digest | quote }}
+          imagePullPolicy: IfNotPresent
+          command: [/usr/local/bin/canvas-engine]
+          args: [-config, /config/engine.json]
+          env:
+            - name: HOME
+              value: /data/home
+            - name: TMPDIR
+              value: /data/tmp
+          readinessProbe:
+            exec:
+              command: [/usr/local/bin/canvas-engine, health-probe, "127.0.0.1:8081"]
+            periodSeconds: 5
+            timeoutSeconds: 4
+          securityContext:
+            {{- include "agents.security" . | nindent 12 }}
+          resources:
+            {{- include "agents.resources" . | nindent 12 }}
+          volumeMounts:
+            - name: canvas-data
+              mountPath: /data
+            - name: canvas-config
+              mountPath: /config
+              readOnly: true
+            - name: sessions-ca
+              mountPath: /sessions-ca
+              readOnly: true
+            - name: engine-tls
+              mountPath: /engine-tls
+              readOnly: true
+      volumes:
+        - name: canvas-data
+          persistentVolumeClaim:
+            claimName: {{ include "agents.canvasClaim" . | quote }}
+        - name: canvas-config
+          configMap:
+            name: {{ include "agents.canvasConfigName" . }}
+            defaultMode: 0444
+        - name: sessions-ca
+          secret:
+            secretName: {{ .Values.canvas.sessionsTLSSecretName | quote }}
+            defaultMode: 0444
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: engine-tls
+          secret:
+            secretName: {{ .Values.canvas.tlsSecretName | quote }}
+            defaultMode: 0444
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+{{- end }}

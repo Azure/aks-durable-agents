@@ -4,7 +4,7 @@ Workloads enabled: {{ .Values.workloads.enabled }}
 NetworkPolicies enabled: {{ .Values.networkPolicy.enabled }}
 
 Install/upgrade with workloads.enabled=false first (zero replicas). Apply and verify
-NetworkPolicies BEFORE scaling workloads: read back all three release policies,
+NetworkPolicies BEFORE scaling workloads: read back all {{ if (.Values.canvas | default dict).enabled }}five{{ else }}three{{ end }} release policies,
 inspect additive policies, and independently verify Cilium enforcement. Only then
 upgrade the SAME release with workloads.enabled=true. See README for commands.
 {{ if not .Values.networkPolicy.enabled }}
@@ -19,4 +19,20 @@ Host image must support /host health-probe. Verify the digest.
 {{ else }}
 Host image must contain /host and /session-fixture (network-probe). Verify the digest.
 {{ end }}
+{{ if (.Values.canvas | default dict).enabled }}
+PRIVATE CANVAS PROFILE: auth off, identity NOT exercised. NetworkPolicy is not auth.
+Sessions is TLS on private pod TCP8080 with a release-scoped ClusterIP Service.
+Host health stays loopback. Engine HTTPS is ONLY 127.0.0.1:8443: no engine Service
+or Ingress. Use a local port-forward matching canvas.origin and explicit CA trust.
+Verify BOTH TLS SANs (exact Sessions Service DNS; engine IP 127.0.0.1).
+Engine receives host ca.crt ONLY, not the host private key; engine TLS is separate.
+Prepare the separate Azure Disk/POSIX/RWOP engine claim for UID65532, including
+real definition/archive files, home and tmp. Runtime creates private /data/state.
+No init/chown/fsGroup repair occurs. Retain and fence both disks/previous writers.
+The endpoint marker does NOT detect replacement host journals at the same DNS.
+Engine health-probe must HTTP GET /readyz and check 200 plus its owned body;
+TCP readiness alone is insufficient. Readiness is not identity/replay qualification.
+Verify the reviewed engine image digest supports this exact runtime/probe contract.
+{{ else }}
 Sessions API and health are loopback-only; there is no sessions Service/Ingress.
+{{ end }}

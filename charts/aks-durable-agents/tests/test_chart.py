@@ -356,6 +356,242 @@ class ChartTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, "native profile must not bypass TLS/identity gates")
         self.assertIn("tlsSecretName", result.stderr)
 
+    def canvas_values(self):
+        values = self.native_values()
+        values["networkPolicy"] = {"enabled": True}
+        values["image"]["canvas"] = {
+            "repository": "example.invalid/canvas-engine",
+            "digest": "sha256:" + "c" * 64,
+            "includesHealthProbe": True,
+        }
+        values["canvas"] = {
+            "enabled": True, "instanceID": "review-instance-1",
+            "origin": "https://127.0.0.1:9443",
+            "sessionsTLSSecretName": "sessions-private-tls",
+            "tlsSecretName": "engine-private-tls",
+            "persistence": {"existingClaim": "", "size": "2Gi", "storageClass": "managed-csi"},
+        }
+        return values
+
+    def canvas_document(self, docs, kind, suffix):
+        return next(d for d in docs if d["kind"] == kind and d["metadata"]["name"].endswith(suffix))
+
+    def test_canvas_three_dormant_pods_security_and_independent_storage(self):
+        values = self.canvas_values()
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                values["workloads"] = {"enabled": enabled}
+                docs = self.documents(values)
+                deployments = [d for d in docs if d["kind"] == "Deployment"]
+                self.assertEqual(len(deployments), 3)
+                for dep in deployments:
+                    self.assertEqual(dep["spec"]["replicas"], int(enabled))
+                    self.assertEqual(dep["spec"]["strategy"], {"type": "Recreate"})
+                engine = self.canvas_document(docs, "Deployment", "-canvas")
+                pod = engine["spec"]["template"]["spec"]
+                self.assertEqual(len(pod["containers"]), 1)
+                self.assertFalse(pod["automountServiceAccountToken"])
+                self.assertFalse(pod["enableServiceLinks"])
+                for field in ("hostNetwork", "hostPID", "hostIPC"):
+                    self.assertFalse(pod[field])
+                self.assertNotIn("initContainers", pod)
+                self.assertNotIn("fsGroup", pod["securityContext"])
+                self.assertEqual(pod["securityContext"]["runAsUser"], 65532)
+                self.assertTrue(pod["securityContext"]["runAsNonRoot"])
+                self.assertNotIn("azure.workload.identity/use", engine["spec"]["template"]["metadata"]["labels"])
+                sa = next(d for d in docs if d["kind"] == "ServiceAccount" and d["metadata"]["name"] == pod["serviceAccountName"])
+                self.assertFalse(sa["automountServiceAccountToken"])
+                self.assertNotIn("azure.workload.identity/client-id", sa["metadata"].get("annotations", {}))
+                container = pod["containers"][0]
+                self.assertTrue(container["securityContext"]["readOnlyRootFilesystem"])
+                self.assertFalse(container["securityContext"]["allowPrivilegeEscalation"])
+                self.assertEqual(container["securityContext"]["capabilities"]["drop"], ["ALL"])
+                self.assertEqual(container["command"], ["/usr/local/bin/canvas-engine"])
+                self.assertEqual(container["args"], ["-config", "/config/engine.json"])
+                self.assertEqual(container["image"], "example.invalid/canvas-engine@sha256:" + "c" * 64)
+                self.assertEqual(container["env"], [{"name": "HOME", "value": "/data/home"}, {"name": "TMPDIR", "value": "/data/tmp"}])
+                self.assertEqual(container["readinessProbe"]["exec"]["command"], ["/usr/local/bin/canvas-engine", "health-probe", "127.0.0.1:8081"])
+                self.assertNotIn("ports", container, "loopback API/readiness need no pod ports")
+                mounts = container["volumeMounts"]
+                self.assertEqual(next(m for m in mounts if m["mountPath"] == "/data"), {"name": "canvas-data", "mountPath": "/data"})
+                self.assertNotIn("/tmp", [m["mountPath"] for m in mounts])
+                pvc = self.canvas_document(docs, "PersistentVolumeClaim", "-canvas-data")
+                self.assertEqual(pvc["metadata"]["annotations"]["helm.sh/resource-policy"], "keep")
+                self.assertEqual(pvc["spec"], {"accessModes": ["ReadWriteOncePod"], "volumeMode": "Filesystem", "storageClassName": "managed-csi", "resources": {"requests": {"storage": "2Gi"}}})
+                engine_claim = next(v["persistentVolumeClaim"]["claimName"] for v in pod["volumes"] if "persistentVolumeClaim" in v)
+                self.assertEqual(engine_claim, pvc["metadata"]["name"])
+                for role in ("host", "harness"):
+                    other = self.canvas_document(docs, "Deployment", "-" + role)["spec"]["template"]["spec"]
+                    self.assertNotIn(engine_claim, [v["persistentVolumeClaim"]["claimName"] for v in other["volumes"] if "persistentVolumeClaim" in v])
+                self.assertFalse(any(d["kind"] in ("Ingress", "Secret", "Job") for d in docs))
+
+    def test_canvas_exact_config_tls_projection_and_host_flags(self):
+        values = self.canvas_values()
+        docs = self.documents(values)
+        engine = self.canvas_document(docs, "Deployment", "-canvas")["spec"]["template"]["spec"]
+        config_volume = next(v for v in engine["volumes"] if v["name"] == "canvas-config")
+        config = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == config_volume["configMap"]["name"])
+        self.assertTrue(config["immutable"])
+        self.assertEqual(json.loads(config["data"]["engine.json"]), {
+            "version": 1, "authMode": "off", "trustedNetwork": True,
+            "instanceID": "review-instance-1", "listen": "127.0.0.1:8443",
+            "origin": "https://127.0.0.1:9443", "readinessAddress": "127.0.0.1:8081",
+            "stateDirectory": "/data/state", "definitionFile": "/data/definition/canvas.yaml",
+            "sessionsEndpoint": "test-aks-durable-agents-sessions.agents.svc.cluster.local:8080",
+            "sessionsCAFile": "/sessions-ca/ca.crt", "tlsCertFile": "/engine-tls/tls.crt", "tlsKeyFile": "/engine-tls/tls.key",
+        })
+        secrets = [v["secret"] for v in engine["volumes"] if "secret" in v]
+        host_ca = next(s for s in secrets if s["secretName"] == "sessions-private-tls")
+        self.assertEqual(host_ca["items"], [{"key": "ca.crt", "path": "ca.crt"}])
+        self.assertEqual(host_ca["defaultMode"], 0o444)
+        self.assertEqual(len(secrets), 2)
+        self.assertEqual(next(s for s in secrets if s["secretName"] == "engine-private-tls")["items"], [{"key": "tls.crt", "path": "tls.crt"}, {"key": "tls.key", "path": "tls.key"}])
+        mounts = engine["containers"][0]["volumeMounts"]
+        for path in ("/config", "/sessions-ca", "/engine-tls"):
+            self.assertTrue(next(m for m in mounts if m["mountPath"] == path)["readOnly"])
+        host = self.canvas_document(docs, "Deployment", "-host")["spec"]["template"]["spec"]
+        self.assertEqual(host["containers"][0]["args"], json.loads((CHART / "tests/canvas-host-args.json").read_text()))
+        self.assertFalse(any(v["name"] == "auth" for v in host["volumes"]))
+        self.assertEqual(next(v["secret"]["secretName"] for v in host["volumes"] if "secret" in v), "sessions-private-tls")
+        self.assertFalse(any("auth.json" in d.get("data", {}) for d in docs))
+        before = config["metadata"]["name"]
+        values["canvas"]["origin"] = "https://127.0.0.1:10443"
+        changed = self.documents(values)
+        new_config = next(d for d in changed if d["kind"] == "ConfigMap" and "engine.json" in d.get("data", {}))
+        self.assertNotEqual(new_config["metadata"]["name"], before)
+        changed_pod = self.canvas_document(changed, "Deployment", "-canvas")["spec"]["template"]["spec"]
+        self.assertEqual(next(v["configMap"]["name"] for v in changed_pod["volumes"] if v["name"] == "canvas-config"), new_config["metadata"]["name"])
+        self.assertEqual(json.loads(new_config["data"]["engine.json"])["stateDirectory"], "/data/state")
+
+    def test_canvas_private_service_and_exact_network_peers(self):
+        baseline = self.documents(self.native_values())
+        docs = self.documents(self.canvas_values(), "one", "private-ns")
+        services = [d for d in docs if d["kind"] == "Service"]
+        self.assertEqual(len(services), 2)
+        service = self.canvas_document(docs, "Service", "-sessions")
+        self.assertEqual(service["spec"]["type"], "ClusterIP")
+        self.assertEqual(service["spec"]["ports"], [{"name": "sessions-tls", "port": 8080, "targetPort": 8080, "protocol": "TCP"}])
+        host_labels = self.canvas_document(docs, "Deployment", "-host")["spec"]["selector"]["matchLabels"]
+        engine_labels = self.canvas_document(docs, "Deployment", "-canvas")["spec"]["selector"]["matchLabels"]
+        self.assertEqual(service["spec"]["selector"], host_labels)
+        self.assertFalse(any(d["spec"]["selector"].get("app.kubernetes.io/component") == "canvas" for d in services))
+        ns = {"matchLabels": {"kubernetes.io/metadata.name": "private-ns"}}
+        policies = [d for d in docs if d["kind"] == "NetworkPolicy"]
+        self.assertEqual(len(policies), 5)
+        ingress = self.canvas_document(docs, "NetworkPolicy", "-sessions-ingress")["spec"]
+        self.assertEqual(ingress, {"podSelector": {"matchLabels": host_labels}, "policyTypes": ["Ingress"], "ingress": [{"from": [{"namespaceSelector": ns, "podSelector": {"matchLabels": engine_labels}}], "ports": [{"protocol": "TCP", "port": 8080}]}]})
+        egress = self.canvas_document(docs, "NetworkPolicy", "-canvas-egress")["spec"]
+        self.assertEqual(egress["podSelector"], {"matchLabels": engine_labels})
+        self.assertEqual(egress["policyTypes"], ["Egress"])
+        self.assertEqual(egress["egress"], [
+            {"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}], "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}]},
+            {"to": [{"namespaceSelector": ns, "podSelector": {"matchLabels": host_labels}}], "ports": [{"protocol": "TCP", "port": 8080}]},
+        ])
+        # Existing host egress and harness isolation must not expand for Canvas.
+        same_ns = self.documents(self.canvas_values())
+        for suffix in ("-deny", "-host-egress", "-harness-ingress"):
+            self.assertEqual(self.canvas_document(same_ns, "NetworkPolicy", suffix), self.canvas_document(baseline, "NetworkPolicy", suffix))
+        self.assertFalse(any(d["spec"]["podSelector"].get("matchLabels", {}).get("app.kubernetes.io/component") == "harness" and "Egress" in d["spec"]["policyTypes"] for d in policies))
+
+    def test_canvas_existing_claim_release_namespace_and_long_names(self):
+        values = self.canvas_values()
+        values["canvas"]["persistence"]["existingClaim"] = "operator-engine-disk"
+        values["persistence"]["existingClaim"] = "operator-host-disk"
+        names = []
+        for release in ("a" * 40 + "-one", "a" * 40 + "-two"):
+            docs = self.documents(values, release, "private-ns")
+            self.assertFalse(any(d["kind"] == "PersistentVolumeClaim" for d in docs))
+            pod = self.canvas_document(docs, "Deployment", "-canvas")["spec"]["template"]["spec"]
+            self.assertEqual(next(v["persistentVolumeClaim"]["claimName"] for v in pod["volumes"] if "persistentVolumeClaim" in v), "operator-engine-disk")
+            service = self.canvas_document(docs, "Service", "-sessions")
+            config = next(d for d in docs if d["kind"] == "ConfigMap" and "engine.json" in d.get("data", {}))
+            self.assertEqual(json.loads(config["data"]["engine.json"])["sessionsEndpoint"], service["metadata"]["name"] + ".private-ns.svc.cluster.local:8080")
+            for doc in docs:
+                self.assertEqual(doc["metadata"]["namespace"], "private-ns")
+                self.assertLessEqual(len(doc["metadata"]["name"]), 63)
+            names.append({d["metadata"]["name"] for d in docs})
+        self.assertFalse(names[0] & names[1])
+
+    def test_canvas_profile_refusals(self):
+        cases = [
+            (("harness", "native", "enabled"), False, "native"),
+            (("auth", "mode"), "required", "mode"),
+            (("auth", "trustedNetwork"), False, "trustedNetwork"),
+            (("networkPolicy", "enabled"), False, "enabled"),
+            (("image", "canvas", "repository"), "example.invalid/engine:latest", "repository"),
+            (("image", "canvas", "digest"), "", "digest"),
+            (("image", "canvas", "includesHealthProbe"), False, "includesHealthProbe"),
+            (("image", "canvas", "token"), "no-secrets", "token"),
+            (("canvas", "instanceID"), "", "instanceID"),
+            (("canvas", "instanceID"), "a" * 64, "instanceID"),
+            (("canvas", "instanceID"), "Uppercase", "instanceID"),
+            (("canvas", "instanceID"), "dotted.name", "instanceID"),
+            (("canvas", "instanceID"), "123", "instanceID"),
+            (("canvas", "instanceID"), "../old", "instanceID"),
+            (("canvas", "instanceID"), True, "instanceID"),
+            (("canvas", "enabled"), "true", "enabled"),
+            (("canvas", "sessionsTLSSecretName"), "", "sessionsTLSSecretName"),
+            (("canvas", "tlsSecretName"), "", "tlsSecretName"),
+            (("canvas", "tlsSecretName"), "sessions-private-tls", "separate"),
+            (("canvas", "tlsKey"), "never", "tlsKey"),
+            (("canvas", "persistence", "accessModes"), ["ReadWriteOnce"], "accessModes"),
+            (("canvas", "persistence", "size"), "0Gi", "size"),
+            (("canvas", "persistence", "existingClaim"), "test-aks-durable-agents-data", "separate"),
+            (("canvas", "origin"), "http://127.0.0.1:9443", "origin"),
+            (("canvas", "origin"), "https://localhost:9443", "origin"),
+            (("canvas", "origin"), "https://127.0.0.1:0", "origin"),
+            (("canvas", "origin"), "https://127.0.0.1:65536", "origin"),
+            (("canvas", "origin"), "https://127.0.0.1:09443", "origin"),
+            (("canvas", "origin"), "https://127.0.0.1:9443/", "origin"),
+            (("canvas", "origin"), "https://user@127.0.0.1:9443", "origin"),
+        ]
+        for path, invalid, fragment in cases:
+            with self.subTest(path=path, invalid=invalid):
+                values = self.canvas_values()
+                target = values
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = invalid
+                result = render(values)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(fragment, result.stderr)
+        values = self.canvas_values()
+        values["canvas"]["persistence"]["existingClaim"] = "same-disk"
+        values["persistence"]["existingClaim"] = "same-disk"
+        self.assertNotEqual(render(values).returncode, 0)
+
+    def test_canvas_origin_port_boundaries_and_strict_lint(self):
+        for port in (1, 65535):
+            values = self.canvas_values()
+            values["canvas"]["origin"] = f"https://127.0.0.1:{port}"
+            self.documents(values)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as f:
+            json.dump(self.canvas_values(), f)
+            f.flush()
+            result = helm("lint", CHART, "--strict", "--kube-version", "1.37.0", "-f", f.name)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_canvas_disabled_preserves_legacy_and_native_rendering(self):
+        for baseline in (self.defaults, self.proof, self.native_values()):
+            original = render(baseline)
+            self.assertEqual(original.returncode, 0, original.stderr)
+            for canvas in ({"enabled": False}, None):
+                values = copy.deepcopy(baseline)
+                values["canvas"] = canvas
+                self.assertEqual(render(values).stdout, original.stdout)
+        values = copy.deepcopy(self.defaults)
+        values["canvas"] = {"enabled": False, "origin": "", "instanceID": ""}
+        self.documents(values)
+        # Helm null removes these optional maps entirely. The Canvas-only
+        # requirements must not activate merely because a map/key is absent.
+        values["image"]["canvas"] = None
+        values["canvas"]["persistence"] = None
+        self.assertEqual(render(values).stdout, render(self.defaults).stdout)
+        values["canvas"]["persistence"] = {"existingClaim": None, "size": None, "storageClass": None}
+        result = render(values)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, render(self.defaults).stdout)
+
     def test_network_policy_opt_out(self):
         values = copy.deepcopy(self.defaults)
         values["networkPolicy"] = {"enabled": False}
