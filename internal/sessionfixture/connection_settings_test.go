@@ -3,7 +3,7 @@ package sessionfixture
 import "testing"
 
 func TestExecutorSettingsSurviveConnectionReplacement(t *testing.T) {
-	ex, err := newExecutor(t.TempDir())
+	ex, err := newExecutor(privateTempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}

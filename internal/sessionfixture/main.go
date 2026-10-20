@@ -364,7 +364,7 @@ func initDataScenario(data, socket, scenario string) error {
 func freezeFile(path string, raw []byte) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, 0600)
 	if errors.Is(err, os.ErrExist) {
-		if err = privateFile(path); err != nil {
+		if _, err = privateFile(path); err != nil {
 			return err
 		}
 		f, err = os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)

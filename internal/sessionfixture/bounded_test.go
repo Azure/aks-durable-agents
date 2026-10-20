@@ -13,7 +13,7 @@ import (
 
 // Reusing a tuple with another correlation ID must redrive its one durable receipt.
 func TestExecutorCorrelatedRedriveAndAtomicCrash(t *testing.T) {
-	ex, err := newExecutor(t.TempDir())
+	ex, err := newExecutor(privateTempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestExecutorCorrelatedRedriveAndAtomicCrash(t *testing.T) {
 
 // Strict parsing must reject duplicate/unknown/miscased keys and unapproved routes before effects.
 func TestExecutorProtocolStrictFrames(t *testing.T) {
-	ex, err := newExecutor(t.TempDir())
+	ex, err := newExecutor(privateTempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestExecutorProtocolStrictFrames(t *testing.T) {
 			t.Fatalf("unsafe frame accepted: %s", line)
 		}
 	}
-	socket := filepath.Join(t.TempDir(), "publish.sock")
+	socket := filepath.Join(privateTempDir(t), "publish.sock")
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	listener, err := listenPrivateSocket(socket)
@@ -103,7 +103,7 @@ func TestExecutorProtocolStrictFrames(t *testing.T) {
 }
 
 func TestExecutorRejectsUnfrozenDraft(t *testing.T) {
-	ex, err := newExecutor(t.TempDir())
+	ex, err := newExecutor(privateTempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}

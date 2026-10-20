@@ -43,7 +43,7 @@ func createRealLedger(t *testing.T, data string) *sql.DB {
 
 // Break caught: evidence invents zero attempts, loses unknown usage, or writes the host ledger.
 func TestV2EvidenceReadOnlyLedger(t *testing.T) {
-	data := t.TempDir()
+	data := privateTempDir(t)
 	if err := initDataScenario(data, filepath.Join(data, "publish.sock"), "v2"); err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestV2EvidenceReadOnlyLedger(t *testing.T) {
 }
 
 func TestV2BaselineWireEvidenceKeepsEmptyAttemptsAndMeasuredFakeCount(t *testing.T) {
-	data := t.TempDir()
+	data := privateTempDir(t)
 	if err := initDataScenario(data, filepath.Join(data, "publish.sock"), "v2"); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestV2BaselineWireEvidenceKeepsEmptyAttemptsAndMeasuredFakeCount(t *testing
 func TestV2EvidenceRefusesCorruption(t *testing.T) {
 	for _, query := range []string{`DROP TABLE model_attempts`, `DELETE FROM model_budget`, `UPDATE model_attempts SET outcome='invented'`, `UPDATE model_attempts SET input_tokens=-1`, `UPDATE model_attempts SET started_at='not a time'`, `UPDATE model_attempts SET input_tokens=NULL`, `UPDATE model_attempts SET output_tokens=4097`, `UPDATE model_attempts SET reasoning_tokens=81`, `UPDATE model_attempts SET finished_at=NULL`, `UPDATE model_attempts SET id=3`} {
 		t.Run(query, func(t *testing.T) {
-			data := t.TempDir()
+			data := privateTempDir(t)
 			if err := initDataScenario(data, filepath.Join(data, "publish.sock"), "v2"); err != nil {
 				t.Fatal(err)
 			}
@@ -157,7 +157,7 @@ func TestV2EvidenceRefusesCorruption(t *testing.T) {
 
 // Break caught: arbitrary v2 model wording is replaced, replay dispatches effects, or ledger changes.
 func TestV2ArbitraryDraftActualJournalReplay(t *testing.T) {
-	data := t.TempDir()
+	data := privateTempDir(t)
 	if err := initDataScenario(data, filepath.Join(data, "publish.sock"), "v2"); err != nil {
 		t.Fatal(err)
 	}

@@ -112,7 +112,7 @@ func TestHarnessDraftBeforeParkRestartApproveDeny(t *testing.T) {
 	for _, approved := range []bool{true, false} {
 		t.Run(map[bool]string{true: "approve", false: "deny"}[approved], func(t *testing.T) {
 			log := eventlog.AsStore(eventlog.New())
-			dir := t.TempDir()
+			dir := privateTempDir(t)
 			ex, e := newExecutor(dir)
 			if e != nil {
 				t.Fatal(e)
@@ -199,7 +199,7 @@ func TestHarnessDraftBeforeParkRestartApproveDeny(t *testing.T) {
 // Break caught: modified instructions after parking silently resume with an effect or new provider call.
 func TestModifiedPromptResumeFailsClosed(t *testing.T) {
 	log := eventlog.AsStore(eventlog.New())
-	ex, e := newExecutor(t.TempDir())
+	ex, e := newExecutor(privateTempDir(t))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -242,7 +242,7 @@ func (l *dropReceiptLog) Append(h, f int64, e api.Event) (eventlog.Record, error
 }
 func TestHarnessRecoveryAfterEffectBeforeReceipt(t *testing.T) {
 	log := &dropReceiptLog{Store: eventlog.AsStore(eventlog.New())}
-	dir := t.TempDir()
+	dir := privateTempDir(t)
 	ex, e := newExecutor(dir)
 	if e != nil {
 		t.Fatal(e)

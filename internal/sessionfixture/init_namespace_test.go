@@ -8,7 +8,7 @@ import (
 )
 
 func TestV2InitializerRecordsRuntimeSocketAcrossMountNamespaces(t *testing.T) {
-	data := t.TempDir()
+	data := privateTempDir(t)
 	if err := initDataScenario(data, "/data/publish.sock", "v2"); err != nil {
 		t.Fatal(err)
 	}
@@ -19,7 +19,7 @@ func TestV2InitializerRecordsRuntimeSocketAcrossMountNamespaces(t *testing.T) {
 	if !strings.Contains(string(raw), `"socket":"/data/publish.sock"`) {
 		t.Fatalf("wrong runtime socket: %s", raw)
 	}
-	if err := initDataScenario(t.TempDir(), "/arbitrary/publish.sock", "v2"); err == nil {
+	if err := initDataScenario(privateTempDir(t), "/arbitrary/publish.sock", "v2"); err == nil {
 		t.Fatal("arbitrary remote socket path admitted")
 	}
 }

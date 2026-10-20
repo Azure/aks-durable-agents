@@ -18,7 +18,7 @@ func publication() api.ToolCall {
 
 // Break caught: receipt lost across instances or concurrent callers produces duplicate effects.
 func TestExecutorDurableIdempotenceAndSessionNamespace(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateTempDir(t)
 	ex, err := newExecutor(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +77,7 @@ func TestExecutorDurableIdempotenceAndSessionNamespace(t *testing.T) {
 
 // Break caught: a reused key silently overwrites different content, or tool args become paths.
 func TestExecutorConflictAndPathRefusal(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateTempDir(t)
 	ex, err := newExecutor(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +110,7 @@ func TestExecutorConflictAndPathRefusal(t *testing.T) {
 	if _, err = ex.execute(t.Context(), controller.ToolCallContext{}, publication()); err == nil {
 		t.Fatal("unscoped effect accepted")
 	}
-	link := filepath.Join(t.TempDir(), "link")
+	link := filepath.Join(privateTempDir(t), "link")
 	if err = os.Symlink(dir, link); err != nil {
 		t.Fatal(err)
 	}

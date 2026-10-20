@@ -78,6 +78,9 @@ func startExecutorChild(t *testing.T, database, socket string, crash bool) *exec
 	select {
 	case err = <-ready:
 		if err != nil {
+			// Join the stderr-copy goroutine before reading its buffer.
+			_ = child.Process.Kill()
+			_ = child.Wait()
 			t.Fatalf("executor child readiness: %v %s", err, stderr.String())
 		}
 	case <-time.After(5 * time.Second):
@@ -109,7 +112,7 @@ func socketInvoke(t *testing.T, socket string, req executorRequest) (executorRes
 // owner is then replaced against the same database; same tuple/new call ID must
 // return the stored receipt and exactly one publication, not perform a new effect.
 func TestExecutorProcessCrashAfterCommitRedrive(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateTempDir(t)
 	database := filepath.Join(dir, "publications.db")
 	socket := filepath.Join(dir, "publish.sock")
 	crashed := startExecutorChild(t, database, socket, true)

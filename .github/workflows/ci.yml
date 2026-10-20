@@ -54,7 +54,7 @@ jobs:
           version: v3.20.0
       - name: Install chart test dependencies
         run: python3 -m pip install -r charts/aks-durable-agents/tests/requirements.txt
-      - name: Image pin unit tests
+      - name: Image pin and workflow tests
         run: python3 -B -m unittest discover -s ops/images -p 'test_*.py'
       - name: Backup unit tests
         run: python3 -B -m unittest discover -s ops/backup -p 'test_*.py'

@@ -15,7 +15,7 @@ func TestResolveIntentReadOnlyUniqueMatch(t *testing.T) {
 	const intent = "release-123e4567-e89b-42d3-a456-426614174000"
 	for _, count := range []int{0, 1, 2} {
 		t.Run(string(rune('0'+count)), func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "journal.db")
+			path := filepath.Join(privateTempDir(t), "journal.db")
 			db, err := sql.Open("sqlite", path)
 			if err != nil {
 				t.Fatal(err)
@@ -60,7 +60,7 @@ func TestResolveIntentReadOnlyUniqueMatch(t *testing.T) {
 	}
 }
 func TestResolveIntentRejectsMissingJournal(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "journal.db")
+	path := filepath.Join(privateTempDir(t), "journal.db")
 	if err := runCLI(t.Context(), []string{"resolve-intent", "--scenario", "v2", "--journal", path, "--intent", "release-123e4567-e89b-42d3-a456-426614174000"}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
 		t.Fatal("missing journal accepted")
 	}

@@ -76,27 +76,31 @@ func privateParent(path string) error {
 	}
 	return nil
 }
-func privateFile(path string) error {
+func privateFile(path string) (created bool, err error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
-		return errors.New("absolute private file required")
+		return false, errors.New("absolute private file required")
 	}
 	if err := privateParent(filepath.Dir(path)); err != nil {
-		return err
+		return false, err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
+	created = err == nil
+	if errors.Is(err, os.ErrExist) {
+		f, err = os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW, 0)
+	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return err
+		return false, err
 	}
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || !ok || int(st.Uid) != os.Getuid() {
-		return errors.New("file must be owned, regular and mode 0600")
+		return false, errors.New("file must be owned, regular and mode 0600")
 	}
-	return nil
+	return created, nil
 }
 func newExecutor(dir string) (*executor, error) {
 	return openExecutor(filepath.Join(dir, "publications.db"))
@@ -113,8 +117,18 @@ func openExecutorScenario(path, scenario string) (*executor, error) {
 	} else if _, err := os.Lstat(filepath.Join(filepath.Dir(path), "scenario.json")); !errors.Is(err, os.ErrNotExist) {
 		return nil, errors.New("v1 executor cannot consume marked scenario data")
 	}
-	if err := privateFile(path); err != nil {
+	created, err := privateFile(path)
+	if err != nil {
 		return nil, err
+	}
+	if !created {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		if info.Size() == 0 {
+			return nil, errors.New("existing executor database is empty; reconcile retained state")
+		}
 	}
 	// Connection-local PRAGMAs must also apply if database/sql replaces a connection.
 	pragmas := url.Values{"_pragma": {"busy_timeout(5000)", "synchronous(FULL)", "foreign_keys(1)", "journal_mode(WAL)"}}
@@ -125,13 +139,37 @@ func openExecutorScenario(path, scenario string) (*executor, error) {
 	}
 	db.SetMaxOpenConns(1)
 	fail := func(err error) (*executor, error) { db.Close(); return nil, err }
-	for _, q := range []string{
-		`CREATE TABLE IF NOT EXISTS publications (session_uid TEXT NOT NULL, key TEXT NOT NULL, artifact TEXT NOT NULL UNIQUE, body BLOB NOT NULL, PRIMARY KEY(session_uid,key))`,
-		`CREATE TABLE IF NOT EXISTS receipts (session_uid TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT NOT NULL, output BLOB NOT NULL, PRIMARY KEY(session_uid,key), FOREIGN KEY(session_uid,key) REFERENCES publications(session_uid,key))`,
-	} {
-		if _, err = db.Exec(q); err != nil {
-			return fail(err)
+	tx, err := db.Begin()
+	if err != nil {
+		return fail(err)
+	}
+	defer tx.Rollback()
+	if created {
+		for _, q := range []string{
+			`CREATE TABLE publications (session_uid TEXT NOT NULL, key TEXT NOT NULL, artifact TEXT NOT NULL UNIQUE, body BLOB NOT NULL, PRIMARY KEY(session_uid,key))`,
+			`CREATE TABLE receipts (session_uid TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT NOT NULL, output BLOB NOT NULL, PRIMARY KEY(session_uid,key), FOREIGN KEY(session_uid,key) REFERENCES publications(session_uid,key))`,
+		} {
+			if _, err = tx.Exec(q); err != nil {
+				return fail(err)
+			}
 		}
+	} else {
+		// Recovery may read the existing schema, never repair or replace it.
+		for _, q := range []string{
+			`SELECT session_uid,key,artifact,body FROM publications LIMIT 0`,
+			`SELECT session_uid,key,fingerprint,output FROM receipts LIMIT 0`,
+		} {
+			rows, err := tx.Query(q)
+			if err != nil {
+				return fail(fmt.Errorf("executor schema missing or incomplete; reconcile retained state: %w", err))
+			}
+			if err = rows.Close(); err != nil {
+				return fail(err)
+			}
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return fail(err)
 	}
 	return &executor{dir: filepath.Dir(path), scenario: scenario, db: db}, nil
 }

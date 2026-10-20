@@ -19,7 +19,7 @@ const validV2Draft = "Northwind Lantern v2.4 — 18 October 2026\nThis fictional
 
 // Break caught: v2 init aliases historical data or fails to freeze a separate scenario.
 func TestV2InitSeparateAndFrozen(t *testing.T) {
-	old := t.TempDir()
+	old := privateTempDir(t)
 	if err := initData(old, "/run/reference/publish.sock"); err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestV2InitSeparateAndFrozen(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Fatal("old instructions changed")
 	}
-	data := t.TempDir()
+	data := privateTempDir(t)
 	args := []string{"init", "--scenario", "v2", "--data", data}
 	if err := runCLI(t.Context(), args, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
@@ -68,7 +68,7 @@ func TestV2InitSeparateAndFrozen(t *testing.T) {
 
 // Break caught: open-ended real drafts bypass content/destination restrictions or v1 changes.
 func TestV2DraftValidationAndDedup(t *testing.T) {
-	data := t.TempDir()
+	data := privateTempDir(t)
 	if err := initDataScenario(data, filepath.Join(data, "publish.sock"), "v2"); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestV2DraftValidationAndDedup(t *testing.T) {
 
 // Break caught: v2 starts without fresh placement or widens v1 listener policy.
 func TestV2PlacementAndBind(t *testing.T) {
-	data := t.TempDir()
+	data := privateTempDir(t)
 	if err := initDataScenario(data, filepath.Join(data, "publish.sock"), "v2"); err != nil {
 		t.Fatal(err)
 	}

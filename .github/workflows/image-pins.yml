@@ -1,4 +1,4 @@
-name: Image pin PR
+name: Verified image pins
 
 on:
   workflow_run:
@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: image-pin-pr
+  group: image-pin-verification
   cancel-in-progress: false
 
 jobs:
@@ -27,8 +27,7 @@ jobs:
         github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success'))
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
       actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -69,6 +68,7 @@ jobs:
           # private package from this anonymous-consumer check.
           export DOCKER_CONFIG
           DOCKER_CONFIG=$(mktemp -d)
+          mkdir -p "$RUNNER_TEMP/verified-image-pins"
           python3 - <<'PY' > "$RUNNER_TEMP/image-refs.txt"
           import json, os
           from pathlib import Path
@@ -79,20 +79,37 @@ jobs:
           while IFS= read -r ref; do
             if ! docker pull --platform linux/amd64 "$ref"; then
               if [[ "$EVENT_NAME" == workflow_run ]]; then
-                echo '::notice::Packages not anonymously pullable. Make both packages public, then dispatch Image pin PR with this Images run ID.'
+                echo '::notice::Packages not anonymously pullable. Make both packages public, then dispatch Verified image pins with this Images run ID.'
                 echo 'ready=false' >> "$GITHUB_OUTPUT"
                 exit 0
               fi
               exit 1
             fi
-            cosign verify --certificate-identity https://github.com/Azure/aks-durable-agents/.github/workflows/images.yml@refs/heads/main --certificate-oidc-issuer https://token.actions.githubusercontent.com "$ref"
-            docker buildx imagetools inspect "$ref" --format '{{json .SBOM.SPDX}}' | python3 -c 'import json,sys; data=json.load(sys.stdin); assert isinstance(data, dict) and data.get("SPDXID") == "SPDXRef-DOCUMENT" and data.get("packages"), "missing attached SPDX SBOM"'
+            name=${ref#ghcr.io/azure/aks-durable-agents/}
+            name=${name%%@*}
+            cosign verify --certificate-identity https://github.com/Azure/aks-durable-agents/.github/workflows/images.yml@refs/heads/main --certificate-oidc-issuer https://token.actions.githubusercontent.com "$ref" > "$RUNNER_TEMP/verified-image-pins/$name-signature.json"
+            docker buildx imagetools inspect "$ref" --format '{{json .SBOM.SPDX}}' > "$RUNNER_TEMP/verified-image-pins/$name-sbom.json"
+            python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); assert isinstance(data, dict) and data.get("SPDXID") == "SPDXRef-DOCUMENT" and data.get("packages"), "missing attached SPDX SBOM"' "$RUNNER_TEMP/verified-image-pins/$name-sbom.json"
           done < "$RUNNER_TEMP/image-refs.txt"
           echo 'ready=true' >> "$GITHUB_OUTPUT"
-      - name: Update the single digest-only PR (never merge)
+      - name: Export verified digests for a person-created PR
         if: steps.publication.outputs.ready == 'true' && steps.public.outputs.ready == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE: ${{ steps.publication.outputs.source }}
-          MANIFEST: ${{ runner.temp }}/publication/images.json
-        run: bash ops/images/open_pin_pr.sh
+          PUBLISH_RUN_ID: ${{ inputs.publish_run_id || github.event.workflow_run.id }}
+        run: |
+          cp "$RUNNER_TEMP/publication/images.json" "$RUNNER_TEMP/verified-image-pins/images.json"
+          {
+            echo '## Verified public image pins'
+            echo "Source: $SOURCE; publication run: $PUBLISH_RUN_ID"
+            while IFS= read -r ref; do printf -- '- %s\n' "$ref"; done < "$RUNNER_TEMP/image-refs.txt"
+            echo 'Download the verified-image-pins artifact. A person or lane applies images.json with ops/images/update_pins.py and opens a reviewed pin PR using gh.'
+            echo 'No branch, repository file or PR was created or updated by this workflow.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.publication.outputs.ready == 'true' && steps.public.outputs.ready == 'true'
+        with:
+          name: verified-image-pins
+          path: ${{ runner.temp }}/verified-image-pins/
+          if-no-files-found: error
+          retention-days: 30

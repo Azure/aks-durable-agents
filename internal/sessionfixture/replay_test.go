@@ -15,7 +15,7 @@ func completedDraft(t *testing.T) (eventlog.Store, *releaseNotesHarness, control
 	t.Helper()
 	log := eventlog.AsStore(eventlog.New())
 	h := newHarness(testInstructions)
-	ex, e := newExecutor(t.TempDir())
+	ex, e := newExecutor(privateTempDir(t))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -127,7 +127,7 @@ func TestReplayForkBaseContinuity(t *testing.T) {
 				}
 				return api.ModelResponse{Message: *api.TextMessage("assistant", "Child release notes for "+choice)}, nil
 			}
-			ex, e := newExecutor(t.TempDir())
+			ex, e := newExecutor(privateTempDir(t))
 			if e != nil {
 				t.Fatal(e)
 			}

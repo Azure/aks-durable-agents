@@ -102,8 +102,8 @@ func startRemoteTestSessions(t *testing.T, data string) (string, func()) {
 // Catch accidental auto-resume, changed pending identities after replacement,
 // provider re-execution, incomplete replay coverage and lost approval receipt stamps.
 func TestRemoteRolesParkRestartCompleteStrictReplay(t *testing.T) {
-	data := t.TempDir()
-	if err := initData(data, filepath.Join(t.TempDir(), "publish.sock")); err != nil {
+	data := privateTempDir(t)
+	if err := initData(data, filepath.Join(privateTempDir(t), "publish.sock")); err != nil {
 		t.Fatal(err)
 	}
 	addr, stop := startRemoteTestSessions(t, data)
@@ -137,7 +137,7 @@ func TestRemoteRolesParkRestartCompleteStrictReplay(t *testing.T) {
 }
 
 func TestActualJournalReplayRefusesPendingAndChangedInstructions(t *testing.T) {
-	data := t.TempDir()
+	data := privateTempDir(t)
 	if err := initData(data, "/run/reference/publish.sock"); err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestActualJournalReplayRefusesPendingAndChangedInstructions(t *testing.T) {
 
 // Readiness is exactly one line with the actual ephemeral listen address.
 func TestHarnessRoleReadiness(t *testing.T) {
-	data := t.TempDir()
+	data := privateTempDir(t)
 	if err := initData(data, "/run/reference/publish.sock"); err != nil {
 		t.Fatal(err)
 	}

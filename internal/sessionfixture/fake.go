@@ -24,7 +24,7 @@ type meterEntry struct {
 }
 
 func newFakeHandler(ledger string) (http.Handler, error) {
-	if err := privateFile(ledger); err != nil {
+	if _, err := privateFile(ledger); err != nil {
 		return nil, err
 	}
 	if _, err := meterCount(ledger); err != nil {

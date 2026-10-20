@@ -14,7 +14,7 @@ import (
 
 // Init must refuse changed frozen bytes instead of silently accepting a new recovery identity.
 func TestInitFrozenInstructionsAndTools(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateTempDir(t)
 	var out bytes.Buffer
 	if err := runCLI(t.Context(), []string{"init", "--data", dir}, &out, io.Discard); err != nil {
 		t.Fatal(err)
@@ -38,7 +38,7 @@ func TestInitFrozenInstructionsAndTools(t *testing.T) {
 
 // The fake must meter exactly accepted requests, persist them across handlers, and never accept credentials.
 func TestFakeFrozenDraftAndDurableMeter(t *testing.T) {
-	ledger := filepath.Join(t.TempDir(), "fake-calls.jsonl")
+	ledger := filepath.Join(privateTempDir(t), "fake-calls.jsonl")
 	for i, variant := range []string{"A", "B"} {
 		handler, err := newFakeHandler(ledger)
 		if err != nil {
@@ -69,7 +69,7 @@ func TestFakeFrozenDraftAndDurableMeter(t *testing.T) {
 	}
 }
 func TestFakeRejectsBoundaryErrorsWithoutMetering(t *testing.T) {
-	ledger := filepath.Join(t.TempDir(), "fake-calls.jsonl")
+	ledger := filepath.Join(privateTempDir(t), "fake-calls.jsonl")
 	handler, err := newFakeHandler(ledger)
 	if err != nil {
 		t.Fatal(err)

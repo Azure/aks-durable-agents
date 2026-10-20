@@ -10,7 +10,7 @@ import (
 // Neither whitespace-only/control identities nor symlink ancestors may select
 // an effect identity or cause creation outside the configured private directory.
 func TestIdentityAndSymlinkAncestorsFailBeforeMutation(t *testing.T) {
-	ex, err := newExecutor(t.TempDir())
+	ex, err := newExecutor(privateTempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,8 +20,8 @@ func TestIdentityAndSymlinkAncestorsFailBeforeMutation(t *testing.T) {
 			t.Errorf("unsafe identity accepted: %q", uid)
 		}
 	}
-	outside := t.TempDir()
-	link := filepath.Join(t.TempDir(), "symlink")
+	outside := privateTempDir(t)
+	link := filepath.Join(privateTempDir(t), "symlink")
 	if err = os.Symlink(outside, link); err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestIdentityAndSymlinkAncestorsFailBeforeMutation(t *testing.T) {
 }
 
 func TestExecutorAtomicRollbackAndCrossInstanceConcurrency(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateTempDir(t)
 	first, err := newExecutor(dir)
 	if err != nil {
 		t.Fatal(err)

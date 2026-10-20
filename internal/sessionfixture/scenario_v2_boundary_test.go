@@ -58,7 +58,7 @@ func TestNetworkProbeRejectsInvalidAddresses(t *testing.T) {
 
 // Break caught: executor transport falls back to frozen v1 validation or loses restart dedup.
 func TestV2ExecutorWireAndRestart(t *testing.T) {
-	data := t.TempDir()
+	data := privateTempDir(t)
 	if err := initDataScenario(data, filepath.Join(data, "publish.sock"), "v2"); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestV2ExecutorWireAndRestart(t *testing.T) {
 }
 
 func TestV2InstructionReadRejectsUnsafePermissions(t *testing.T) {
-	data := t.TempDir()
+	data := privateTempDir(t)
 	if err := initDataScenario(data, filepath.Join(data, "publish.sock"), "v2"); err != nil {
 		t.Fatal(err)
 	}

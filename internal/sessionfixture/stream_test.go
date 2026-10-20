@@ -18,7 +18,7 @@ import (
 func TestFakeStockStreamingAdapterOneMeteredCompletion(t *testing.T) {
 	for _, variant := range []string{"A", "B"} {
 		t.Run(variant, func(t *testing.T) {
-			ledger := filepath.Join(t.TempDir(), "fake-calls.jsonl")
+			ledger := filepath.Join(privateTempDir(t), "fake-calls.jsonl")
 			handler, err := newFakeHandler(ledger)
 			if err != nil {
 				t.Fatal(err)
@@ -49,7 +49,7 @@ func TestFakeStockStreamingAdapterOneMeteredCompletion(t *testing.T) {
 	}
 }
 func TestFakeStreamingFramingAndStrictOptions(t *testing.T) {
-	ledger := filepath.Join(t.TempDir(), "fake-calls.jsonl")
+	ledger := filepath.Join(privateTempDir(t), "fake-calls.jsonl")
 	handler, err := newFakeHandler(ledger)
 	if err != nil {
 		t.Fatal(err)
