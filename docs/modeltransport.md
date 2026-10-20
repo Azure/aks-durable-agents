@@ -43,9 +43,11 @@ Policy instead checks the body deployment and explicitly injects the Chat
 completion cap described in the [bounded policy reference](../modeltransport/README.md).
 Neither mode converts Chat to Responses API.
 
-The host assembly also bridges the journaled `ModelRequest.Params.response_format`
-into the live Chat body, because the sessions Chat adapter does not serialize it.
-Only that schema parameter is forwarded. Known harness hints `max_tokens` (700
+The host assembly also bridges the original `ModelRequest.Params.response_format`
+into the live Chat body. The sessions Chat adapter refuses nonempty Params:
+the host validates/consumes approved hints, then clears Params only on the
+provider-facing copy, preserving the original request/map and journal input
+hash. Only the schema is forwarded through private context to HTTP. Known harness hints `max_tokens` (700
 or 16384) and `temperature` (0.2) do not override the host's fixed 4096 completion
 cap or reasoning-model default temperature; other Params are refused. Both unary
 and streaming host paths use the bridge. The generic library wiring above does

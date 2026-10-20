@@ -35,8 +35,7 @@ refusal tests with synthetic fixtures; bare defaults intentionally refuse missin
 operator inputs. See the [chart README](../charts/aks-durable-agents/README.md#offline-verification).
 
 Tests use fake credentials and local TLS servers, including the **real sessions
-OpenAI adapter** (the [module-wide pinned replacement](entraauth.md#offline-verification-and-the-sessions-dependency) also applies to these
-tests). They require neither Azure access nor model keys. There is no
+OpenAI adapter** at the [canonical upstream pin](entraauth.md#offline-verification-and-the-sessions-dependency). They require neither Azure access nor model keys. There is no
 automatic live test. A separately approved CLI-identity smoke check must use an
 explicit `AzureCLICredential`, no retries, and at most three calls; missing RBAC
 must be reported, not assigned.

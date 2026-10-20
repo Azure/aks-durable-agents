@@ -164,11 +164,13 @@ freshness. Share only a new scenario PVC subtree/socket; do not open a historica
 journal with the new schema. Each Deployment remains one replica with Recreate;
 RWO is not a writer fence or a sandbox between containers sharing storage.
 
-The sessions Chat adapter does not serialize request Params. The host bridges
-only `response_format` into the live Chat body; supported harness token/temperature
-hints cannot override its fixed 4096 completion-token ceiling or reasoning-model
-default temperature. Empty Params retain the plain fixture path. Structured
-responses are checked for refusal, missing/non-success finish and empty content.
+The sessions Chat adapter refuses nonempty request Params. The host first
+validates and consumes its supported hints, then clears Params only on the
+provider-facing request copy. The original request/map and journal input hash
+stay unchanged. It bridges only `response_format` into the live Chat body;
+supported harness token/temperature hints cannot override its fixed 4096
+completion-token ceiling or reasoning-model default temperature. Empty Params
+retain the plain fixture path. Structured responses are checked for refusal, missing/non-success finish and empty content.
 Duplicate response-envelope keys, case/Unicode aliases that Go decodes as the
 same envelope field, and unpaired UTF-16 escapes in that envelope are rejected
 before adapter decoding. The host does not parse JSON text nested inside model

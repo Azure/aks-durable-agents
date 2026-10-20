@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ import (
 	v1 "github.com/agent-primitives/sessions/api/genpb"
 	"github.com/agent-primitives/sessions/authn"
 	"github.com/agent-primitives/sessions/client"
+	"github.com/agent-primitives/sessions/controller"
 	"github.com/agent-primitives/sessions/harnesswire"
 	"google.golang.org/grpc"
 )
@@ -109,23 +111,49 @@ func TestStructuredChatWire(t *testing.T) {
 				if err != nil || turn.Output != hostOutput {
 					t.Fatalf("host structured output: %v %+v", err, turn)
 				}
+				uid := turn.Session.GetMetadata().GetUid()
+				original := api.ModelRequest{Model: c.Deployment, Params: hostParams(), Messages: []api.Message{*api.TextMessage("user", "Draft release notes")}}
+				encoded, _ := json.Marshal(original)
+				wantHash := fmt.Sprintf("%x", sha256.Sum256(encoded))
+				var hashes []string
+				for _, record := range turn.Records {
+					if call := record.GetEvent().GetModel(); call != nil {
+						hashes = append(hashes, call.GetInputHash())
+					}
+				}
+				if !reflect.DeepEqual(hashes, []string{wantHash}) {
+					t.Fatalf("journal lost original Params hash: %v want %s", hashes, wantHash)
+				}
+				replayer, err := controller.New(app.store.Session(uid), func(context.Context, api.ModelRequest) (api.ModelResponse, error) {
+					t.Error("structured replay invoked provider")
+					return api.ModelResponse{}, nil
+				}, controller.WithSessionUID(uid), controller.WithHarness("structured"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				outputs, err := replayer.Replay(t.Context(), structuredHarness{hostParams()})
+				if err != nil || !reflect.DeepEqual(outputs, []string{hostOutput}) || replayer.ModelInvocations() != 0 {
+					t.Fatalf("structured replay: %v %v", outputs, err)
+				}
 			} else {
-				// Use the same constructor and context bridge as both host ModelFuncs.
+				// Use the same request boundary as both production ModelFuncs.
 				provider, err := newChatModel(c, app.modelPolicy, fixtureCredential{t})
 				if err != nil {
 					t.Fatal(err)
 				}
-				params := hostParams()
-				ctx, err := chatParamsContext(t.Context(), params)
+				req := api.ModelRequest{Model: c.Deployment, Params: hostParams(), Messages: []api.Message{*api.TextMessage("user", "Draft release notes")}}
+				before, _ := json.Marshal(req)
+				ctx, forwarded, err := chatRequestContext(t.Context(), req)
 				if err != nil {
 					t.Fatal(err)
 				}
-				result, err := provider.Model(ctx, api.ModelRequest{Model: c.Deployment, Params: params, Messages: []api.Message{*api.TextMessage("user", "Draft release notes")}})
+				result, err := provider.Model(ctx, forwarded)
 				if err != nil || result.Message.Text() != hostOutput {
 					t.Fatalf("unary structured output: %v %+v", err, result)
 				}
-				if !reflect.DeepEqual(params, hostParams()) {
-					t.Fatal("bridge mutated recorded Params")
+				after, _ := json.Marshal(req)
+				if string(before) != string(after) || !reflect.DeepEqual(req.Params, hostParams()) {
+					t.Fatal("bridge mutated original request/Params")
 				}
 			}
 			if sends.Load() != 1 {
@@ -178,11 +206,10 @@ func TestStructuredChatResponseBeforeAdapter(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				ctx, err := chatParamsContext(t.Context(), hostParams())
+				ctx, req, err := chatRequestContext(t.Context(), api.ModelRequest{Model: "test-deployment", Messages: []api.Message{*api.TextMessage("user", "draft")}, Params: hostParams()})
 				if err != nil {
 					t.Fatal(err)
 				}
-				req := api.ModelRequest{Model: "test-deployment", Messages: []api.Message{*api.TextMessage("user", "draft")}, Params: hostParams()}
 				if stream {
 					_, err = provider.StreamModel(ctx, req, nil)
 				} else {
@@ -210,25 +237,70 @@ func TestStructuredChatRequiresBoundedPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, err := chatParamsContext(t.Context(), hostParams())
+	ctx, req, err := chatRequestContext(t.Context(), api.ModelRequest{Model: "test-deployment", Messages: []api.Message{*api.TextMessage("user", "x")}, Params: hostParams()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = provider.Model(ctx, api.ModelRequest{Model: "test-deployment", Messages: []api.Message{*api.TextMessage("user", "x")}})
+	_, err = provider.Model(ctx, req)
 	if err == nil || !strings.Contains(err.Error(), "structured output requires bounded policy") || sends.Load() != 0 {
 		t.Fatalf("unbounded schema mode reached adapter: %v sends%d", err, sends.Load())
 	}
 }
 
-func TestStructuredChatRejectsUnsupportedParams(t *testing.T) {
-	for _, params := range []map[string]string{{"tools": "[]"}, {"max_tokens": "99999"}, {"temperature": "1"}, {"response_format": ""}, {"response_format": "not JSON"}} {
-		if _, err := chatParamsContext(t.Context(), params); err == nil {
-			t.Fatalf("unsupported Params accepted: %v", params)
-		}
-	}
-	for _, params := range []map[string]string{nil, {}, {"max_tokens": "700", "temperature": "0.2"}} {
-		if _, err := chatParamsContext(t.Context(), params); err != nil {
-			t.Fatalf("legacy plain Params rejected: %v", err)
+func TestChatRequestParams(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, tc := range []struct {
+			name   string
+			params map[string]string
+			reject bool
+		}{
+			{"nil", nil, false}, {"empty", map[string]string{}, false},
+			{"legacy", map[string]string{"max_tokens": "700", "temperature": "0.2"}, false},
+			{"native", map[string]string{"max_tokens": "16384", "temperature": "0.2"}, false},
+			{"tools", map[string]string{"tools": "[]"}, true},
+			{"tokens", map[string]string{"max_tokens": "99999"}, true},
+			{"temperature", map[string]string{"temperature": "1"}, true},
+			{"empty-format", map[string]string{"response_format": ""}, true},
+			{"invalid-format", map[string]string{"response_format": "not JSON"}, true},
+			{"mixed", map[string]string{"response_format": hostFormat, "tools": "[]"}, true},
+		} {
+			t.Run(fmt.Sprintf("%t/%s", stream, tc.name), func(t *testing.T) {
+				var sends atomic.Int32
+				server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					sends.Add(1)
+					if stream {
+						io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+					} else {
+						io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+					}
+				}))
+				defer server.Close()
+				provider, err := newChatModel(Config{ModelEndpoint: server.URL + "/openai/v1/", Deployment: "test-deployment", ModelTransport: server.Client().Transport.(*http.Transport)}, nil, fixtureCredential{t})
+				if err != nil {
+					t.Fatal(err)
+				}
+				original := api.ModelRequest{Model: "test-deployment", Params: tc.params, Messages: []api.Message{*api.TextMessage("user", "x")}}
+				before, _ := json.Marshal(original)
+				ctx, req, err := chatRequestContext(t.Context(), original)
+				if err == nil {
+					if stream {
+						_, err = provider.StreamModel(ctx, req, nil)
+					} else {
+						_, err = provider.Model(ctx, req)
+					}
+				}
+				after, _ := json.Marshal(original)
+				if string(before) != string(after) || !reflect.DeepEqual(original.Params, tc.params) {
+					t.Fatal("request boundary mutated original request/aliased map")
+				}
+				if tc.reject {
+					if err == nil || !strings.Contains(err.Error(), "unsupported model parameters") || sends.Load() != 0 {
+						t.Fatalf("unsupported Params reached provider: %v sends=%d", err, sends.Load())
+					}
+				} else if err != nil || sends.Load() != 1 {
+					t.Fatalf("accepted Params: %v sends=%d", err, sends.Load())
+				}
+			})
 		}
 	}
 }

@@ -10,16 +10,17 @@ import (
 
 	"github.com/Azure/aks-durable-agents/modeltransport"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/agent-primitives/sessions/api"
 	"github.com/agent-primitives/sessions/model/openai"
 )
 
 type chatFormatKey struct{}
 
-// The harness Params are part of the journaled request, but the upstream Chat
-// adapter does not serialize them. Carry the schema privately to its HTTP call;
-// token/temperature hints cannot override the host's reasoning-model policy.
-func chatParamsContext(ctx context.Context, params map[string]string) (context.Context, error) {
-	for name, value := range params {
+// Preserve the original request's journal input hash while consuming host hints
+// before the Chat adapter, which refuses Params. Carry the schema privately to
+// HTTP; token/temperature hints cannot override the reasoning-model policy.
+func chatRequestContext(ctx context.Context, r api.ModelRequest) (context.Context, api.ModelRequest, error) {
+	for name, value := range r.Params {
 		switch name {
 		case "max_tokens":
 			if value == "700" || value == "16384" {
@@ -34,9 +35,12 @@ func chatParamsContext(ctx context.Context, params map[string]string) (context.C
 				continue
 			}
 		}
-		return nil, errors.New("host: unsupported model parameters")
+		return nil, api.ModelRequest{}, errors.New("host: unsupported model parameters")
 	}
-	return context.WithValue(ctx, chatFormatKey{}, params["response_format"]), nil
+	ctx = context.WithValue(ctx, chatFormatKey{}, r.Params["response_format"])
+	// Clear only the provider-facing copy, never the harness-owned parameter map.
+	r.Params = nil
+	return ctx, r, nil
 }
 
 func newChatModel(c Config, p *modeltransport.Policy, credential azcore.TokenCredential) (*openai.Client, error) {
