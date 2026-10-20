@@ -11,7 +11,7 @@ require (
 	github.com/agent-primitives/sessions/integrations/substrate v0.0.0-20261019224537-f18a2cb1454d
 	github.com/agent-substrate/substrate v0.4.1-0.20261013053953-96dffb287919
 	github.com/golang-jwt/jwt/v5 v5.3.1
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 	google.golang.org/grpc v1.84.0
 	modernc.org/sqlite v1.60.1
 )
