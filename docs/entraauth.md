@@ -54,8 +54,15 @@ server := grpc.NewServer(
   `https://login.microsoftonline.com/<TenantID>/v2.0/.well-known/openid-configuration`
   and JWKS to `https://login.microsoftonline.com/<TenantID>/discovery/v2.0/keys`.
   Tenant aliases (`common`, `organizations`), alternate clouds, token-supplied
-  URLs, and redirects do not select trust.
-- Exactly one incoming `authorization: Bearer <token>` value is required.
+  URLs, and redirects do not select trust. Only the tenant's signing keys are
+  trusted. [App-specific signing keys](https://learn.microsoft.com/en-us/entra/identity-platform/access-tokens)
+  (published at `jwks_uri?appid=<appId>` for an app using claims mapping) are
+  **not supported**; a token whose `kid` is not in the tenant JWKS is rejected,
+  normally with `key_unavailable` once a refresh confirms the `kid` is absent (a
+  failed refresh reports its own code, such as `fetch` or `jwks`).
+- Exactly one incoming `authorization: Bearer <token>` value is required. The
+  scheme name is case-insensitive (`bearer` is accepted), and exactly one space
+  must separate it from the token; tabs and extra spaces are rejected.
   Verification requires an RS256 signature, `ver=2.0`, exact `iss` and `tid`, a
   **scalar** `aud` equal to the API app's GUID, an allowlisted client `azp`, the
   exact short `RequiredScope` in `scp`, and integer-second `nbf` and `exp` claims.
@@ -69,6 +76,11 @@ server := grpc.NewServer(
 - `ClockSkew` is **0 through 2 minutes**, defaults to zero, and relaxes **`nbf`
   only**. Usable expiry is exactly `exp`: no expiry grace. Both the verifier and
   sessions interceptors use wall time in normal operation.
+- **Revocation is not immediate.** The verifier checks only the signed token; it
+  makes no per-request call to Entra and does not support continuous access
+  evaluation. A token issued before a user is disabled, unassigned, or has
+  sessions revoked stays valid until its `exp`, and an admitted unary call is not
+  ended at `exp`.
 - `New` validates configuration and synchronously fetches discovery and signing
   keys: startup depends on Entra availability. Invalid configuration, unavailable
   trust data, or malformed metadata/JWKS fails `New`; there is no permissive
@@ -129,14 +141,35 @@ and [expose-an-API guidance](https://learn.microsoft.com/en-us/entra/identity-pl
    (using the actual Application ID URI); the verifier compares only the short
    `scp` value **`sessions.access`**. Have test users in that tenant and a known
    user `oid` to check the exact expected identity.
+5. Restrict who can get a token. The verifier pins tenant, API, client, and
+   scope, not the user population: **every user who can get a delegated token
+   for an allowlisted client and `RequiredScope` authenticates**, and
+   authenticated callers share session access ([host limits](host.md)). Depending
+   on tenant policy that can include B2B guests; the verifier does not check
+   guest status. Enable **Assignment required** (`appRoleAssignmentRequired=true`)
+   and [assign](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/assign-user-or-group-access-portal)
+   only the intended users or groups. With no app roles defined, an assignment
+   uses the built-in **Default Access** role (`appRoleId`
+   `00000000-0000-0000-0000-000000000000`), so this step needs no app role.
+   Group assignment requires Microsoft Entra ID P1 or P2 and does not cascade to
+   nested groups. Which service principal's setting (the API's, the client's, or
+   both) blocks token issuance is not verified here, so set it on the API and
+   every allowlisted client, then confirm in your tenant that an unassigned
+   user, and an unassigned guest if you have them, cannot get a token. The
+   [`acct` optional claim](https://learn.microsoft.com/en-us/entra/identity-platform/optional-claims-reference)
+   (`0` member, `1` guest), configured in the API registration's
+   `optionalClaims.accessToken`, shows guest status in a token; the verifier
+   does not read it.
 
 The API verifier needs **no client secret or refresh token**. App-only workload
 identity/client-credentials tokens cannot replace the delegated user token; do
-not add app roles/client-credentials for this path. Tenant, issuer, audience, and
-client IDs are not secrets. A bearer token **is secret**: do not store or log a
+not add app roles/client-credentials for this path (step 5's assignment uses
+Default Access, not an app role). Tenant, issuer, audience, and client IDs are
+not secrets. A bearer token **is secret**: do not store or log a
 live token, or put one in a handoff. Key-cache behavior follows the bounded
 rollover approach in Microsoft's [signing-key rollover guidance](https://learn.microsoft.com/en-us/entra/identity-platform/signing-key-rollover).
-No live tenant registration, consent, or token acquisition is exercised here.
+No live tenant registration, consent, assignment, or token acquisition is
+exercised here.
 
 ## Offline verification and the sessions dependency
 
