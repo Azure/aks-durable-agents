@@ -56,8 +56,14 @@ one request went to the **local fake**, not a real provider. `fakeModelCalls: 0`
 is the separate inert-fake role's meter. The independent demo HTTP meter is one.
 Approval is explicit CLI consent, not an authenticated named-person approval.
 No real Kubernetes change is performed: publication is a simulated local effect.
-NetworkPolicy is configured using Cilium; the hosted denial matrix is separate
-work, not an AKS or hostile-tenant isolation claim from this demo.
+The demo also runs two TCP positive controls and two denial probes before any
+session starts. Controller-owned Jobs use literal pod IPs and no data mount.
+Each Job first reaches an allowed listener, then requires the published probe's
+TCP-timeout-only denial proof. A refused port, DNS error or cancellation cannot
+pass. The results check required allow paths and no over-allow in the effective
+policy set (including default-deny); they do not attribute a drop to one named
+policy. Probe Jobs and temporary policy/listener resources are removed before
+host replacement. This is not AKS or hostile-tenant isolation qualification.
 
 ## Demo-only sealing is preparation, not replay
 
@@ -109,7 +115,9 @@ layers and the kind node image already cached. This is not a cold-start timing
 guarantee; network speed and user input count against the budget. Tool installation
 is a prerequisite, not part of this measurement. No AKS timing was measured.
 
-Private command logs and `proof.json` remain under `.build/demo/<run>/`. Cluster
+Private command logs, `proof.json`, `network-proof.json` and per-phase
+`timings.json` remain under `.build/demo/<run>/`. Phase measurement includes
+cleanup and does not extend the 600-second budget. Cluster
 storage is deleted; local Docker images/build caches and evidence remain for
 inspection. If automatic cleanup fails, the error prints the exact owned-cluster
 cleanup command with its private kubeconfig and Docker provider. Do not delete an
@@ -130,3 +138,56 @@ logical head/inventories and absent sidecars before the first replay. It is
 opt-in; ordinary Go/Python CI does not imply that this container probe or the
 full kind demo ran. Python chart-contract tests reuse the chart suite's existing
 Helm/PyYAML test dependencies; the runner itself uses only the Python stdlib.
+
+## Nightly/manual hosted kind e2e
+
+`Nightly kind e2e` runs at 03:17 UTC and supports manual dispatch on canonical
+`main`. It runs this same `make demo` with the explicit simulated `approve` and
+`continue` answers, including the TCP controls/denials. It uses Ubuntu 24.04,
+checked kind v0.33.0/kubectl v1.37.0, Helm v3.20.0 and Python v3.14.3. Public
+image/module downloads can dominate cold setup; the first hosted timing is a
+separate result, not inferred from a local warm-cache run.
+
+The workflow declares no default token permissions. Its demo job explicitly
+requests only `contents: read`. Only the separate reporting job requests
+`issues: write` (plus `contents: read` for checkout), using `GITHUB_TOKEN` only.
+Reporting is restricted to the canonical repo and main; it executes no PR code
+or downloaded artifacts and uses no PAT, App or long-lived secret fallback.
+
+The summary records phase durations, proof status, zero replay callbacks and
+policy control/denial counts. Seven-day artifacts contain the generated summary,
+proofs, console tail and newest numbered command logs only. Proofs have priority
+under the 16 MiB/256-file cap; oversized logs are tail-truncated and old/excess
+logs omitted with notes. Kubeconfigs, journals, environment dumps and whole data
+directories are never collected. Invalid success proof fails visibly while
+retaining diagnostic logs.
+
+On failure, reporting finds or creates one `Kind e2e regression` tracker. Only
+issues authored by `github-actions[bot]` with type `Bot` and the fixed title and
+marker are eligible; stranger-authored lookalikes are ignored. Repeated failures
+update/reopen the same issue, preserving text outside its managed block, without
+per-night comments. Ambiguous or incomplete lookups fail without creating an
+issue. Successful nights do not automatically close it; normal closure is manual.
+
+### Reporting-only permission check — after merge
+
+**Permission check runs after merge.** It is not a prerequisite for the demo,
+and no pre-merge permission or hosted-run success is claimed. After the workflow
+lands, the initial operator check is one manual dispatch:
+
+```sh
+gh workflow run kind-e2e.yml --repo Azure/aks-durable-agents \
+  --ref main -f report_test=true
+```
+
+`report_test: true` skips the demo entirely and runs only reporting. It finds or
+creates the same bot-owned tracker, adds a short `Test run: reporting permission
+check. No demo was run.` comment with the run URL, then closes the issue. **This
+also closes an existing open tracker**, so use the test deliberately. A denied
+issue permission or API error fails the reporting job visibly; there is no token
+workaround or masked failure. Repeated dispatches would repeat the comment, so
+the initial post-merge check is dispatched once, not automatically retried.
+
+This is issue #17's kind/fake-model stage only. Real AKS/model/workload-identity
+qualification and Substrate variants still require their separate manual and
+hosted validation.

@@ -13,6 +13,8 @@ import sys
 import time
 import uuid
 
+import netpolicy
+
 NODE = "kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5"
 CILIUM = "quay.io/cilium/cilium:v1.20.3@sha256:95cfa5c2427cc6b452c00908778d0566311f572589284af949d06a013db1a849"
 OPERATOR = "quay.io/cilium/operator-generic:v1.20.3@sha256:efdd8d89d6d8f63d21a065fa2f9e17614a2b3ac9371b221af9355f63829e2dbc"
@@ -138,7 +140,21 @@ class Runner:
         self.owned = False
         self.sequence = 0
         self.kind = "kind"
+        self.started = self.phase_started = time.monotonic()
+        self.phase_name = "preflight"
+        self.phases = []
         self.env = dict(os.environ, KUBECONFIG=str(self.kubeconfig), KIND_EXPERIMENTAL_PROVIDER="docker")
+
+    def step(self, name):
+        now=time.monotonic()
+        self.phases.append({"name":self.phase_name,"seconds":now-self.phase_started})
+        self.phase_name,self.phase_started=name,now
+        print(name,flush=True)
+
+    def finish_timings(self):
+        now=time.monotonic()
+        self.phases.append({"name":self.phase_name,"seconds":now-self.phase_started})
+        (self.directory/"timings.json").write_text(json.dumps({"elapsedSeconds":now-self.started,"phases":self.phases},indent=2)+"\n")
 
     def run(self, arguments, data=None, check=True, cleanup=False, label=None):
         timeout = self.budget.remaining(cleanup)
@@ -265,7 +281,7 @@ def run_demo(runner, root):
     runner.helm("template",RELEASE,root/"charts/aks-durable-agents","--namespace",NAMESPACE,"--kube-version","1.37.0","-f",preflight_values)
     local_repository = "docker.io/local/aks-durable-agents/demo-host"
     tag = local_repository + ":" + runner.cluster
-    print("1. Build a separate local demo image from the published host (not for production).",flush=True)
+    runner.step("1. Build a separate local demo image from the published host (not for production).")
     runner.run(["docker","build","--platform","linux/amd64","--build-arg","HOST_IMAGE="+images["host"],"-f",root/"ops/demo/Dockerfile","-t",tag,root])
     chart = runner.directory / "cilium.tgz"
     # A child process puts DNS, TLS and even a trickling download under the
@@ -278,7 +294,7 @@ if len(raw)>16*1024*1024 or hashlib.sha256(raw).hexdigest()!=sys.argv[2]:
 pathlib.Path(sys.argv[3]).write_bytes(raw)
 """
     runner.run([sys.executable,"-c",download,CHART_URL,CHART_SHA,chart],label="download Cilium chart (bounded, SHA-256 verified)")
-    print("2. Create an owned kind cluster and install enforcing Cilium policies.",flush=True)
+    runner.step("2. Create an owned kind cluster and install enforcing Cilium policies.")
     runner.create_cluster()
     runner.helm("install","cilium",chart,"--namespace","kube-system","--set","ipam.mode=kubernetes","--set","operator.replicas=1","--set","kubeProxyReplacement=false","--set","cgroup.autoMount.enabled=false","--set","cgroup.hostRoot=/sys/fs/cgroup","--set","envoy.enabled=false","--set","l7Proxy=false","--wait","--timeout","180s")
     cni = json.loads(runner.kube("get","daemonset/cilium","deployment/cilium-operator","--namespace","kube-system","-o","json"))
@@ -311,23 +327,29 @@ pathlib.Path(sys.argv[3]).write_bytes(raw)
         runner.kube("scale","deployment/"+name,"--replicas=1")
         runner.kube("rollout","status","deployment/"+name,"--timeout=90s")
     daemon = runner.component("pods",HOST_COMPONENT)
-    harness = runner.component("pods","harness")["metadata"]["name"]
+    harness_pod = runner.component("pods","harness")
+    harness = harness_pod["metadata"]["name"]
     pod = daemon["metadata"]["name"]
     check_effects(runner.evidence(harness),0,0)
     if runner.cli(pod,"counter")["modelHTTPCalls"] != 0:
         raise DemoError("unexpected model HTTP call before starting the session")
-    print("3. Agent prepares a fictional change and parks for approval.",flush=True)
+    runner.step("2b. NetworkPolicy controls and denials: effective policy must not over-allow.")
+    netpolicy.run_checks(runner,images["harness"],ALPINE,daemon,harness_pod)
+    check_effects(runner.evidence(harness),0,0)
+    if runner.cli(pod,"counter")["modelHTTPCalls"] != 0:
+        raise DemoError("network controls changed the model HTTP inventory")
+    runner.step("3. Agent prepares a fictional change and parks for approval.")
     parked = runner.cli(pod,"park")
     print(parked["draft"],flush=True)
     before = runner.evidence(harness)
     check_effects(before,1,0)
-    print("4. Restart the host while parked; verify the same pending change survived.",flush=True)
+    runner.step("4. Restart the host while parked; verify the same pending change survived.")
     replacement = runner.replace_host(daemon)
     pod = replacement["metadata"]["name"]
     runner.cli(pod,"check-parked")
     if runner.evidence(harness) != before or runner.cli(pod,"counter")["modelHTTPCalls"] != 1:
         raise DemoError("restart repeated inference or changed parked effects")
-    print("5. Approve, without continuing yet (CLI consent, not authenticated identity).",flush=True)
+    runner.step("5. Approve, without continuing yet (CLI consent, not authenticated identity).")
     confirm("approve",sys.stdin,runner.budget)
     runner.cli(pod,"approve")
     if runner.evidence(harness) != before:
@@ -336,18 +358,18 @@ pathlib.Path(sys.argv[3]).write_bytes(raw)
     confirm("continue",sys.stdin,runner.budget)
     runner.cli(pod,"continue")
     check_effects(runner.evidence(harness),1,1)
-    print("6. Exactly one fictional publication and receipt; stop all writers.",flush=True)
+    runner.step("6. Exactly one fictional publication and receipt; stop all writers.")
     for name in deployments.values():
         runner.kube("scale","deployment/"+name,"--replicas=0")
     runner.kube("wait","--for=delete","pods","-l","app.kubernetes.io/instance="+RELEASE,"--timeout=60s")
-    print("7. DEMO-ONLY seal: checkpoint stopped stores, preserve logical head/counters, then make no more writes. Real hosts do not do this.",flush=True)
+    runner.step("7. DEMO-ONLY seal: checkpoint stopped stores, preserve logical head/counters, then make no more writes. Real hosts do not do this.")
     runner.apply(offline_pod("seal",local_repository+"@"+digest))
     runner.kube("wait","--for=jsonpath={.status.phase}=Succeeded","pod/seal","--timeout=60s")
     sealed = json.loads(runner.kube("logs","seal"))
     if sealed.get("sealed") is not True or sealed.get("session") != parked["session"]:
         raise DemoError("sealing did not preserve the completed session")
     runner.kube("delete","pod","seal","--wait=true")
-    print("8. Replay once from a read-only mount: no model or tool calls.",flush=True)
+    runner.step("8. Replay once from a read-only mount: no model or tool calls.")
     runner.apply(offline_pod("verify",local_repository+"@"+digest))
     runner.kube("wait","--for=jsonpath={.status.phase}=Succeeded","pod/verify","--timeout=60s")
     proof = json.loads(runner.kube("logs","verify"))
@@ -390,13 +412,18 @@ def main():
             signal.signal(sig,signal.SIG_IGN)
         try:
             if runner.owned:
-                print("9. Delete only this demo's owned kind cluster.",flush=True)
+                runner.step("9. Delete only this demo's owned kind cluster.")
             runner.cleanup()
         except (DemoError,OSError) as error:
             failed = True
             print(f"CLEANUP FAILED: {error}\nRemove only this owned cluster: KIND_EXPERIMENTAL_PROVIDER=docker kind delete cluster --name {runner.cluster} --kubeconfig {runner.kubeconfig}",file=sys.stderr)
         for sig,handler in previous.items():
             signal.signal(sig,handler)
+        try:
+            runner.finish_timings()
+        except OSError as error:
+            failed = True
+            print(f"TIMING RECORD FAILED: {error}",file=sys.stderr)
         print(f"Elapsed including build/bootstrap/cleanup: {time.monotonic()-start:.1f}s. Evidence: {directory}",flush=True)
     if not failed:
         print("PASS: demo complete and owned cluster removed.",flush=True)

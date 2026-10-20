@@ -19,6 +19,8 @@ import (
 	"github.com/agent-primitives/sessions/eventlog"
 	"github.com/agent-primitives/sessions/wire"
 	"google.golang.org/protobuf/proto"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 type artifactDigest struct {
@@ -248,6 +250,14 @@ func journalBytes(path string) ([]string, error) {
 	}
 	return out, nil
 }
+func explainReadOnlyReplayError(err error) error {
+	var cause *sqlite.Error
+	if errors.As(err, &cause) && cause.Code()&0xff == sqlite3.SQLITE_CANTOPEN {
+		return fmt.Errorf("read-only SQLite replay cannot open a store; if WAL sidecars are unavailable on the read-only mount, inspect a backup restored to writable scratch; preserve -wal/-shm sidecars and do not modify live stores: %w", err)
+	}
+	return err
+}
+
 func verifyJournal(ctx context.Context, path, instructions, uid string) (replayProof, error) {
 	return verifyJournalScenario(ctx, path, instructions, uid, "v1")
 }
@@ -255,6 +265,7 @@ func verifyJournalScenario(ctx context.Context, path, instructions, uid, scenari
 	proof.SessionUID = uid
 	defer func() {
 		if err != nil {
+			err = explainReadOnlyReplayError(err)
 			proof.Completed = false
 			proof.Error = err.Error()
 		}
