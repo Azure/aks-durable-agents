@@ -56,6 +56,8 @@ jobs:
         run: python3 -m pip install -r charts/aks-durable-agents/tests/requirements.txt
       - name: Image pin and workflow tests
         run: python3 -B -m unittest discover -s ops/images -p 'test_*.py'
+      - name: Demo runner unit and chart contract tests
+        run: python3 -B -m unittest discover -s ops/demo -p 'test_*.py'
       - name: Backup unit tests
         run: python3 -B -m unittest discover -s ops/backup -p 'test_*.py'
       - name: Native producer unit tests
