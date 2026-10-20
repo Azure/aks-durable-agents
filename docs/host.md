@@ -24,6 +24,8 @@ What the host enforces:
   allowlist denies every approval, including denial decisions. This check occurs
   before session lookup, disclosure or journal mutation. Request `IdentityRef`
   remains untrusted provenance; this host does not claim verified audit attribution.
+  Startup refuses an approver whose issuer is not exactly `identity.issuer` or,
+  with `oid`, whose subject is not a lowercase GUID: it could never match.
 - `-auth-mode=off` disables authentication and the approval gate for trusted-network
   local development only, with an explicit startup warning. Required mode also
   warns that owner isolation and durable policy activation are absent.
@@ -65,7 +67,7 @@ Example operator-managed auth JSON (illustrative IDs; **no tokens or secrets**):
   },
   "approvers": [{
     "issuer": "https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0",
-    "subject": "expected-resource-tenant-user-oid"
+    "subject": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
   }]
 }
 ```

@@ -157,7 +157,7 @@ func TestEntraSigningKeyMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if caller.Identity.Issuer != issuer || caller.Identity.Subject != "immutable-object-id" || !caller.ValidUntil.Equal(f.clock().Add(time.Hour)) {
+	if caller.Identity.Issuer != issuer || caller.Identity.Subject != objectID || !caller.ValidUntil.Equal(f.clock().Add(time.Hour)) {
 		t.Fatalf("optional key metadata changed verified caller: %+v", caller)
 	}
 }

@@ -222,6 +222,31 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "required"
+              },
+              "subjectClaim": {
+                "const": "oid"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "approvers": {
+                "items": {
+                  "properties": {
+                    "subject": {
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       ]
     },

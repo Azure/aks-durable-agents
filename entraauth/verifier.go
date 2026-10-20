@@ -197,11 +197,30 @@ func (v *Verifier) Verify(ctx context.Context) (authn.VerifiedCaller, error) {
 	if claims["iss"] != v.config.Issuer || claims["tid"] != v.config.TenantID ||
 		!stringClaimEquals(claims["aud"], v.config.Audience) || !v.clients[stringClaim(claims["azp"])] ||
 		claims["ver"] != "2.0" || (idtypOK && idtyp != "user") ||
-		!hasScope(claims["scp"], v.config.RequiredScope) || !subjectOK || !plainWord(subject) ||
+		!hasScope(claims["scp"], v.config.RequiredScope) || !subjectOK || !validSubject(v.config.SubjectClaim, subject) ||
 		!expOK || !nbfOK || !exp.After(now) || nbf.After(now.Add(v.config.ClockSkew)) {
 		return authn.VerifiedCaller{}, failure("claims")
 	}
 	return authn.VerifiedCaller{Identity: api.CallerIdentity{Issuer: v.config.Issuer, Subject: subject}, ValidUntil: exp}, nil
+}
+
+// ValidIdentity reports whether id has the exact issuer and subject form that a
+// Verifier built from c can return: the configured Issuer and, for the default
+// oid subject, a lowercase GUID. Hosts use it to refuse allowlist entries that
+// could never match a verified caller. It does not validate c; New does.
+func (c Config) ValidIdentity(id api.CallerIdentity) bool {
+	return id.Issuer == c.Issuer && validSubject(c.SubjectClaim, id.Subject)
+}
+
+// Entra object IDs are lowercase GUIDs; sub is an opaque pairwise value.
+func validSubject(claim, s string) bool {
+	switch claim {
+	case "", "oid":
+		return guid.MatchString(s)
+	case "sub":
+		return plainWord(s)
+	}
+	return false
 }
 func stringClaim(v any) string                  { s, _ := v.(string); return s }
 func stringClaimEquals(v any, want string) bool { s, ok := v.(string); return ok && s == want }

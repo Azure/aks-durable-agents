@@ -47,6 +47,8 @@ values as one compatible set. Do not reset a ledger to adopt new example values.
 - Create the Entra application/permission configuration separately. Required
   auth needs `tenantID`, exact tenant `issuer`, GUID `audience`, nonempty
   `allowedClientIDs`, `requiredScope`, and explicit `{issuer, subject}` approvers.
+  Each approver `issuer` must equal `auth.issuer` exactly; with `subjectClaim: oid`
+  each `subject` must be a lowercase object ID GUID.
   Supply an existing `auth.tlsSecretName` with `tls.crt`/`tls.key` readable by
   UID65532. No credential material belongs in values; the chart creates no Secret.
   Required auth is **admission-only**, not sessions resource enforcement or

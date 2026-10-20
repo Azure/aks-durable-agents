@@ -2,6 +2,8 @@ package host
 
 import (
 	"encoding/json"
+	"github.com/Azure/aks-durable-agents/entraauth"
+	"github.com/agent-primitives/sessions/api"
 	"github.com/agent-primitives/sessions/authn"
 	"testing"
 )
@@ -89,6 +91,53 @@ func TestConfigBoundary(t *testing.T) {
 			tc.change(&c)
 			if err := c.validate(); err == nil {
 				t.Fatal("unsafe configuration admitted")
+			}
+		})
+	}
+}
+
+// Required-mode approvers must match what the verifier emits; a mismatch would
+// otherwise pass startup and silently deny every approval.
+func TestApproverIdentityBoundary(t *testing.T) {
+	const tenant, oid = "11111111-2222-3333-4444-555555555555", "0a1b2c3d-4e5f-6789-abcd-ef0123456789"
+	good := Config{Addr: "127.0.0.1:0", HealthAddr: "127.0.0.1:0", Journal: ":memory:", Mode: authn.Required, TLSCert: "cert", TLSKey: "key",
+		Harnesses: map[string]string{"release-notes": "127.0.0.1:9000"},
+		Identity:  entraauth.Config{TenantID: tenant, Issuer: fixtureIssuer, Audience: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", AllowedClientIDs: []string{"12345678-1234-1234-1234-123456789abc"}, RequiredScope: "sessions.access"},
+		Approvers: []api.CallerIdentity{{Issuer: fixtureIssuer, Subject: oid}}}
+	for _, tc := range []struct {
+		name   string
+		change func(*Config)
+		ok     bool
+	}{
+		{"matching oid", func(*Config) {}, true},
+		{"matching explicit oid", func(c *Config) { c.Identity.SubjectClaim = "oid" }, true},
+		{"sub pairwise subject", func(c *Config) {
+			c.Identity.SubjectClaim = "sub"
+			c.Approvers = []api.CallerIdentity{{Issuer: fixtureIssuer, Subject: "pairwise-subject"}}
+		}, true},
+		{"off mode keeps existing check", func(c *Config) {
+			c.Mode = authn.Off
+			c.Approvers = []api.CallerIdentity{{Issuer: "https://sts.windows.net/" + tenant + "/", Subject: "user@contoso.example"}}
+		}, true},
+		{"v1 issuer", func(c *Config) { c.Approvers[0].Issuer = "https://sts.windows.net/" + tenant + "/" }, false},
+		{"trailing slash issuer", func(c *Config) { c.Approvers[0].Issuer = fixtureIssuer + "/" }, false},
+		{"UPN subject", func(c *Config) { c.Approvers[0].Subject = "user@contoso.example" }, false},
+		{"uppercase oid", func(c *Config) { c.Approvers[0].Subject = "0A1B2C3D-4E5F-6789-ABCD-EF0123456789" }, false},
+		{"one bad of two", func(c *Config) {
+			c.Approvers = append(c.Approvers, api.CallerIdentity{Issuer: fixtureIssuer, Subject: "../x@y"})
+		}, false},
+		{"sub mode wrong issuer", func(c *Config) {
+			c.Identity.SubjectClaim = "sub"
+			c.Approvers[0].Issuer = fixtureIssuer + "/"
+		}, false},
+		{"incomplete", func(c *Config) { c.Approvers[0].Subject = "" }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := good
+			c.Approvers = append([]api.CallerIdentity(nil), good.Approvers...)
+			tc.change(&c)
+			if err := c.validate(); (err == nil) != tc.ok {
+				t.Fatalf("validate() = %v, want ok=%v", err, tc.ok)
 			}
 		})
 	}

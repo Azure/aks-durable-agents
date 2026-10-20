@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agent-primitives/sessions/api"
 	"github.com/agent-primitives/sessions/authn"
 	"github.com/golang-jwt/jwt/v5"
 	"google.golang.org/grpc/metadata"
@@ -31,6 +32,7 @@ const (
 	keysPath      = "/" + tenant + "/discovery/v2.0/keys"
 	keysURL       = "https://login.microsoftonline.com" + keysPath
 	secret        = "never-echo-token-or-provider-detail"
+	objectID      = "0a1b2c3d-4e5f-6789-abcd-ef0123456789"
 )
 
 var (
@@ -139,7 +141,7 @@ func (f *trustFixture) verifier(t *testing.T, modify func(*Config)) *Verifier {
 }
 func claims(now time.Time) jwt.MapClaims {
 	return jwt.MapClaims{"iss": issuer, "tid": tenant, "aud": audience, "azp": clientID, "ver": "2.0",
-		"scp": "other sessions.access extra", "oid": "immutable-object-id", "sub": "pairwise-subject",
+		"scp": "other sessions.access extra", "oid": objectID, "sub": "pairwise-subject",
 		"exp": now.Add(time.Hour).Unix(), "nbf": now.Add(-time.Minute).Unix()}
 }
 func signed(t *testing.T, c jwt.MapClaims, kid string, key *rsa.PrivateKey, headers map[string]any) string {
@@ -185,7 +187,7 @@ func TestVerifyClaims(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	if caller.Identity.Issuer != issuer || caller.Identity.Subject != "immutable-object-id" || !caller.ValidUntil.Equal(f.clock().Add(time.Hour)) {
+	if caller.Identity.Issuer != issuer || caller.Identity.Subject != objectID || !caller.ValidUntil.Equal(f.clock().Add(time.Hour)) {
 		t.Errorf("wrong verified caller: %+v", caller)
 	}
 	t.Run("explicit user token", func(t *testing.T) {
@@ -195,7 +197,7 @@ func TestVerifyClaims(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if caller.Identity.Issuer != issuer || caller.Identity.Subject != "immutable-object-id" || !caller.ValidUntil.Equal(f.clock().Add(time.Hour)) {
+		if caller.Identity.Issuer != issuer || caller.Identity.Subject != objectID || !caller.ValidUntil.Equal(f.clock().Add(time.Hour)) {
 			t.Errorf("wrong verified caller: %+v", caller)
 		}
 	})
@@ -227,6 +229,10 @@ func TestVerifyClaims(t *testing.T) {
 		{"missing oid no fallback", func(c jwt.MapClaims) { delete(c, "oid"); c["email"] = secret; c["upn"] = secret }},
 		{"empty oid", func(c jwt.MapClaims) { c["oid"] = "" }},
 		{"wrong subject type", func(c jwt.MapClaims) { c["oid"] = 123 }},
+		{"oid path and UPN", func(c jwt.MapClaims) { c["oid"] = "../x@y" }},
+		{"oid UPN", func(c jwt.MapClaims) { c["oid"] = "user@contoso.example" }},
+		{"oid uppercase GUID", func(c jwt.MapClaims) { c["oid"] = strings.ToUpper(objectID) }},
+		{"oid braced GUID", func(c jwt.MapClaims) { c["oid"] = "{" + objectID + "}" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := claims(f.clock())
@@ -293,6 +299,7 @@ func TestSubjectAndSkew(t *testing.T) {
 	v := f.verifier(t, func(c *Config) { c.SubjectClaim = "sub"; c.ClockSkew = 2 * time.Minute })
 	c := claims(f.clock())
 	c["nbf"] = f.clock().Add(2 * time.Minute).Unix()
+	c["oid"] = "not-consulted"
 	caller, err := v.Verify(incoming(signed(t, c, "initial", key, nil)))
 	if err != nil || caller.Identity.Subject != "pairwise-subject" {
 		t.Fatalf("sub/skew: %+v %v", caller, err)
@@ -308,6 +315,40 @@ func TestSubjectAndSkew(t *testing.T) {
 	c["nbf"] = f.clock().Add(2*time.Minute + time.Second).Unix()
 	_, err = v.Verify(incoming(signed(t, c, "initial", key, nil)))
 	safeFailure(t, err)
+}
+
+// Allowlist entries must have the exact form Verify returns, or they never match.
+func TestValidIdentity(t *testing.T) {
+	c := Config{TenantID: tenant, Issuer: issuer, Audience: audience, AllowedClientIDs: []string{clientID}, RequiredScope: "sessions.access"}
+	sub := c
+	sub.SubjectClaim = "sub"
+	for _, tc := range []struct {
+		name     string
+		config   Config
+		identity api.CallerIdentity
+		want     bool
+	}{
+		{"default oid GUID", c, api.CallerIdentity{Issuer: issuer, Subject: objectID}, true},
+		{"explicit oid GUID", func() Config { o := c; o.SubjectClaim = "oid"; return o }(), api.CallerIdentity{Issuer: issuer, Subject: objectID}, true},
+		{"v1 issuer", c, api.CallerIdentity{Issuer: "https://sts.windows.net/" + tenant + "/", Subject: objectID}, false},
+		{"trailing slash issuer", c, api.CallerIdentity{Issuer: issuer + "/", Subject: objectID}, false},
+		{"tenant alias issuer", c, api.CallerIdentity{Issuer: "https://login.microsoftonline.com/organizations/v2.0", Subject: objectID}, false},
+		{"empty issuer", c, api.CallerIdentity{Subject: objectID}, false},
+		{"oid UPN", c, api.CallerIdentity{Issuer: issuer, Subject: "user@contoso.example"}, false},
+		{"oid path", c, api.CallerIdentity{Issuer: issuer, Subject: "../x@y"}, false},
+		{"oid uppercase GUID", c, api.CallerIdentity{Issuer: issuer, Subject: strings.ToUpper(objectID)}, false},
+		{"oid empty", c, api.CallerIdentity{Issuer: issuer}, false},
+		{"sub pairwise", sub, api.CallerIdentity{Issuer: issuer, Subject: "pairwise-subject"}, true},
+		{"sub whitespace", sub, api.CallerIdentity{Issuer: issuer, Subject: "pairwise subject"}, false},
+		{"sub v1 issuer", sub, api.CallerIdentity{Issuer: "https://sts.windows.net/" + tenant + "/", Subject: "pairwise-subject"}, false},
+		{"unsupported claim", func() Config { o := c; o.SubjectClaim = "email"; return o }(), api.CallerIdentity{Issuer: issuer, Subject: objectID}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.config.ValidIdentity(tc.identity); got != tc.want {
+				t.Fatalf("ValidIdentity = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }
 
 // Invalid trust config must fail before network I/O; client allowlists are immutable snapshots.
