@@ -33,7 +33,7 @@ type Config struct {
 	AllowedClientIDs           []string
 	RequiredScope              string
 	// SubjectClaim is oid by default; only oid and sub are supported. An oid
-	// value must be a lowercase GUID; a sub value must be nonempty with no
+	// value must be a lowercase GUID; a sub value must be nonempty with no ASCII
 	// whitespace or control characters. Selecting sub changes ownership mapping
 	// and requires an ownership/policy migration.
 	SubjectClaim string
@@ -214,7 +214,7 @@ func (c Config) ValidIdentity(id api.CallerIdentity) bool {
 }
 
 // validSubject accepts only a lowercase GUID for oid, and for sub a nonempty
-// value with no whitespace or control characters.
+// value with no ASCII whitespace or control characters.
 func validSubject(claim, s string) bool {
 	switch claim {
 	case "", "oid":

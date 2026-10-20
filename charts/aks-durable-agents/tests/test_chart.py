@@ -149,7 +149,7 @@ class ChartTests(unittest.TestCase):
 
     def test_approver_identity_refusals(self):
         # Approvers must match the verifier's issuer and subject form: a lowercase
-        # GUID for oid, no whitespace or control characters for sub.
+        # GUID for oid, no ASCII whitespace or control characters for sub.
         issuer = self.defaults["auth"]["issuer"]
         tenant = self.defaults["auth"]["tenantID"]
         oid = "abcdef01-2345-6789-abcd-ef0123456789"

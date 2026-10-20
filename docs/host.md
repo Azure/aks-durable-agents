@@ -25,11 +25,12 @@ What the host enforces:
   before session lookup, disclosure or journal mutation. Request `IdentityRef`
   remains untrusted provenance; this host does not claim verified audit attribution.
   Startup refuses an approver whose issuer is not exactly `identity.issuer`, whose
-  `oid` subject is not a lowercase GUID, or whose `sub` subject has whitespace or
-  control characters: it could never match. **Upgrade note:** such entries used
-  to load and only deny `Approve`; now they stop a required-mode host at startup.
-  Fix the entry's `issuer` or lowercase `oid` to match the approver's token; do
-  not switch `subjectClaim` to `sub`, which changes ownership keys.
+  `oid` subject is not a lowercase GUID, or whose `sub` subject has ASCII
+  whitespace or control characters: it could never match. **Upgrade note:** such
+  entries used to load and only deny `Approve`; now they stop a required-mode host
+  at startup. Fix the entry's `issuer` or `subject` (lowercase GUID for `oid`) to
+  match the approver's token; do not switch `subjectClaim` to `sub`, which changes
+  ownership keys.
 - `-auth-mode=off` disables authentication and the approval gate for trusted-network
   local development only, with an explicit startup warning. Required mode also
   warns that owner isolation and durable policy activation are absent.
