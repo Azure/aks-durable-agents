@@ -31,3 +31,11 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Python test environments and bytecode
+__pycache__/
+*.py[cod]
+.venv/
+
+# Locally built host executable
+/host

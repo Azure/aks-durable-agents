@@ -1,0 +1,26 @@
+{{- $name := include "agents.name" . -}}
+{{- $pricing := .Values.model.policy.pricing -}}
+{{- $policy := dict "version" 1 "runID" .Values.model.policy.runID "ledgerPath" "/data/real-attempts.db" "deployment" .Values.model.deployment "pricing" $pricing -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-model-policy
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "agents.labels" . | nindent 4 }}
+immutable: true
+data:
+  model-policy.json: {{ $policy | toJson | quote }}
+{{- if eq .Values.auth.mode "required" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-auth
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "agents.labels" . | nindent 4 }}
+immutable: true
+data:
+  auth.json: {{ dict "identity" (dict "tenantID" .Values.auth.tenantID "issuer" .Values.auth.issuer "audience" .Values.auth.audience "allowedClientIDs" .Values.auth.allowedClientIDs "requiredScope" .Values.auth.requiredScope "subjectClaim" .Values.auth.subjectClaim) "approvers" .Values.auth.approvers | toJson | quote }}
+{{- end }}

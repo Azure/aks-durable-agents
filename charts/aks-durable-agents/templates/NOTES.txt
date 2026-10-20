@@ -1,0 +1,22 @@
+POLICY-FIRST INSTALLATION REQUIRED — no hooks perform this gate.
+
+Workloads enabled: {{ .Values.workloads.enabled }}
+NetworkPolicies enabled: {{ .Values.networkPolicy.enabled }}
+
+Install/upgrade with workloads.enabled=false first (zero replicas). Apply and verify
+NetworkPolicies BEFORE scaling workloads: read back all three release policies,
+inspect additive policies, and independently verify Cilium enforcement. Only then
+upgrade the SAME release with workloads.enabled=true. See README for commands.
+{{ if not .Values.networkPolicy.enabled }}
+WARNING: Chart policies are disabled. Equivalent operator-managed isolation must
+already be applied and verified before enabling workloads.
+{{ end }}
+Stop ALL previous writers before sharing a PVC. A new run needs a separately
+prepared subtree; preserve the previous journal, ledger, receipts and policy.
+No bootstrap/migration or Secret/cloud provisioning is performed by this chart.
+{{ if .Values.harness.native.enabled }}
+Host image must support /host health-probe. Verify the digest.
+{{ else }}
+Host image must contain /host and /session-fixture (network-probe). Verify the digest.
+{{ end }}
+Sessions API and health are loopback-only; there is no sessions Service/Ingress.

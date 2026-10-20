@@ -1,0 +1,203 @@
+{{- include "agents.validateNative" . -}}
+{{- $root := . -}}
+{{- $name := include "agents.name" . -}}
+{{- range $role := list "harness" "host" }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}-{{ $role }}
+  namespace: {{ $root.Release.Namespace | quote }}
+  labels:
+    {{- include "agents.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $role }}
+spec:
+  replicas: {{ ternary 1 0 $root.Values.workloads.enabled }}
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 1
+  progressDeadlineSeconds: 300
+  selector:
+    matchLabels:
+      {{- include "agents.labels" $root | nindent 6 }}
+      app.kubernetes.io/component: {{ $role }}
+  template:
+    metadata:
+      labels:
+        {{- include "agents.labels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $role }}
+        {{- if eq $role "host" }}
+        azure.workload.identity/use: "true"
+        {{- end }}
+    spec:
+      serviceAccountName: {{ $name }}-{{ $role }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      nodeSelector:
+        kubernetes.io/os: linux
+        kubernetes.io/arch: amd64
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsUser: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if eq $role "host" }}
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "agents.labels" $root | nindent 18 }}
+                  app.kubernetes.io/component: harness
+              namespaces: [{{ $root.Release.Namespace | quote }}]
+              topologyKey: kubernetes.io/hostname
+      {{- end }}
+      containers:
+        {{- if eq $role "host" }}
+        - name: daemon
+          image: {{ printf "%s@%s" $root.Values.image.host.repository $root.Values.image.host.digest | quote }}
+          imagePullPolicy: IfNotPresent
+          command: [/host]
+          args:
+            - -addr=127.0.0.1:8080
+            - -health-addr=127.0.0.1:8081
+            {{- if $root.Values.harness.native.enabled }}
+            {{- range $root.Values.harness.native.entries }}
+            - {{ printf "-harness-service=%s" (include "agents.nativeService" (dict "root" $root "port" .port)) | quote }}
+            - {{ printf "-harness=%s=%s" .id (include "agents.nativeService" (dict "root" $root "port" .port)) | quote }}
+            {{- end }}
+            {{- else }}
+            - {{ printf "-harness-service=%s" (include "agents.service" $root) | quote }}
+            - {{ printf "-harness=%s=%s" $root.Values.harness.name (include "agents.service" $root) | quote }}
+            - -peer-node-file=/data/fixture-node.json
+            - -node-name=$(NODE_NAME)
+            {{- end }}
+            - -model-policy=/config/model-policy.json
+            - {{ printf "-auth-mode=%s" $root.Values.auth.mode | quote }}
+            - -journal=/data/journal.db
+            {{- if not $root.Values.harness.native.enabled }}
+            - -tool-executors=/data/tools.json
+            {{- end }}
+            - {{ printf "-model=%s" $root.Values.model.deployment | quote }}
+            - {{ printf "-model-base-url=%s" $root.Values.model.endpoint | quote }}
+            - {{ printf "-model-scope=%s" $root.Values.model.scope | quote }}
+            {{- if eq $root.Values.auth.mode "required" }}
+            - -auth-config=/auth/auth.json
+            - -tls-cert=/tls/tls.crt
+            - -tls-key=/tls/tls.key
+            {{- end }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          readinessProbe:
+            exec:
+              {{- if $root.Values.harness.native.enabled }}
+              command: [/host, health-probe, "127.0.0.1:8081"]
+              {{- else }}
+              command: [/session-fixture, network-probe, --address, "127.0.0.1:8081", --expect, allowed]
+              {{- end }}
+            periodSeconds: 5
+            timeoutSeconds: 4
+          securityContext:
+            {{- include "agents.security" $root | nindent 12 }}
+          resources:
+            {{- include "agents.resources" $root | nindent 12 }}
+          volumeMounts:
+            {{- include "agents.mounts" (dict "root" $root "container" "daemon") | nindent 12 }}
+            - name: model-policy
+              mountPath: /config
+              readOnly: true
+            {{- if eq $root.Values.auth.mode "required" }}
+            - name: auth
+              mountPath: /auth
+              readOnly: true
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            {{- end }}
+        {{- else if $root.Values.harness.native.enabled }}
+        - name: producer
+          image: {{ printf "%s@%s" $root.Values.image.harness.repository $root.Values.image.harness.digest | quote }}
+          imagePullPolicy: IfNotPresent
+          command: [/usr/local/bin/canvas-harness]
+          args: [serve, -inventory, {{ $root.Values.harness.native.inventory | quote }}, -ready-listen, "0.0.0.0:8081"]
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            periodSeconds: 5
+            timeoutSeconds: 4
+          securityContext:
+            {{- include "agents.security" $root | nindent 12 }}
+          resources:
+            {{- include "agents.resources" $root | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data/producers
+              subPath: {{ printf "%s/producers" $root.Values.persistence.subPath | quote }}
+              readOnly: true
+            - name: data
+              mountPath: /tmp
+              subPath: {{ printf "%s/tmp-producer" $root.Values.persistence.subPath | quote }}
+        {{- else }}
+        {{- range $container := list "fixture-harness" "executor" "fake" }}
+        {{- $config := $root.Values.harness -}}
+        {{- if eq $container "executor" }}{{ $config = $root.Values.harness.executor }}{{ end -}}
+        {{- if eq $container "fake" }}{{ $config = $root.Values.harness.fake }}{{ end }}
+        - name: {{ $container }}
+          image: {{ printf "%s@%s" $root.Values.image.harness.repository $root.Values.image.harness.digest | quote }}
+          imagePullPolicy: IfNotPresent
+          command: [{{ $config.command | quote }}]
+          args: {{ $config.args | toJson }}
+          {{- if eq $container "fixture-harness" }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+          readinessProbe:
+            exec:
+              command: [/session-fixture, network-probe, --address, "127.0.0.1:9000", --expect, allowed]
+            periodSeconds: 5
+            timeoutSeconds: 4
+          {{- end }}
+          securityContext:
+            {{- include "agents.security" $root | nindent 12 }}
+          resources:
+            {{- include "agents.resources" $root | nindent 12 }}
+          volumeMounts:
+            {{- include "agents.mounts" (dict "root" $root "container" $container) | nindent 12 }}
+        {{- end }}
+        {{- end }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "agents.claim" $root | quote }}
+        {{- if eq $role "host" }}
+        - name: model-policy
+          configMap:
+            name: {{ $name }}-model-policy
+            defaultMode: 0444
+        {{- if eq $root.Values.auth.mode "required" }}
+        - name: auth
+          configMap:
+            name: {{ $name }}-auth
+            defaultMode: 0444
+        - name: tls
+          secret:
+            secretName: {{ $root.Values.auth.tlsSecretName | quote }}
+            defaultMode: 0444
+        {{- end }}
+        {{- end }}
+{{- end }}

@@ -1,0 +1,448 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "image",
+    "workloads",
+    "auth",
+    "workloadIdentity",
+    "model",
+    "persistence",
+    "harness",
+    "networkPolicy"
+  ],
+  "properties": {
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "harness"
+      ],
+      "properties": {
+        "host": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repository",
+            "digest",
+            "includesHealthProbe"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9]+([._/-][a-z0-9]+)*$",
+              "description": "Registry/repository only, no tag or digest suffix."
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "includesHealthProbe": {
+              "type": "boolean",
+              "const": true,
+              "description": "Operator verifies /host plus the profile-specific probe: legacy /session-fixture network-probe, native /host health-probe. Schema checks the declaration, not image contents."
+            }
+          }
+        },
+        "harness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repository",
+            "digest"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9]+([._/-][a-z0-9]+)*$",
+              "description": "Registry/repository only, no tag or digest suffix."
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "workloads": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "trustedNetwork",
+        "tenantID",
+        "issuer",
+        "audience",
+        "allowedClientIDs",
+        "requiredScope",
+        "subjectClaim",
+        "approvers",
+        "tlsSecretName"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "required",
+            "off"
+          ]
+        },
+        "trustedNetwork": {
+          "type": "boolean"
+        },
+        "tenantID": {
+          "type": "string"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "audience": {
+          "type": "string"
+        },
+        "allowedClientIDs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "not": {
+              "const": "00000000-0000-0000-0000-000000000000"
+            }
+          }
+        },
+        "requiredScope": {
+          "type": "string"
+        },
+        "subjectClaim": {
+          "enum": [
+            "oid",
+            "sub"
+          ]
+        },
+        "approvers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "issuer",
+              "subject"
+            ],
+            "properties": {
+              "issuer": {
+                "type": "string",
+                "pattern": "^https://[^\\s?#]+$"
+              },
+              "subject": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              }
+            }
+          }
+        },
+        "tlsSecretName": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+          "maxLength": 253
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "off"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "trustedNetwork": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "required"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "tenantID": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "not": {
+                  "const": "00000000-0000-0000-0000-000000000000"
+                }
+              },
+              "issuer": {
+                "type": "string",
+                "pattern": "^https://login\\.microsoftonline\\.com/[0-9a-f-]{36}/v2\\.0$"
+              },
+              "audience": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "not": {
+                  "const": "00000000-0000-0000-0000-000000000000"
+                }
+              },
+              "allowedClientIDs": {
+                "minItems": 1
+              },
+              "approvers": {
+                "minItems": 1
+              },
+              "requiredScope": {
+                "type": "string",
+                "pattern": "^[^\\s]+$"
+              },
+              "tlsSecretName": {
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "workloadIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clientID"
+      ],
+      "properties": {
+        "clientID": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "endpoint",
+        "deployment",
+        "scope",
+        "policy"
+      ],
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "pattern": "^https://[a-zA-Z0-9.-]+/openai/v1/$"
+        },
+        "deployment": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "scope": {
+          "type": "string",
+          "pattern": "^https://[^\\s]+/\\.default$"
+        },
+        "policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runID",
+            "pricing"
+          ],
+          "properties": {
+            "runID": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            },
+            "pricing": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "inputMicroUSDPerMillionTokens",
+                "outputMicroUSDPerMillionTokens",
+                "extraMicroUSDPerCall",
+                "source",
+                "asOf"
+              ],
+              "properties": {
+                "inputMicroUSDPerMillionTokens": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "outputMicroUSDPerMillionTokens": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "extraMicroUSDPerCall": {
+                  "type": "integer",
+                  "const": 0
+                },
+                "source": {
+                  "type": "string",
+                  "pattern": "^https://[^\\s?#]+$"
+                },
+                "asOf": {
+                  "type": "string",
+                  "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "existingClaim",
+        "size",
+        "storageClass",
+        "subPath"
+      ],
+      "properties": {
+        "existingClaim": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+          "maxLength": 253
+        },
+        "size": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*(Mi|Gi|Ti)$"
+        },
+        "storageClass": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"
+        },
+        "subPath": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"
+        }
+      }
+    },
+    "harness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "command",
+        "args",
+        "executor",
+        "fake"
+      ],
+      "properties": {
+        "native": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "inventory", "entries"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "inventory": {"const": "/data/producers/inventory.json"},
+            "entries": {
+              "type": "array", "maxItems": 32, "uniqueItems": true,
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["id", "port"],
+                "properties": {
+                  "id": {"type": "string", "pattern": "^bundle-v4-[0-9a-f]{64}$"},
+                  "port": {"type": "integer", "minimum": 1, "maximum": 65535, "not": {"const": 8081}}
+                }
+              }
+            }
+          }
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+        },
+        "command": {
+          "type": "string",
+          "pattern": "^/[a-zA-Z0-9_/-]+$"
+        },
+        "args": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "executor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "command",
+            "args"
+          ],
+          "properties": {
+            "command": {
+              "type": "string",
+              "pattern": "^/[a-zA-Z0-9_/-]+$"
+            },
+            "args": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "fake": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "command",
+            "args"
+          ],
+          "properties": {
+            "command": {
+              "type": "string",
+              "pattern": "^/[a-zA-Z0-9_/-]+$"
+            },
+            "args": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

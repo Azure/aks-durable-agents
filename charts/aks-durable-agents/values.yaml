@@ -1,0 +1,81 @@
+# Deployment inputs are deliberately empty: bare lint/template must refuse.
+image:
+  host:
+    repository: ""
+    digest: ""
+    # Operator attestation: legacy /session-fixture probe, or native /host health-probe.
+    includesHealthProbe: false
+  harness:
+    repository: ""
+    digest: ""
+
+# Install dormant. Apply/verify policies before enabling workloads (see README).
+workloads:
+  enabled: false
+
+auth:
+  mode: required
+  trustedNetwork: false
+  tenantID: ""
+  issuer: ""
+  audience: ""
+  allowedClientIDs: []
+  requiredScope: ""
+  subjectClaim: oid
+  approvers: []
+  # Existing Secret with tls.crt and tls.key; never put key material in values.
+  tlsSecretName: ""
+
+workloadIdentity:
+  clientID: ""
+
+model:
+  endpoint: ""
+  deployment: ""
+  scope: https://ai.azure.com/.default
+  policy:
+    runID: ""
+    pricing:
+      inputMicroUSDPerMillionTokens: 0
+      outputMicroUSDPerMillionTokens: 0
+      extraMicroUSDPerCall: 0
+      source: ""
+      asOf: ""
+
+persistence:
+  existingClaim: ""
+  size: 1Gi
+  storageClass: managed-csi
+  # Must be prepared separately; never reuse a prior run's subtree for a new run.
+  subPath: sessions-v1
+
+harness:
+  # Opt-in native producer profile. Entries must match the prepared inventory.
+  native:
+    enabled: false
+    inventory: /data/producers/inventory.json
+    entries: []
+  name: release-notes
+  command: /session-fixture
+  args:
+    - harness
+    - --scenario
+    - v2
+    - --addr
+    - 0.0.0.0:9000
+    - --instructions
+    - /data/instructions.txt
+    - --node-name
+    - $(NODE_NAME)
+    - --pod-uid
+    - $(POD_UID)
+  executor:
+    command: /session-fixture
+    args: [executor, --scenario, v2, --socket, /data/publish.sock, --database, /data/publications.db]
+  # Reference inert fake is only reachable on the harness pod's own loopback.
+  fake:
+    command: /session-fixture
+    args: [fake, --addr, "127.0.0.1:9001", --ledger, /data/fake-calls.jsonl]
+
+networkPolicy:
+  enabled: true
