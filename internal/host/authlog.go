@@ -78,6 +78,13 @@ func (l *loggingVerifier) failed(reason string) {
 	suppressed := r.suppressed
 	r.next, r.suppressed = now.Add(authLogInterval), 0
 	l.mu.Unlock()
+	if reason == "canceled" || reason == "deadline" {
+		// The caller's own RPC context ended (disconnect or client deadline),
+		// for example while waiting on an unknown-key refresh. Not a credential
+		// or Entra failure, so keep it out of the warnings.
+		l.logger.Debug("caller context ended during authentication", "reason", reason, "suppressed", suppressed)
+		return
+	}
 	l.logger.Warn("caller authentication failed", "reason", reason, "suppressed", suppressed)
 }
 

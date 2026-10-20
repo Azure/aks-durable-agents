@@ -124,7 +124,9 @@ server := grpc.NewServer(
   token/error dumps to diagnose live access.
 - `cmd/host` does both. It logs each rejected caller as `caller authentication
   failed` with only the fixed `reason`, at most once per reason per minute, with
-  a `suppressed` count of the failures since the previous line. It logs each
+  a `suppressed` count of the failures since the previous line. The `canceled`
+  and `deadline` reasons mean the caller's own RPC context ended, not a bad
+  credential or Entra outage, so they are logged at debug level. It logs each
   failed refresh with its `reason` and `keys_expire_in`: a warning that says the
   snapshot nears expiry in the last six hours, and an error once it has expired.
   Reasons that are not short lowercase codes are logged as `unclassified`.

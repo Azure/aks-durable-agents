@@ -169,6 +169,8 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 // and those still verify. application.Close ends the verifier after the drain.
 func newEntraVerifier(ctx context.Context, c entraauth.Config) (*entraauth.Verifier, error) {
 	life, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	// On success cancel is never called: nothing leaks (the parent is
+	// WithoutCancel) and Verifier.Close ends the lifetime.
 	stop := context.AfterFunc(ctx, cancel)
 	v, err := entraauth.New(life, c)
 	if !stop() {

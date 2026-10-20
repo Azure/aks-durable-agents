@@ -51,7 +51,9 @@ func (s *logSink) String() string {
 	defer s.mu.Unlock()
 	return s.buf.String()
 }
-func (s *logSink) logger() *slog.Logger { return slog.New(slog.NewTextHandler(s, nil)) }
+func (s *logSink) logger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(s, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
 
 // await waits for an asynchronous log line, such as the refresh hook's.
 func (s *logSink) await(t *testing.T, line string) {
@@ -106,6 +108,9 @@ func TestLoggingVerifierFixedReasonsAndRateLimit(t *testing.T) {
 	fail(errors.New(logSecret), 0)
 	fail(errors.New(logSecret), authLogInterval)
 	fail(&reasonError{"key_unavailable"}, 0)
+	fail(&reasonError{"canceled"}, 0)
+	fail(&reasonError{"deadline"}, 0)
+	fail(&reasonError{"canceled"}, time.Second)
 	want := []string{
 		`level=WARN msg="caller authentication failed" reason=token suppressed=0`,
 		`level=WARN msg="caller authentication failed" reason=fetch suppressed=0`,
@@ -113,6 +118,8 @@ func TestLoggingVerifierFixedReasonsAndRateLimit(t *testing.T) {
 		`level=WARN msg="caller authentication failed" reason=unclassified suppressed=0`,
 		`level=WARN msg="caller authentication failed" reason=unclassified suppressed=1`,
 		`level=WARN msg="caller authentication failed" reason=key_unavailable suppressed=0`,
+		`level=DEBUG msg="caller context ended during authentication" reason=canceled suppressed=0`,
+		`level=DEBUG msg="caller context ended during authentication" reason=deadline suppressed=0`,
 	}
 	lines := strings.Split(strings.TrimSpace(sink.String()), "\n")
 	if len(lines) != len(want) {
