@@ -65,7 +65,8 @@ class ChartTests(unittest.TestCase):
     def test_bare_defaults_refuse_missing_inputs(self):
         result = helm("template", "test", CHART)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("digest", result.stderr)
+        # Published image pins do not supply the operator\'s identity inputs.
+        self.assertIn("auth", result.stderr)
 
     def test_schema_refusals(self):
         cases = [

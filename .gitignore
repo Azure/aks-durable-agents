@@ -39,3 +39,4 @@ __pycache__/
 
 # Locally built host executable
 /host
+/.build/

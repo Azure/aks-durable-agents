@@ -1,0 +1,115 @@
+name: Verified image pins
+
+on:
+  workflow_run:
+    workflows: [Images]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      publish_run_id:
+        description: Successful main Images run to pin (after packages are public)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-pin-verification
+  cancel-in-progress: false
+
+jobs:
+  pins:
+    if: >-
+      github.repository == 'Azure/aks-durable-agents' &&
+      ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success'))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - name: Validate publication run and reject stale image sources
+        id: publication
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISH_RUN_ID: ${{ inputs.publish_run_id || github.event.workflow_run.id }}
+        run: |
+          [[ "$PUBLISH_RUN_ID" =~ ^[0-9]+$ ]]
+          mkdir -p "$RUNNER_TEMP/publication"
+          gh api "repos/Azure/aks-durable-agents/actions/runs/$PUBLISH_RUN_ID" > "$RUNNER_TEMP/publish-run.json"
+          gh run download "$PUBLISH_RUN_ID" --repo Azure/aks-durable-agents --name published-images --dir "$RUNNER_TEMP/publication"
+          SOURCE=$(python3 ops/images/update_pins.py validate-run --manifest "$RUNNER_TEMP/publication/images.json" --run "$RUNNER_TEMP/publish-run.json")
+          git merge-base --is-ancestor "$SOURCE" HEAD
+          # Keep these exclusions identical to the Images push paths-ignore.
+          if ! git diff --quiet "$SOURCE" HEAD -- . ':(glob,exclude)**/*.md' ':(exclude)charts/aks-durable-agents/values.yaml'; then
+            echo '::notice::A newer image source is on main; skipping old publication.'
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "source=$SOURCE" >> "$GITHUB_OUTPUT"
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+      - name: Verify public digest pulls, signatures and SBOMs
+        if: steps.publication.outputs.ready == 'true'
+        id: public
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          # Intentionally empty auth config: repository tokens must not hide a
+          # private package from this anonymous-consumer check.
+          export DOCKER_CONFIG
+          DOCKER_CONFIG=$(mktemp -d)
+          mkdir -p "$RUNNER_TEMP/verified-image-pins"
+          python3 - <<'PY' > "$RUNNER_TEMP/image-refs.txt"
+          import json, os
+          from pathlib import Path
+          data = json.loads((Path(os.environ['RUNNER_TEMP'])/'publication/images.json').read_text())
+          for image in data['images'].values():
+              print(image['repository'] + '@' + image['digest'])
+          PY
+          while IFS= read -r ref; do
+            if ! docker pull --platform linux/amd64 "$ref"; then
+              if [[ "$EVENT_NAME" == workflow_run ]]; then
+                echo '::notice::Packages not anonymously pullable. Make both packages public, then dispatch Verified image pins with this Images run ID.'
+                echo 'ready=false' >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              exit 1
+            fi
+            name=${ref#ghcr.io/azure/aks-durable-agents/}
+            name=${name%%@*}
+            cosign verify --certificate-identity https://github.com/Azure/aks-durable-agents/.github/workflows/images.yml@refs/heads/main --certificate-oidc-issuer https://token.actions.githubusercontent.com "$ref" > "$RUNNER_TEMP/verified-image-pins/$name-signature.json"
+            docker buildx imagetools inspect "$ref" --format '{{json .SBOM.SPDX}}' > "$RUNNER_TEMP/verified-image-pins/$name-sbom.json"
+            python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); assert isinstance(data, dict) and data.get("SPDXID") == "SPDXRef-DOCUMENT" and data.get("packages"), "missing attached SPDX SBOM"' "$RUNNER_TEMP/verified-image-pins/$name-sbom.json"
+          done < "$RUNNER_TEMP/image-refs.txt"
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+      - name: Export verified digests for a person-created PR
+        if: steps.publication.outputs.ready == 'true' && steps.public.outputs.ready == 'true'
+        env:
+          SOURCE: ${{ steps.publication.outputs.source }}
+          PUBLISH_RUN_ID: ${{ inputs.publish_run_id || github.event.workflow_run.id }}
+        run: |
+          cp "$RUNNER_TEMP/publication/images.json" "$RUNNER_TEMP/verified-image-pins/images.json"
+          {
+            echo '## Verified public image pins'
+            echo "Source: $SOURCE; publication run: $PUBLISH_RUN_ID"
+            while IFS= read -r ref; do printf -- '- %s\n' "$ref"; done < "$RUNNER_TEMP/image-refs.txt"
+            echo 'Download the verified-image-pins artifact. A person or lane applies images.json with ops/images/update_pins.py and opens a reviewed pin PR using gh.'
+            echo 'No branch, repository file or PR was created or updated by this workflow.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.publication.outputs.ready == 'true' && steps.public.outputs.ready == 'true'
+        with:
+          name: verified-image-pins
+          path: ${{ runner.temp }}/verified-image-pins/
+          if-no-files-found: error
+          retention-days: 30

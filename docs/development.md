@@ -20,11 +20,11 @@ then follow the [offline chart checks](../charts/aks-durable-agents/README.md#of
 
 The [local kind rehearsal](../ops/backup/README.md#local-kind-rehearsal) exercises
 backup/replay with a fake model. It requires Docker, kind, kubectl, Helm and
-matching operator-built fixture/client binaries that are not included here.
-Their source/build recipe and the tagged integration test's external JavaScript
-reviewer are not distributed here either. Offline unit/chart checks are the
-self-contained entry point; the chart and rehearsal are not a standalone public
-distribution. See [external test inputs](#external-fixture-qualification).
+matching fixture/client binaries. The reference fixture source and
+[image build recipe](../ops/images/README.md) are included; the native RPC client
+and tagged integration test's external JavaScript reviewer are not distributed
+here. Offline unit/chart checks remain the self-contained entry point; the chart
+and rehearsal are not a standalone demo. See [external test inputs](#external-fixture-qualification).
 The rehearsal uses kind Kubernetes 1.32.2 with chart YAML rendered for 1.37, not a
 Helm install or AKS qualification.
 
@@ -86,10 +86,11 @@ python3 -B -m unittest discover -s ops/canvas -p 'test_*.py'
 
 The `scenario_v2` suite is build-tagged and is **not** included in ordinary CI or
 `go test ./...`. It requires matching reviewed fixture and native RPC binaries,
-plus an external `sessions.mjs` reviewer in the layout expected by the test. Their
-source/build recipe and reviewer module are not distributed here. A fresh public
-clone cannot reproduce this qualification from this repository alone; the
-self-contained entry point is the ordinary Go, backup and chart checks above.
+plus an external `sessions.mjs` reviewer in the layout expected by the test.
+The fixture source/build recipe is now included, but the native RPC helper and
+reviewer module are not distributed here. A fresh public clone still cannot
+reproduce this tagged qualification from this repository alone. Ordinary
+`go test ./...` now also runs the reference fixture's tests.
 
 When those independently reviewed inputs are available locally:
 
@@ -100,6 +101,12 @@ go test -race -tags scenario_v2 -run TestScenarioV2ActualFixture -count=1 -timeo
 ```
 
 The reviewer module must be two directories above the native helper's directory.
+Build the reference fixture from this repository with `make image-binaries`
+and use its absolute `.build/images/session-fixture` path. Its public fixture
+identity is a fresh lineage: initialize a new private subtree; do not adopt
+journals or receipts from older externally built fixtures. The remaining external
+client and reviewer requirements are unchanged.
+
 The suite requires both absolute binary paths and fails rather than silently
 skipping missing inputs. It exercises success, HTTP 429 and model timeout with a
 fake TLS model, not live Azure inference or a signed-in approver. Use the

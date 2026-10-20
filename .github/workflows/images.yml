@@ -1,0 +1,156 @@
+name: Images
+
+on:
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - charts/aks-durable-agents/values.yaml
+  push:
+    branches: [main]
+    tags: ['v*']
+    # A pin-only merge must not generate another revision-labelled image/pin PR.
+    paths-ignore:
+      - '**/*.md'
+      - charts/aks-durable-agents/values.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: make images
+      - name: Smoke-test actual image commands without network
+        run: bash ops/images/smoke.sh
+
+  publish:
+    if: github.repository == 'Azure/aks-durable-agents' && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Verify and build from the pinned module graph
+        run: |
+          test "$(go env GOVERSION)" = "$(awk '$1 == "toolchain" {print $2}' go.mod)"
+          go mod download
+          go mod verify
+          go test -race ./...
+          python3 -B -m unittest discover -s ops/images -p 'test_update_pins.py'
+          make image-binaries
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          version: v0.38.0
+          driver-opts: image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare immutable source metadata
+        id: source
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          echo "epoch=$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
+          for role in host session-fixture; do
+            tags="ghcr.io/azure/aks-durable-agents/$role:sha-$GITHUB_SHA"
+            if [[ "$REF_TYPE" == tag ]]; then
+              [[ "$REF_NAME" =~ ^v[A-Za-z0-9_.-]{0,127}$ ]]
+              tags="$tags,ghcr.io/azure/aks-durable-agents/$role:$REF_NAME"
+            fi
+            echo "$role=$tags" >> "$GITHUB_OUTPUT"
+          done
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        id: host
+        with:
+          context: .build/images
+          file: images/Dockerfile
+          target: host
+          platforms: linux/amd64
+          network: none
+          outputs: type=registry,rewrite-timestamp=true
+          tags: ${{ steps.source.outputs.host }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          build-args: SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
+          provenance: mode=max
+          attests: type=sbom,generator=docker/buildkit-syft-scanner@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        id: fixture
+        with:
+          context: .build/images
+          file: images/Dockerfile
+          target: session-fixture
+          platforms: linux/amd64
+          network: none
+          outputs: type=registry,rewrite-timestamp=true
+          tags: ${{ steps.source.outputs.session-fixture }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          build-args: SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
+          provenance: mode=max
+          attests: type=sbom,generator=docker/buildkit-syft-scanner@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
+      - name: Smoke-test the pushed image contents before signing
+        env:
+          HOST_DIGEST: ${{ steps.host.outputs.digest }}
+          FIXTURE_DIGEST: ${{ steps.fixture.outputs.digest }}
+        run: |
+          docker pull --platform linux/amd64 "ghcr.io/azure/aks-durable-agents/host@$HOST_DIGEST"
+          docker pull --platform linux/amd64 "ghcr.io/azure/aks-durable-agents/session-fixture@$FIXTURE_DIGEST"
+          docker tag "ghcr.io/azure/aks-durable-agents/host@$HOST_DIGEST" local/aks-durable-agents/host:local
+          docker tag "ghcr.io/azure/aks-durable-agents/session-fixture@$FIXTURE_DIGEST" local/aks-durable-agents/session-fixture:local
+          bash ops/images/smoke.sh
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - name: Sign digests and record SBOMs
+        env:
+          HOST_DIGEST: ${{ steps.host.outputs.digest }}
+          FIXTURE_DIGEST: ${{ steps.fixture.outputs.digest }}
+        run: |
+          mkdir -p .build/publication
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, 'ops/images')
+          from update_pins import validate_manifest
+          data = {'version': 1, 'sourceCommit': os.environ['GITHUB_SHA'], 'images': {
+              'host': {'repository': 'ghcr.io/azure/aks-durable-agents/host', 'digest': os.environ['HOST_DIGEST']},
+              'harness': {'repository': 'ghcr.io/azure/aks-durable-agents/session-fixture', 'digest': os.environ['FIXTURE_DIGEST']}}}
+          Path('.build/publication/images.json').write_text(json.dumps(validate_manifest(data), indent=2) + '\n')
+          PY
+          for pair in "host@$HOST_DIGEST" "session-fixture@$FIXTURE_DIGEST"; do
+            ref="ghcr.io/azure/aks-durable-agents/$pair"
+            name="${pair%%@*}"
+            cosign sign --yes "$ref"
+            cosign verify --certificate-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/images.yml@$GITHUB_REF" --certificate-oidc-issuer https://token.actions.githubusercontent.com "$ref" > ".build/publication/$name-signature.json"
+            docker buildx imagetools inspect "$ref" --format '{{json .SBOM.SPDX}}' > ".build/publication/$name-sbom.json"
+            python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); assert isinstance(data, dict) and data.get("SPDXID") == "SPDXRef-DOCUMENT" and data.get("packages"), "missing SPDX SBOM"' ".build/publication/$name-sbom.json"
+            echo "Published and signed $ref (SBOM attached)" >> "$GITHUB_STEP_SUMMARY"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: published-images
+          path: .build/publication/
+          if-no-files-found: error
+          retention-days: 30
