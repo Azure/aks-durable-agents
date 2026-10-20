@@ -16,6 +16,19 @@ import demo
 
 
 class DemoTests(unittest.TestCase):
+    def test_phase_timing_records_without_extending_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner=demo.Runner(Path(directory))
+            deadline=runner.budget.deadline
+            runner.step("build")
+            runner.step("cleanup")
+            runner.finish_timings()
+            timing=json.loads((Path(directory)/"timings.json").read_text())
+            self.assertEqual([p["name"] for p in timing["phases"]],["preflight","build","cleanup"])
+            self.assertTrue(all(p["seconds"]>=0 for p in timing["phases"]))
+            self.assertAlmostEqual(sum(p["seconds"] for p in timing["phases"]),timing["elapsedSeconds"],places=5)
+            self.assertEqual(runner.budget.deadline,deadline)
+
     def test_published_pins_are_read_from_actual_chart(self):
         pins = demo.published_images(Path(__file__).resolve().parents[2])
         self.assertIn("ghcr.io/azure/aks-durable-agents/host@sha256:", pins["host"])

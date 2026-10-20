@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+"""Safe artifact collector and bot-owned failure tracker for the nightly kind e2e workflow."""
+import argparse
+import json
+import math
+import os
+import re
+import stat
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+MAX_TOTAL, MAX_FILES, MAX_LOG, MAX_PROOF = 16 * 1024 * 1024, 256, 2 * 1024 * 1024, 256 * 1024
+TITLE = "Kind e2e regression"
+MARKER = "<!-- kind-e2e-tracking -->"
+START, END = "<!-- kind-e2e-status:start -->", "<!-- kind-e2e-status:end -->"
+PROOFS = ("proof.json", "network-proof.json", "timings.json")
+RUN_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/actions/runs/[0-9]+(/attempts/[0-9]+)?")
+EVIDENCE = re.compile(r"Evidence: (/\S*/\.build/demo/[0-9a-f]{32})\s*$", re.MULTILINE)
+SAFE_PHASE = re.compile(r"[A-Za-z0-9 ._:/(),;'-]{1,160}")
+SUMMARY_RESERVE = 16 * 1024
+
+
+class ApiError(Exception):
+    pass
+
+
+def _number(v):
+    return type(v) in (int, float) and math.isfinite(v) and v >= 0
+
+
+def valid_proof(p):
+    ones = ("publicationCount", "receiptCount", "artifacts", "realModelCalls", "modelHTTPCalls")
+    zeros = ("provider_calls", "executor_calls", "fakeModelCalls")
+    return (isinstance(p, dict) and p.get("completed") is True
+            and all(type(p.get(k)) is int and p[k] == 1 for k in ones)
+            and all(type(p.get(k)) is int and p[k] == 0 for k in zeros)
+            and type(p.get("headSeq")) is int and p["headSeq"] > 0
+            and isinstance(p.get("headHash"), str) and re.fullmatch(r"[0-9a-f]{64}", p["headHash"]) is not None
+            and isinstance(p.get("session"), str) and p["session"] != "")
+
+
+def valid_network(records):
+    if not isinstance(records, list) or len(records) != 4:
+        return False
+    seen = set()
+    for r in records:
+        if not isinstance(r, dict) or set(r) != {"case", "stage", "address", "allowed", "expect", "tcpOnly"}:
+            return False
+        control = r["stage"] == "control"
+        m = re.fullmatch(r"([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3}):9000", r["address"]) if isinstance(r["address"], str) else None
+        if (r["case"] not in ("host-egress", "harness-ingress") or r["stage"] not in ("control", "denial")
+                or not m or any(int(g) > 255 for g in m.groups()) or r["tcpOnly"] is not True
+                or r["allowed"] is not control or r["expect"] != ("allowed" if control else "denied")):
+            return False
+        seen.add((r["case"], r["stage"]))
+    return len(seen) == 4
+
+
+def valid_timings(t):
+    return (isinstance(t, dict) and set(t) == {"elapsedSeconds", "phases"} and _number(t["elapsedSeconds"])
+            and isinstance(t["phases"], list)
+            and all(isinstance(p, dict) and set(p) == {"name", "seconds"} and isinstance(p["name"], str) and _number(p["seconds"]) for p in t["phases"]))
+
+
+VALIDATORS = {"proof.json": valid_proof, "network-proof.json": valid_network, "timings.json": valid_timings}
+
+
+def read_file(path, limit):
+    """Read a regular file without following symlinks; returns (last `limit` bytes, original size)."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError("not a regular file")
+        if info.st_size > limit:
+            os.lseek(fd, info.st_size - limit, os.SEEK_SET)
+        with os.fdopen(os.dup(fd), "rb") as f:
+            return f.read(limit), info.st_size
+    finally:
+        os.close(fd)
+
+
+def find_evidence(workspace, console_text):
+    """Return the demo evidence directory only if it is the real workspace/.build/demo/<uuid> without symlinks."""
+    found = EVIDENCE.findall(console_text)
+    if not found:
+        return None
+    path = Path(found[-1])
+    root = Path(workspace).resolve()
+    if path.parent != root / ".build/demo":
+        return None
+    for part in (root / ".build", root / ".build/demo", path):
+        try:
+            if not stat.S_ISDIR(os.lstat(part).st_mode):  # lstat: a symlink is not a directory
+                return None
+        except OSError:
+            return None
+    return path
+
+
+def collect(workspace, console, destination, summary, result, run_url):
+    if not RUN_URL.fullmatch(run_url):
+        raise ValueError("run URL is not a canonical GitHub Actions run URL")
+    dest = Path(destination)
+    dest.mkdir(parents=True)  # fresh destination only: FileExistsError refuses reuse
+    state: dict[str, int] = {"files": 1, "bytes": 0}  # one file slot is reserved for the summary
+    notes = {"unsafe": 0, "omitted": 0, "truncated": 0, "skipped": 0}
+
+    def put(name, data):
+        (dest / name).write_bytes(data)
+        state["files"] += 1
+        state["bytes"] += len(data)
+
+    try:
+        raw, console_size = read_file(console, MAX_LOG)
+    except OSError:
+        raw, console_size = b"", 0
+    evidence = find_evidence(workspace, raw.decode("utf-8", "replace"))
+    status, parsed = {}, {}
+    entries = []
+    if evidence:
+        with os.scandir(evidence) as it:
+            entries = sorted(it, key=lambda e: e.name)
+    # Proofs first so they always survive the caps.
+    for name in PROOFS:
+        entry = next((e for e in entries if e.name == name), None)
+        if entry is None:
+            status[name] = "missing"
+            continue
+        try:
+            data, size = read_file(entry.path, MAX_PROOF)
+            if size > MAX_PROOF:
+                raise ValueError
+            value = json.loads(data)
+        except (OSError, ValueError):
+            notes["unsafe"] += 1
+            status[name] = "invalid"
+            continue
+        put(name, data)
+        parsed[name] = value
+        status[name] = "valid" if VALIDATORS[name](value) else "invalid"
+    if raw:
+        put("console.log", raw)
+        notes["truncated"] += console_size > len(raw)
+    logs = []
+    for entry in entries:
+        m = re.fullmatch(r"command-([0-9]{3,})\.log", entry.name)
+        if m:
+            logs.append((int(m.group(1)), entry))
+        elif entry.name not in PROOFS:
+            notes["omitted"] += 1
+    for _, entry in sorted(logs, key=lambda x: x[0], reverse=True):  # newest failure logs matter most
+        room = MAX_TOTAL - SUMMARY_RESERVE - state["bytes"]
+        if state["files"] >= MAX_FILES or room <= 0:
+            notes["skipped"] += 1
+            continue
+        try:
+            data, size = read_file(entry.path, min(MAX_LOG, room))
+        except OSError:
+            notes["unsafe"] += 1
+            continue
+        notes["truncated"] += size > len(data)
+        put(entry.name, data)
+    ok = all(status.get(n) == "valid" for n in PROOFS)
+    collector = "success proof invalid" if result == "success" and not ok else "ok"
+    timings = parsed.get("timings.json") if status.get("timings.json") == "valid" else None
+    lines = ["# Kind e2e demo summary", "", f"- Result: {result}", f"- Run: {run_url}",
+             f"- Evidence directory: {'found' if evidence else 'not found'}", f"- Collector: {collector}"]
+    lines += [f"- {n}: {status.get(n, 'missing')}" for n in PROOFS]
+    if status.get("proof.json") == "valid":
+        lines += ["- Provider/executor callbacks: 0/0", "- Model HTTP requests/publications/receipts/artifacts: 1/1/1/1"]
+    if status.get("network-proof.json") == "valid":
+        lines.append("- TCP policy controls/denials: 2/2 (effective policy, not drop attribution)")
+    lines += ["- Replay follows demo-only sealing; this is not AKS, real identity or hostile-tenant qualification.",
+              "- Cleanup: " + ("confirmed by demo" if "PASS: demo complete and owned cluster removed." in raw.decode("utf-8", "replace") else "not confirmed; inspect logs")]
+    if timings:
+        lines.append(f"- Elapsed seconds: {timings['elapsedSeconds']:.1f}")
+        lines += [f"- Phase {p['name']}: {p['seconds']:.1f}s" for p in timings["phases"][:30] if SAFE_PHASE.fullmatch(p["name"])]
+    lines += [f"- Files copied: {state['files'] - 1}", f"- Bytes copied: {state['bytes']}",
+              (f"- Notes: {notes['unsafe']} unsafe entries skipped, {notes['omitted']} other files omitted, "
+               f"{notes['truncated']} files truncated, {notes['skipped']} older command logs skipped")]
+    Path(summary).parent.mkdir(parents=True, exist_ok=True)
+    Path(summary).write_text("\n".join(lines) + "\n")
+    (dest / "summary.md").write_text("\n".join(lines) + "\n")
+    return 1 if collector != "ok" else 0
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        return None
+
+
+class GitHubAPI:
+    """Minimal REST client: one attempt per call, token only in the header, bodies never surfaced."""
+
+    def __init__(self, token, base="https://api.github.com"):
+        self._token, self.base = token, base
+        self._opener = urllib.request.build_opener(_NoRedirect)
+
+    def request(self, method, path, payload=None):
+        if not path.startswith("/repos/"):
+            raise ApiError("refusing non-repository API path")
+        data = None if payload is None else json.dumps(payload).encode()
+        req = urllib.request.Request(self.base + path, data=data, method=method, headers={
+            "Authorization": "Bearer " + self._token, "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "kind-e2e-tracker", "Content-Type": "application/json"})
+        try:
+            with self._opener.open(req, timeout=30) as resp:
+                body = resp.read()
+            return json.loads(body) if body else {}
+        except urllib.error.HTTPError as exc:
+            raise ApiError(f"GitHub API {method} {path.split('?')[0]} failed: HTTP {exc.code}") from None
+        except (OSError, ValueError) as exc:
+            raise ApiError(f"GitHub API {method} {path.split('?')[0]} failed: {type(exc).__name__}") from None
+
+
+def render_block(run_url, sha):
+    return f"{START}\nStatus: failing\nLatest failing run: {run_url}\nCommit: {sha}\n{END}"
+
+
+def find_tracker(api, repo):
+    """Exactly one github-actions[bot] tracker, filtered by author before counting; refuse incomplete lookups."""
+    matches = []
+    for page in range(1, 101):
+        items = api.request("GET", f"/repos/{repo}/issues?state=all&sort=created&direction=asc&per_page=100&page={page}")
+        if not isinstance(items, list):
+            raise ApiError("unexpected issue listing response")
+        for item in items:
+            user = item.get("user") or {}
+            if ("pull_request" not in item and item.get("title") == TITLE and MARKER in (item.get("body") or "")
+                    and user.get("login") == "github-actions[bot]" and user.get("type") == "Bot"):
+                matches.append(item)
+        if len(items) < 100:
+            if len(matches) > 1:
+                raise ApiError("multiple bot-authored tracking issues found")
+            return matches[0] if matches else None
+    raise ApiError("issue lookup incomplete after 100 pages")
+
+
+def update_body(body, block):
+    starts, ends = body.count(START), body.count(END)
+    if starts == 0 and ends == 0:
+        return body.rstrip("\n") + "\n\n" + block + "\n"
+    if starts != 1 or ends != 1 or body.index(START) > body.index(END):
+        raise ApiError("tracking issue has a malformed managed status block; refusing to overwrite")
+    return body[:body.index(START)] + block + body[body.index(END) + len(END):]
+
+
+def track(api, repo, run_id, sha, run_url, test=False):
+    if not re.fullmatch(r"[0-9a-f]{40}", sha) or not re.fullmatch(rf"https://github\.com/{re.escape(repo)}/actions/runs/{int(run_id)}(/attempts/[0-9]+)?", run_url):
+        raise ValueError("sha or run URL is not canonical for this run")
+    base = f"/repos/{repo}/issues"
+    issue = find_tracker(api, repo)
+    if test:
+        if issue is None:
+            block = f"{START}\nStatus: reporting permission check; no demo was run\n{END}"
+            issue = api.request("POST", base, {"title": TITLE, "body": f"{MARKER}\n\nBot-owned tracker for failing nightly kind e2e runs.\n\n{block}\n"})
+        number = issue["number"]
+        api.request("POST", f"{base}/{number}/comments", {"body": "Test run: reporting permission check. No demo was run. " + run_url})
+        api.request("PATCH", f"{base}/{number}", {"state": "closed"})
+    elif issue is None:
+        body = f"{MARKER}\n\nBot-owned tracker for failing nightly kind e2e runs. Text outside the status block is preserved.\n\n{render_block(run_url, sha)}\n"
+        issue = api.request("POST", base, {"title": TITLE, "body": body})
+    else:
+        body = update_body(issue.get("body") or "", render_block(run_url, sha))  # validate before any write
+        api.request("PATCH", f"{base}/{issue['number']}", {"body": body, "state": "open"})
+    return f"https://github.com/{repo}/issues/{int(issue['number'])}"
+
+
+def main(argv=None, api=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    c = sub.add_parser("collect")
+    for name in ("workspace", "console", "destination", "summary", "run-url"):
+        c.add_argument("--" + name, required=True)
+    c.add_argument("--result", required=True, choices=("success", "failure", "cancelled"))
+    t = sub.add_parser("track")
+    t.add_argument("--repo", required=True, choices=("Azure/aks-durable-agents",))
+    t.add_argument("--run-id", required=True, type=int)
+    t.add_argument("--sha", required=True)
+    t.add_argument("--run-url", required=True)
+    t.add_argument("--test", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "collect":
+            code = collect(args.workspace, args.console, args.destination, args.summary, args.result, args.run_url)
+            if code:
+                print("collector: success claim has invalid or missing proof; see summary", file=sys.stderr)
+            return code
+        if api is None:
+            token = os.environ.get("GITHUB_TOKEN")
+            if not token:
+                raise ValueError("GITHUB_TOKEN is required")
+            api = GitHubAPI(token)
+        print("Tracker:", track(api, args.repo, args.run_id, args.sha, args.run_url, args.test))
+        return 0
+    except (ApiError, ValueError, OSError) as exc:
+        print(f"e2e {args.command} failed: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
