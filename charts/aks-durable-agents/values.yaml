@@ -1,4 +1,4 @@
-# Deployment inputs are deliberately empty: bare lint/template must refuse.
+# Operator identity/model inputs remain required: bare lint/template must refuse.
 image:
   host:
     repository: ""

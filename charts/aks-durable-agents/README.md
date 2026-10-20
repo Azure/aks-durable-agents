@@ -22,17 +22,22 @@ the fixture harness/executor/fake pod without changing the legacy defaults.
   supporting `network-probe`**.
   The ordinary repository Dockerfile contains only `/host` and is insufficient
   for the legacy fixture profile;
-  use a reviewed derivative with the probe binary and CA roots. Set
+  use the [reference-profile image build](../../ops/images/README.md), which
+  packages the production host with the probe binary and CA roots. Set
   `image.host.includesHealthProbe: true` only after verifying that image's digest.
   This is an operator attestation: schema cannot inspect image contents.
   The legacy harness image must contain the configured fixture/executor binaries and the
   same `/session-fixture network-probe` readiness command.
 
-This is experimental source, not a self-contained chart distribution. Matching
-fixture/client binaries and their public source/build recipe are not supplied.
-The root Dockerfile alone does not build these inputs; do not substitute an
-unreviewed binary or infer image provenance from `appVersion`. Record each
-operator-built image's source version and immutable digest separately.
+This remains experimental source, not a self-contained chart distribution.
+The [reference fixture source and image build recipe](../../ops/images/README.md)
+are supplied; the external RPC client/reviewer used by older rehearsals are not.
+Publication bootstraps before real digest defaults; until those pins land, supply
+reviewed image digests explicitly. Do not infer provenance from `appVersion`.
+The reference fixture is not a production agent. It simulates local publication
+and includes an inert fake role; it does not turn the production host into a
+fake-model host. Initialize a new private subtree for this public fixture
+lineage; do not adopt state from older externally built fixtures.
 
 Older development images and launchers must be rebuilt/updated for the
 `/session-fixture` executable path and `ADA_FIXTURE_BINARY` / `ADA_NATIVE_BINARY`
