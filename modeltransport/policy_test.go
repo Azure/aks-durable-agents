@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
@@ -236,7 +237,9 @@ func TestPolicyUsageAndFailuresStopFutureSends(t *testing.T) {
 }
 func TestPolicyDeadlineIncludesCredentialsAndBody(t *testing.T) {
 	p, _, ledger := openTestPolicy(t)
+	var credentialContext context.Context
 	cred := credentialFunc(func(ctx context.Context, o policy.TokenRequestOptions) (azcore.AccessToken, error) {
+		credentialContext = ctx
 		deadline, ok := ctx.Deadline()
 		if !ok || time.Until(deadline) > 25*time.Second {
 			t.Error("credential deadline missing")
@@ -249,19 +252,28 @@ func TestPolicyDeadlineIncludesCredentialsAndBody(t *testing.T) {
 		w.(http.Flusher).Flush()
 		<-r.Context().Done()
 	}, cred)
-	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	// Exercise the transport's deadline, not the client's duplicate timeout.
+	c.Timeout = 0
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(chat("first", false)))
 	resp, err := c.Do(req)
-	if err == nil {
-		_, err = io.ReadAll(resp.Body)
-		resp.Body.Close()
+	if err != nil {
+		t.Fatalf("request did not reach response-body phase: %v", err)
 	}
-	if err == nil {
-		t.Fatal("body deadline ignored")
+	defer resp.Body.Close()
+	if credentialContext == nil || credentialContext.Err() != nil {
+		t.Fatal("credential context ended before body consumption")
 	}
-	_, outcome, _, _, _ := ledgerRows(t, ledger)
-	if outcome != "unknown" {
-		t.Fatalf("outcome %s", outcome)
+	// Headers establish the body phase. A short setup timer could instead expire
+	// during admission or credentials, where a failed (not unknown) row is valid.
+	cancel()
+	_, err = io.ReadAll(resp.Body)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("body cancellation not preserved: %v", err)
+	}
+	n, outcome, _, _, _ := ledgerRows(t, ledger)
+	if n != 1 || outcome != "unknown" {
+		t.Fatalf("ledger %d %s", n, outcome)
 	}
 }
