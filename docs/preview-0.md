@@ -17,7 +17,7 @@ Offline tests do not close live qualification items.
   → resume → exactly one effect → replay with zero model/tool calls, on real AKS
   with a real model. The current [host](host.md) has offline evidence, not this
   end-to-end qualification. The separate fake-model, unauthenticated AKS proof
-  described in the [overview](../README.md#status) does not meet this target.
+  described in the [validation status](status.md#what-has-been-tested) does not meet this target.
   Complete the signed-in approval and released-dependency prerequisites below
   before qualifying the assembled path.
 - **Blocked — signed-in approver from a test tenant.** The
@@ -143,4 +143,4 @@ release and recovery checks are conditional on including Substrate.
   is not a claim that release approval exists.
 - The canonical source location is `Azure/aks-durable-agents`. Experimental source
   and Preview 0 validation do not establish Microsoft product support or an SLA;
-  see [support guidance](../SUPPORT.md) and the [overview](../README.md#status).
+  see [support guidance](../SUPPORT.md) and [current limits](status.md).
