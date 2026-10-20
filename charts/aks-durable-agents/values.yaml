@@ -1,13 +1,13 @@
-# Deployment inputs are deliberately empty: bare lint/template must refuse.
+# Operator identity/model inputs remain required: bare lint/template must refuse.
 image:
   host:
-    repository: ""
-    digest: ""
+    repository: "ghcr.io/azure/aks-durable-agents/host"
+    digest: "sha256:864a68cb40efb4aaf4737fcf05baf546fdd4aceaba7f1911cde4ce6f878daf1b"
     # Operator attestation: legacy /session-fixture probe, or native /host health-probe.
-    includesHealthProbe: false
+    includesHealthProbe: true
   harness:
-    repository: ""
-    digest: ""
+    repository: "ghcr.io/azure/aks-durable-agents/session-fixture"
+    digest: "sha256:0942af46da49f0e4cb267467bd98fd7a921b67b1c6eff139ebe4fc6e32ad2524"
 
 # Install dormant. Apply/verify policies before enabling workloads (see README).
 workloads:
