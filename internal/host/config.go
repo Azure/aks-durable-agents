@@ -91,6 +91,10 @@ func (c Config) validate() error {
 		if !caller.Valid() {
 			return errors.New("approvers require exact issuer and subject")
 		}
+		// An approver the verifier can never emit would deny every approval silently.
+		if c.Mode == authn.Required && !c.Identity.ValidIdentity(caller) {
+			return errors.New("approvers must use the identity issuer and a subject in the form subjectClaim requires (lowercase GUID for oid)")
+		}
 	}
 	return nil
 }

@@ -147,6 +147,36 @@ class ChartTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertIn(error_field, result.stderr)
 
+    def test_approver_identity_refusals(self):
+        # Approvers must match the verifier's issuer and subject form: a lowercase
+        # GUID for oid, no ASCII whitespace or control characters for sub.
+        issuer = self.defaults["auth"]["issuer"]
+        tenant = self.defaults["auth"]["tenantID"]
+        oid = "abcdef01-2345-6789-abcd-ef0123456789"
+        for claim, approver, error_field in (
+            ("oid", {"issuer": f"https://sts.windows.net/{tenant}/", "subject": oid}, "issuer"),
+            ("oid", {"issuer": issuer + "/", "subject": oid}, "issuer"),
+            ("oid", {"issuer": issuer, "subject": "user@contoso.example"}, "subject"),
+            ("oid", {"issuer": issuer, "subject": "../x@y"}, "subject"),
+            ("oid", {"issuer": issuer, "subject": oid.upper()}, "subject"),
+            ("sub", {"issuer": issuer, "subject": "pairwise subject"}, "subject"),
+            ("sub", {"issuer": issuer, "subject": "pairwise\x7fsubject"}, "subject"),
+        ):
+            with self.subTest(approver=approver, claim=claim):
+                values = copy.deepcopy(self.defaults)
+                values["auth"]["subjectClaim"] = claim
+                values["auth"]["approvers"].append(approver)
+                result = render(values)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(error_field, result.stderr)
+        for claim, subject in (("oid", oid), ("sub", "pairwise-subject")):
+            with self.subTest(claim=claim):
+                values = copy.deepcopy(self.defaults)
+                values["auth"]["subjectClaim"] = claim
+                values["auth"]["approvers"].append({"issuer": issuer, "subject": subject})
+                auth = next(d for d in self.documents(values) if d["kind"] == "ConfigMap" and d["metadata"]["name"].endswith("-auth"))
+                self.assertEqual(json.loads(auth["data"]["auth.json"])["approvers"], values["auth"]["approvers"])
+
     def test_two_pods_security_placement_and_storage(self):
         docs = self.documents(self.defaults)
         deployments = [d for d in docs if d["kind"] == "Deployment"]

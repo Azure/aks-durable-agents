@@ -161,8 +161,9 @@ func TestRequiredEntraAdmissionAndIndependentApproval(t *testing.T) {
 	f := newHostFixture(t)
 	identity, sign := entraFixture(t)
 	f.config.Mode, f.config.Identity = authn.Required, identity
-	f.config.Approvers = []api.CallerIdentity{{Issuer: fixtureIssuer, Subject: "approver"}}
-	ownerToken, approverToken := sign("owner"), sign("approver")
+	const ownerOID, approverOID = "0a0a0a0a-0000-4000-8000-000000000001", "0b0b0b0b-0000-4000-8000-000000000002"
+	f.config.Approvers = []api.CallerIdentity{{Issuer: fixtureIssuer, Subject: approverOID}}
+	ownerToken, approverToken := sign(ownerOID), sign(approverOID)
 	owner, approver := bearer(ctx, "Bearer "+ownerToken), bearer(ctx, "Bearer "+approverToken)
 	app, c, _ := f.start(t)
 	for _, tc := range []struct {
@@ -186,7 +187,7 @@ func TestRequiredEntraAdmissionAndIndependentApproval(t *testing.T) {
 		t.Fatalf("rejected admission reached session/effects: %v %v", listed, err)
 	}
 	const uid = "owned-proposal"
-	if err := app.store.CreateOwnedSession(sqlitelog.SessionMeta{UID: uid, Harness: "release-notes"}, api.CallerIdentity{Issuer: fixtureIssuer, Subject: "owner"}, false); err != nil {
+	if err := app.store.CreateOwnedSession(sqlitelog.SessionMeta{UID: uid, Harness: "release-notes"}, api.CallerIdentity{Issuer: fixtureIssuer, Subject: ownerOID}, false); err != nil {
 		t.Fatal(err)
 	}
 	turn, err := c.Exec(owner, client.ExecOptions{Session: uid, Inputs: []string{"Publish this"}})

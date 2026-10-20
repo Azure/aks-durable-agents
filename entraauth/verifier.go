@@ -33,8 +33,10 @@ type Config struct {
 	TenantID, Issuer, Audience string
 	AllowedClientIDs           []string
 	RequiredScope              string
-	// SubjectClaim is oid by default; only oid and sub are supported. Selecting
-	// sub changes ownership mapping and requires an ownership/policy migration.
+	// SubjectClaim is oid by default; only oid and sub are supported. An oid
+	// value must be a lowercase GUID; a sub value must be nonempty with no ASCII
+	// whitespace or control characters. Selecting sub changes ownership mapping
+	// and requires an ownership/policy migration.
 	SubjectClaim string
 	// ClockSkew is 0..2 minutes. It relaxes nbf, never usable expiry.
 	ClockSkew time.Duration
@@ -205,11 +207,30 @@ func (v *Verifier) Verify(ctx context.Context) (authn.VerifiedCaller, error) {
 	if claims["iss"] != v.config.Issuer || claims["tid"] != v.config.TenantID ||
 		!stringClaimEquals(claims["aud"], v.config.Audience) || !v.clients[stringClaim(claims["azp"])] ||
 		claims["ver"] != "2.0" || (idtypOK && idtyp != "user") ||
-		!hasScope(claims["scp"], v.config.RequiredScope) || !subjectOK || !plainWord(subject) ||
+		!hasScope(claims["scp"], v.config.RequiredScope) || !subjectOK || !validSubject(v.config.SubjectClaim, subject) ||
 		!expOK || !nbfOK || !exp.After(now) || nbf.After(now.Add(v.config.ClockSkew)) {
 		return authn.VerifiedCaller{}, failure("claims")
 	}
 	return authn.VerifiedCaller{Identity: api.CallerIdentity{Issuer: v.config.Issuer, Subject: subject}, ValidUntil: exp}, nil
+}
+
+// ValidIdentity reports whether id has the exact issuer and subject form that a
+// Verifier built from c can return: the configured Issuer and a subject in the
+// form SubjectClaim requires. It does not validate c; New does.
+func (c Config) ValidIdentity(id api.CallerIdentity) bool {
+	return id.Issuer == c.Issuer && validSubject(c.SubjectClaim, id.Subject)
+}
+
+// validSubject accepts only a lowercase GUID for oid, and for sub a nonempty
+// value with no ASCII whitespace or control characters.
+func validSubject(claim, s string) bool {
+	switch claim {
+	case "", "oid":
+		return guid.MatchString(s)
+	case "sub":
+		return plainWord(s)
+	}
+	return false
 }
 func stringClaim(v any) string                  { s, _ := v.(string); return s }
 func stringClaimEquals(v any, want string) bool { s, ok := v.(string); return ok && s == want }
