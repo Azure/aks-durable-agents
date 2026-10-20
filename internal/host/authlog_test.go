@@ -30,6 +30,9 @@ import (
 // logSecret stands in for token, claim and provider text that must never be logged.
 const logSecret = "never-log-token-claim-or-provider-detail"
 
+// ownerOID is a valid caller's oid: Entra oid subjects are lowercase GUIDs.
+const ownerOID = "0a0a0a0a-0000-4000-8000-000000000001"
+
 type logSink struct {
 	mu    sync.Mutex
 	buf   bytes.Buffer
@@ -236,7 +239,7 @@ func TestRequiredAuthFailureLogging(t *testing.T) {
 		t.Fatalf("unknown key during outage: %v", err)
 	}
 	sink.await(t, `msg="Entra signing-key refresh failed" reason=fetch keys_expire_in=`)
-	owner := sign("owner")
+	owner := sign(ownerOID)
 	if _, err := c.ListSessions(bearer(ctx, "Bearer "+owner), ""); err != nil {
 		t.Fatal("outage invalidated the cached snapshot", err)
 	}
@@ -253,7 +256,7 @@ func TestRequiredAuthFailureLogging(t *testing.T) {
 	if n := strings.Count(logs, "reason=token"); n != 1 {
 		t.Errorf("token failures logged %d times, want 1 per interval", n)
 	}
-	for _, leaked := range []string{logSecret, rotated, owner, "owner", identity.Audience, identity.AllowedClientIDs[0]} {
+	for _, leaked := range []string{logSecret, rotated, owner, ownerOID, identity.Audience, identity.AllowedClientIDs[0]} {
 		if strings.Contains(logs, leaked) {
 			t.Errorf("log contains credential, claim or provider text %q", leaked)
 		}
@@ -277,7 +280,7 @@ func TestEntraVerifierOutlivesSignalUntilDrain(t *testing.T) {
 	trust.hold.Store(held)
 	result := make(chan error, 1)
 	go func() {
-		_, err := c.ListSessions(bearer(ctx, "Bearer "+trust.signRotated(t, identity, "owner")), "")
+		_, err := c.ListSessions(bearer(ctx, "Bearer "+trust.signRotated(t, identity, ownerOID)), "")
 		result <- err
 	}()
 	select {
@@ -303,7 +306,7 @@ func TestEntraVerifierOutlivesSignalUntilDrain(t *testing.T) {
 		t.Fatal("drain did not finish")
 	}
 	app.Close()
-	_, err := app.verifier.Verify(metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", "Bearer "+sign("owner"))))
+	_, err := app.verifier.Verify(metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", "Bearer "+sign(ownerOID))))
 	if debugReason(err) != "closed" {
 		t.Fatalf("verifier outlived application Close: %v", err)
 	}
