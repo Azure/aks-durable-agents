@@ -99,6 +99,51 @@ class DemoTests(unittest.TestCase):
             with self.assertRaises(demo.DemoError):
                 runner.cleanup()
 
+    def test_replacement_waits_through_creation_gap_and_specific_pod_ready(self):
+        script = '''import json, os, sys, time
+from pathlib import Path
+path=Path(os.environ["FAKE_KUBE_STATE"])
+state=json.loads(path.read_text()); args=sys.argv[1:]
+code=0
+if "delete" in args:
+    state["deleted"]=True
+elif "rollout" in args:
+    print("deployment successfully rolled out (stale status)")
+elif "get" in args:
+    state["queries"]+=1
+    if state["queries"]==1:
+        pods=[]
+    elif state["queries"]==2:
+        pods=[{"metadata":{"name":"old-host","uid":"old-uid"}}]
+    else:
+        pods=[{"metadata":{"name":"new-host","uid":"new-uid"},"status":{"conditions":[{"type":"Ready","status":"False"}]}}]
+    print(json.dumps({"items":pods}))
+elif "wait" in args:
+    if "pod/new-host" not in args or "--for=condition=Ready" not in args:
+        code=7
+    else:
+        time.sleep(0.05)
+        state["ready"]=True
+elif "exec" in args:
+    state["executed"]=state["ready"]
+    code=0 if state["ready"] else 8
+path.write_text(json.dumps(state)); sys.exit(code)
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); tool=root/"kubectl"
+            tool.write_text("#!"+sys.executable+"\n"+script); tool.chmod(0o700)
+            state=root/"state.json"
+            state.write_text(json.dumps({"queries":0,"deleted":False,"ready":False,"executed":False}))
+            runner=demo.Runner(root/"run",seconds=3,reserve=0)
+            runner.env.update(FAKE_KUBE_STATE=str(state),PATH=str(root)+os.pathsep+os.environ["PATH"])
+            old={"metadata":{"name":"old-host","uid":"old-uid"}}
+            replacement=runner.replace_host(old)
+            self.assertEqual(replacement["metadata"]["uid"],"new-uid")
+            runner.kube("exec",replacement["metadata"]["name"],"--","scenario-client")
+            observed=json.loads(state.read_text())
+            self.assertTrue(observed["deleted"] and observed["ready"] and observed["executed"])
+            self.assertGreaterEqual(observed["queries"],3)
+
     def test_owned_cleanup_handles_success_and_partial_create_only(self):
         script = '''import json, os, sys
 from pathlib import Path

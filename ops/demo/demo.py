@@ -202,6 +202,30 @@ class Runner:
             raise DemoError(f"expected one {component} {resource}, found {len(items)}")
         return items[0]
 
+    def replace_host(self, old):
+        self.kube("delete","pod",old["metadata"]["name"],"--wait=true")
+        # Deletion does not change a Deployment generation: rollout status can
+        # still report the old available replica. Observe the actual new UID,
+        # then wait for that specific pod, without extending the 90s budget.
+        deadline = time.monotonic() + min(90,self.budget.remaining())
+        def remaining():
+            seconds = min(deadline-time.monotonic(),self.budget.remaining())
+            if seconds < 0.001:
+                raise DemoError("replacement host did not appear and become Ready within its readiness budget")
+            return seconds
+        while True:
+            timeout = remaining()
+            pods = json.loads(self.kube("get","pods","-l",f"app.kubernetes.io/instance={RELEASE},app.kubernetes.io/component={HOST_COMPONENT}","-o","json",f"--request-timeout={min(10,timeout):.3f}s"))["items"]
+            replacements = [pod for pod in pods if pod["metadata"]["uid"] != old["metadata"]["uid"] and not pod["metadata"].get("deletionTimestamp")]
+            if len(replacements) > 1:
+                raise DemoError("expected one replacement host pod, found multiple")
+            if replacements:
+                replacement = replacements[0]
+                timeout = remaining()
+                self.kube("wait","--for=condition=Ready","pod/"+replacement["metadata"]["name"],f"--timeout={timeout:.3f}s",f"--request-timeout={timeout:.3f}s")
+                return replacement
+            time.sleep(min(0.1,remaining()))
+
     def cli(self, pod, *arguments):
         return json.loads(self.kube("exec",pod,"-c","daemon","--","/demo-client",*arguments,"--data","/data"))
 
@@ -298,11 +322,7 @@ pathlib.Path(sys.argv[3]).write_bytes(raw)
     before = runner.evidence(harness)
     check_effects(before,1,0)
     print("4. Restart the host while parked; verify the same pending change survived.",flush=True)
-    runner.kube("delete","pod",pod,"--wait=true")
-    runner.kube("rollout","status","deployment/"+deployments[HOST_COMPONENT],"--timeout=90s")
-    replacement = runner.component("pods",HOST_COMPONENT)
-    if replacement["metadata"]["uid"] == daemon["metadata"]["uid"]:
-        raise DemoError("host pod was not replaced")
+    replacement = runner.replace_host(daemon)
     pod = replacement["metadata"]["name"]
     runner.cli(pod,"check-parked")
     if runner.evidence(harness) != before or runner.cli(pod,"counter")["modelHTTPCalls"] != 1:
