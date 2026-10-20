@@ -14,8 +14,8 @@ github.com/agent-primitives/sessions v0.2.1-0.20261019224537-f18a2cb1454d h1:5R4
 github.com/agent-primitives/sessions v0.2.1-0.20261019224537-f18a2cb1454d/go.mod h1:DZCwTLhJb6bltufqRqKK7IOEsx+s6isnMK7PMiaR7Ts=
 github.com/agent-primitives/sessions/integrations/substrate v0.0.0-20261019224537-f18a2cb1454d h1:jf7ic/0UjUu8Q+G9poQqeUUdLze/pW6ptT7zfQIxmd8=
 github.com/agent-primitives/sessions/integrations/substrate v0.0.0-20261019224537-f18a2cb1454d/go.mod h1:4RZd3LCiXwGVYAvPDvRS3F/zjgh5SbHWHIeHkrMPqkc=
-github.com/agent-substrate/substrate v0.4.1-0.20261013053953-96dffb287919 h1:RP19jHZ/bv7AcknDgut2SW9btWbYnpOeT41M5bjOVAY=
-github.com/agent-substrate/substrate v0.4.1-0.20261013053953-96dffb287919/go.mod h1:XVQwhYEmOlb+ILs9BvSCHXYhgo2F6/N2qN4DmRwogQI=
+github.com/agent-substrate/substrate v0.5.0 h1:R80f/jItcprNoe7VpV2ZJAcY4Lk7WuhCVgSEwn0Sfnk=
+github.com/agent-substrate/substrate v0.5.0/go.mod h1:2Pm1s1pBoB1u4OycVtezqda2BVCjnwcmRQXobWTV3eQ=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/golang-jwt/jwt/v5 v5.3.0 h1:pv4AsKCKKZuqlgs5sUmn4x8UlGa0kEVt/puTpKx9vvo=
