@@ -4,6 +4,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Upgrade needs durability qualification (async suspend default) first.
+      - dependency-name: github.com/agent-substrate/substrate
   - package-ecosystem: github-actions
     directory: /
     schedule:
