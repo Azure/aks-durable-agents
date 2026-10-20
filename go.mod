@@ -4,13 +4,11 @@ go 1.27.0
 
 toolchain go1.27.2
 
-replace github.com/agent-primitives/sessions => github.com/gambtho/agentsessions v0.1.3-0.20261018160920-ce018b2daa0f
-
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.1
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
-	github.com/agent-primitives/sessions v0.2.0
-	github.com/agent-primitives/sessions/integrations/substrate v0.0.0-20261019014422-ff3da2b33f61
+	github.com/agent-primitives/sessions v0.2.1-0.20261019224537-f18a2cb1454d
+	github.com/agent-primitives/sessions/integrations/substrate v0.0.0-20261019224537-f18a2cb1454d
 	github.com/agent-substrate/substrate v0.4.1-0.20261013053953-96dffb287919
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	golang.org/x/sys v0.48.0

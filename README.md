@@ -6,14 +6,14 @@ This source depends on **unreleased development versions**:
 
 | Component | Selected development version |
 | --- | --- |
-| Sessions root (public fork replacement) | `github.com/gambtho/agentsessions v0.1.3-0.20261018160920-ce018b2daa0f` |
-| Sessions Substrate adapter (separate module) | `github.com/agent-primitives/sessions/integrations/substrate v0.0.0-20261019014422-ff3da2b33f61` |
+| Sessions root | `github.com/agent-primitives/sessions v0.2.1-0.20261019224537-f18a2cb1454d` |
+| Sessions Substrate adapter (separate module) | `github.com/agent-primitives/sessions/integrations/substrate v0.0.0-20261019224537-f18a2cb1454d` |
 | Substrate runtime/client | `github.com/agent-substrate/substrate v0.4.1-0.20261013053953-96dffb287919` |
 
-These are public pins, not a released or qualified assembly. The fork replaces the
-nominal Sessions `v0.2.0` requirement throughout this module. Go consumers do not
-inherit dependency modules' `replace` directives; importing these packages is not
-equivalent to building this repository. See [the version set](docs/substrate.md#version-set).
+All modules use canonical upstream sources, with no fork replacements. These are
+public development pins, not a released or qualified assembly. Sessions core and
+its separate Substrate adapter select the same commit. The runtime/client pin
+remains the adapter's compatible version; see [the version set](docs/substrate.md#version-set).
 
 Run durable agents on an existing Azure Kubernetes Service (AKS) cluster.
 

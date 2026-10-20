@@ -10,13 +10,14 @@ agents, routers, worker pools, database or snapshot store.
 
 ## Version set
 
-Build with **Go 1.27.2**, including remote-only builds. The host retains its
-sessions authentication fork while importing the separately versioned adapter:
+Build with **Go 1.27.2**, including remote-only builds. Sessions core and the
+separately versioned adapter use the same canonical upstream commit, without
+fork replacements:
 
 | Component | Development version |
 |---|---|
-| Effective sessions root | `github.com/gambtho/agentsessions v0.1.3-0.20261018160920-ce018b2daa0f` |
-| Sessions Substrate adapter | `v0.0.0-20261019014422-ff3da2b33f61` |
+| Sessions root | `github.com/agent-primitives/sessions v0.2.1-0.20261019224537-f18a2cb1454d` |
+| Sessions Substrate adapter | `v0.0.0-20261019224537-f18a2cb1454d` |
 | Substrate client and server | `v0.4.1-0.20261013053953-96dffb287919` |
 
 The adapter has no release tag. Root sessions tags do not release that nested
@@ -31,10 +32,11 @@ go mod graph
 go mod verify
 ```
 
-Do not replace the root authentication fork with sessions main or float the
-Substrate server/client independently. Newer Substrate defaults suspend to
-asynchronous upload; using such a server requires an explicit synchronous
-request and newest-generation durability checks, not this old-client assembly.
+Keep the Substrate server/client pin: it is the upstream adapter's compatible
+runtime requirement, not a fork awaiting a Sessions merge. Do not float it
+independently. Newer Substrate defaults suspend to asynchronous upload; using
+such a server requires an explicit synchronous request and newest-generation
+durability checks, not this old-client assembly.
 A pre-1.0 minor upgrade may require reinstall and a compatible recovery set.
 
 ## Prerequisites
@@ -101,8 +103,12 @@ fidelity and held-checkpoint validation, compatible adapter/runtime/Blob release
 and actual AKS lifecycle/network/backup proof. This wiring alone closes none of
 those gates; do not use it as an unqualified park/recovery demonstration.
 Public Suspend/Resume and approval parks still invoke Substrate snapshot/restore
-paths in the current pin. They are unqualified and do not yet validate the held
-snapshot; declaring the harness stateless does not disable those RPC paths.
+paths in the current pin. They remain unqualified: the host keeps default
+stateless-replay policy, without opting into `WithVolumesOnly()` enforcement.
+The pin includes [observed fidelity (#181)](https://github.com/agent-primitives/sessions/pull/181),
+not the pending [exact-held/newest-generation validation (#195)](https://github.com/agent-primitives/sessions/pull/195)
+or [effective restore-source validation (#192)](https://github.com/agent-primitives/sessions/issues/192).
+Declaring the harness stateless does not disable snapshot/restore RPC paths.
 
 Client-side checkpoint validation is not atomic with Resume. One host reduces
 competition but does not fence router auto-resume or operator lifecycle calls.
