@@ -1,0 +1,117 @@
+name: Nightly kind e2e
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      report_test:
+        description: 'Reporting permission test only: skip demo, find/create the bot tracker, comment, then close it'
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: kind-e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  demo:
+    if: ${{ !inputs.report_test && github.repository == 'Azure/aks-durable-agents' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14.3'
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.20.0
+      - name: Install checked kind and kubectl
+        run: |
+          tools="$RUNNER_TEMP/kind-e2e-tools"
+          mkdir -m 700 "$tools"
+          curl --fail --silent --show-error --location --connect-timeout 10 --max-time 120 https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64 -o "$tools/kind"
+          printf '%s  %s\n' aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d "$tools/kind" | sha256sum --check -
+          curl --fail --silent --show-error --location --connect-timeout 10 --max-time 120 https://dl.k8s.io/release/v1.37.0/bin/linux/amd64/kubectl -o "$tools/kubectl"
+          printf '%s  %s\n' 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f "$tools/kubectl" | sha256sum --check -
+          chmod 700 "$tools/kind" "$tools/kubectl"
+          echo "$tools" >> "$GITHUB_PATH"
+      - name: Run the same fake-model demo and policy controls
+        id: scenario
+        run: |
+          kind version
+          kubectl version --client
+          helm version --short
+          python3 --version
+          printf 'approve\ncontinue\n' | make demo 2>&1 | tee "$RUNNER_TEMP/kind-e2e-console.log"
+      - name: Collect safe proofs, newest logs and phase summary
+        id: collect
+        if: ${{ always() }}
+        env:
+          RESULT: ${{ steps.scenario.outcome || 'failure' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [[ -f ops/demo/e2e.py ]]; then
+            result="$RESULT"
+            [[ "$result" == skipped ]] && result=failure
+            python3 -B ops/demo/e2e.py collect \
+              --workspace "$GITHUB_WORKSPACE" --console "$RUNNER_TEMP/kind-e2e-console.log" \
+              --destination "$RUNNER_TEMP/kind-e2e-artifacts" --summary "$GITHUB_STEP_SUMMARY" \
+              --result "$result" --run-url "$RUN_URL"
+          else
+            mkdir -m 700 "$RUNNER_TEMP/kind-e2e-artifacts"
+            printf '# Kind e2e setup failed\n\nNo demo proof is available. See the workflow job log.\n' | tee "$GITHUB_STEP_SUMMARY" > "$RUNNER_TEMP/kind-e2e-artifacts/summary.md"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: kind-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-e2e-artifacts
+          retention-days: 7
+          if-no-files-found: error
+
+  report:
+    needs: demo
+    if: >-
+      ${{ always() && !cancelled() && github.repository == 'Azure/aks-durable-agents' &&
+          github.ref == 'refs/heads/main' &&
+          ((github.event_name == 'workflow_dispatch' && inputs.report_test) || needs.demo.result == 'failure') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    concurrency:
+      group: kind-e2e-tracker
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14.3'
+      - name: Update the bot tracker or run the reporting-only permission test
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPORT_TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.report_test }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          args=(track --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --sha "$GITHUB_SHA" --run-url "$RUN_URL")
+          if [[ "$REPORT_TEST" == true ]]; then
+            args+=(--test)
+          fi
+          python3 -B ops/demo/e2e.py "${args[@]}"
