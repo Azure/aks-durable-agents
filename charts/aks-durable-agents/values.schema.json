@@ -247,6 +247,31 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "required"
+              },
+              "subjectClaim": {
+                "const": "sub"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "approvers": {
+                "items": {
+                  "properties": {
+                    "subject": {
+                      "pattern": "^[^\\x00-\\x20\\x7f]+$"
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       ]
     },

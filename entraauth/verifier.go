@@ -32,8 +32,10 @@ type Config struct {
 	TenantID, Issuer, Audience string
 	AllowedClientIDs           []string
 	RequiredScope              string
-	// SubjectClaim is oid by default; only oid and sub are supported. Selecting
-	// sub changes ownership mapping and requires an ownership/policy migration.
+	// SubjectClaim is oid by default; only oid and sub are supported. An oid
+	// value must be a lowercase GUID; a sub value must be nonempty with no
+	// whitespace or control characters. Selecting sub changes ownership mapping
+	// and requires an ownership/policy migration.
 	SubjectClaim string
 	// ClockSkew is 0..2 minutes. It relaxes nbf, never usable expiry.
 	ClockSkew time.Duration
@@ -205,14 +207,14 @@ func (v *Verifier) Verify(ctx context.Context) (authn.VerifiedCaller, error) {
 }
 
 // ValidIdentity reports whether id has the exact issuer and subject form that a
-// Verifier built from c can return: the configured Issuer and, for the default
-// oid subject, a lowercase GUID. Hosts use it to refuse allowlist entries that
-// could never match a verified caller. It does not validate c; New does.
+// Verifier built from c can return: the configured Issuer and a subject in the
+// form SubjectClaim requires. It does not validate c; New does.
 func (c Config) ValidIdentity(id api.CallerIdentity) bool {
 	return id.Issuer == c.Issuer && validSubject(c.SubjectClaim, id.Subject)
 }
 
-// Entra object IDs are lowercase GUIDs; sub is an opaque pairwise value.
+// validSubject accepts only a lowercase GUID for oid, and for sub a nonempty
+// value with no whitespace or control characters.
 func validSubject(claim, s string) bool {
 	switch claim {
 	case "", "oid":
