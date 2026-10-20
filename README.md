@@ -24,21 +24,26 @@ restore, and a Helm chart. It is not a new agent runtime or a ready-to-run servi
 
 ## Getting started
 
-You can run the offline checks today. They use fake credentials and local test
-servers; they do not deploy an agent or call Azure. You need Git, Go and Python;
-see the [tested tool versions](docs/development.md).
+Run a disposable, fake-model agent on kind. You need a Linux/amd64 Docker
+backend, kind v0.33+, compatible kubectl (v1.37 tested), Helm and Python 3.
+No host Go toolchain, Azure account or model credentials are needed.
 
 ```sh
 git clone https://github.com/Azure/aks-durable-agents.git
 cd aks-durable-agents
-go mod download
-go test ./...
-python3 -B -m unittest discover -s ops/backup -p 'test_*.py'
+make demo
 ```
 
-A passing run checks the host components and backup code. There is no
-self-contained agent demo or cluster install yet: the deployment recipes require
-operator-built images and other inputs not shipped here.
+The demo prepares a fictional release-note change, parks for approval, restarts
+the host, then asks you to type **approve** and separately **continue**. It checks
+one simulated effect, stops all writers, **seals the disposable stores in a
+separate demo-only step**, replays once read-only without model/tool calls, and
+deletes its owned cluster. Real hosts do not perform this sealing step.
+
+See the [demo prerequisites, sealing caveat and evidence](ops/demo/README.md).
+This is not an AKS, authenticated-approval or hostile-tenant isolation
+qualification. AKS deployment still needs operator identity/model inputs.
+For component checks without Docker, use the [development checks](docs/development.md).
 
 ## Go deeper
 

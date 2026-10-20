@@ -1,0 +1,14 @@
+**
+!go.mod
+!go.sum
+!cmd/
+!cmd/demo-host/**
+!cmd/demo-client/**
+!internal/
+!internal/host/**
+!internal/socketexec/**
+!internal/demohost/**
+!internal/democli/**
+!modeltransport/**
+!entraauth/**
+**/*_test.go
