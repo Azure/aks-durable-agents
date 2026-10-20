@@ -72,8 +72,8 @@ func (c *signaledDeadlineContext) Err() error {
 }
 
 // Cancellation during initial discovery must retain standard context
-// classification, not be masked by the sanitized network failure. A lifetime
-// canceled with a DeadlineExceeded cause (a detached startup deadline) is a deadline.
+// classification, not be masked by the sanitized network failure. A cancellation
+// whose cause is DeadlineExceeded is reported as a deadline.
 func TestInitialDiscoveryCancellation(t *testing.T) {
 	for _, name := range []string{"canceled", "deadline", "deadline cause"} {
 		t.Run(name, func(t *testing.T) {

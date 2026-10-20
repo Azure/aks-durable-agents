@@ -263,7 +263,7 @@ func (e *verificationError) Is(target error) bool {
 func failure(reason string) error { return &verificationError{reason: reason} }
 
 // contextFailure classifies an ended context. A cancellation whose cause is
-// DeadlineExceeded (a lifetime detached from a startup deadline) is a deadline.
+// DeadlineExceeded is reported as a deadline.
 func contextFailure(ctx context.Context) error {
 	switch ctx.Err() {
 	case context.Canceled:
