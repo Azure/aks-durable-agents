@@ -15,8 +15,12 @@ transport's workload identity.
 
 The following is host-assembly code, not an executable example or a network test.
 `hostCtx` is a `context.Context` owned by the **host lifetime**, not an RPC or a
-short startup deadline. Keep the verifier alive while serving; stop serving
-before its deferred `Close` runs.
+short startup deadline. Keep the verifier alive while serving, including the
+graceful drain; stop serving before its deferred `Close` runs. Do not pass a
+signal context that is canceled when shutdown starts: the verifier would close
+before `GracefulStop` drains, and RPCs still being verified would fail with
+`UNAUTHENTICATED`. `cmd/host` lets the signal context cancel only the initial
+key load and closes the verifier after the drain.
 
 ```go
 import (
@@ -111,10 +115,21 @@ server := grpc.NewServer(
   invalid credentials. Sessions #180 also maps trust/JWKS outages to that same
   status and has no diagnostics hook. A host needing operational diagnostics
   must wrap the verifier and log only fixed `DebugReason()` codes, never raw
-  errors, tokens, or claims. Scheduled refresh failures with no miss waiter are
-  not observable through that `Verify` wrapper until a request fails (for example,
-  at snapshot TTL expiry). This offline gate supplies no safe proactive status
-  hook. Do not add token/error dumps to diagnose live access.
+  errors, tokens, or claims. Optional `Config.OnRefreshError(reason, keysExpire)`
+  reports each failed background refresh (scheduled or unknown-key) with a fixed
+  code and the snapshot expiry, which a failure never extends, so a host can warn
+  before the snapshot expires. It is not called for the initial load (`New`
+  returns that error) or for a refresh ended by `Close`. It runs on the refresh
+  goroutine: return promptly and do not call `Close` from it. Do not add
+  token/error dumps to diagnose live access.
+- `cmd/host` does both. It logs each rejected caller as `caller authentication
+  failed` with only the fixed `reason`, at most once per reason per minute, with
+  a `suppressed` count of the failures since the previous line. The `canceled`
+  and `deadline` reasons mean the caller's own RPC context ended, not a bad
+  credential or Entra outage, so they are logged at debug level. It logs each
+  failed refresh with its `reason` and `keys_expire_in`: a warning that says the
+  snapshot nears expiry in the last six hours, and an error once it has expired.
+  Reasons that are not short lowercase codes are logged as `unclassified`.
 
 ## Real-tenant prerequisites (not performed by this package)
 

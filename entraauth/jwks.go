@@ -57,8 +57,8 @@ func (v *Verifier) startRefreshLocked(unknown bool) *refreshFlight {
 		defer v.wg.Done()
 		keys, err := v.fetchKeys()
 		v.mu.Lock()
-		defer v.mu.Unlock()
-		if v.ctx.Err() != nil {
+		closed := v.ctx.Err() != nil
+		if closed {
 			err = failure("closed")
 		}
 		if err == nil {
@@ -68,7 +68,14 @@ func (v *Verifier) startRefreshLocked(unknown bool) *refreshFlight {
 		}
 		f.err = err
 		v.flight = nil
+		expires := v.expires
 		close(f.done)
+		v.mu.Unlock()
+		// Report outside the lock; Close waits for this goroutine, hook included.
+		// fetchKeys returns only fixed-code failures, never raw network text.
+		if e, ok := err.(*verificationError); ok && !closed && v.config.OnRefreshError != nil {
+			v.config.OnRefreshError(e.reason, expires)
+		}
 	}()
 	return f
 }
