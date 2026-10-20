@@ -3,7 +3,7 @@
 Azure adapters and deployment recipes for durable agent sessions on AKS.
 This is experimental source, not a qualified preview release, production-ready
 or sandbox-isolated deployment.
-Start with the [project overview and current validation status](../README.md#status).
+Start with the [project overview](../README.md) and [current validation status](status.md).
 
 ## Install and operate
 
@@ -30,8 +30,20 @@ Start with the [project overview and current validation status](../README.md#sta
   token limits, cost reservations and stops after failed or unknown outcomes.
 
 The chart's fixture harness is not a Substrate sandbox. See the
-[architecture and isolation boundaries](../README.md#how-the-pieces-fit) before
+[architecture and isolation boundaries](architecture.md#default-chart-host-and-fixture-harness) before
 interpreting any deployment or recovery claim.
+
+## Repository map
+
+| Directory | Provides |
+| --- | --- |
+| [`cmd/host/`](../cmd/host/) | Sessions host executable; [configuration and security limits](host.md). |
+| [`entraauth/`](../entraauth/) | Entra delegated caller verification; [trust and tenant setup](entraauth.md). |
+| [`modeltransport/`](../modeltransport/) | Workload-identity Chat transport; [Go wiring](modeltransport.md) and [bounded model policy](../modeltransport/README.md). |
+| [`internal/`](../internal/) | Host assembly, approver policy and Unix-socket executor client. |
+| [`charts/`](../charts/) | Digest-pinned two-pod packaging, retained single-writer storage and NetworkPolicies. |
+| [`ops/backup/`](../ops/backup/) | Stopped-writer backup and isolated, socket-denied replay restore. |
+| [`ops/canvas/`](../ops/canvas/) | Native producer offline checks and optional external-input kind qualification. |
 
 ## Develop and qualify a preview release
 

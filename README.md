@@ -1,149 +1,55 @@
 # aks-durable-agents
 
-**Experimental source. Not for production or untrusted users. Preview 0 is not yet qualified.**
+Teams running agents need a way to wait for human approval and recover from restarts without losing work.
 
-This source depends on **unreleased development versions**:
+The goal is a workflow like this:
 
-| Component | Selected development version |
-| --- | --- |
-| Sessions root | `github.com/agent-primitives/sessions v0.2.1-0.20261019224537-f18a2cb1454d` |
-| Sessions Substrate adapter (separate module) | `github.com/agent-primitives/sessions/integrations/substrate v0.0.0-20261019224537-f18a2cb1454d` |
-| Substrate runtime/client | `github.com/agent-substrate/substrate v0.4.1-0.20261013053953-96dffb287919` |
+> An agent prepares a cluster change and stops for a named teammate to approve it.
+>
+> That person comes back the next morning. The agent's host has restarted.
+>
+> The agent continues from where it stopped.
+>
+> The team can inspect the record and replay the run without calling the model or tools again.
 
-All modules use canonical upstream sources, with no fork replacements. These are
-public development pins, not a released or qualified assembly. Sessions core and
-its separate Substrate adapter select the same commit. The runtime/client pin
-remains the adapter's compatible version; see [the version set](docs/substrate.md#version-set).
-
-Run durable agents on an existing Azure Kubernetes Service (AKS) cluster.
-
-[![CI: Go and Helm checks](https://github.com/Azure/aks-durable-agents/actions/workflows/ci.yml/badge.svg)](https://github.com/Azure/aks-durable-agents/actions/workflows/ci.yml)
-[![Status: experimental](https://img.shields.io/badge/status-experimental-orange)](docs/preview-0.md)
-
-For platform teams that already run AKS and want governed, durable agents without
-adopting a separate control plane.
-
-Start with offline checks. Read the [validation and security limits](#status)
-before considering any deployment.
-
-[Start offline](#getting-started) · [Architecture](docs/architecture.md) · [Documentation](docs/README.md) · [Preview 0 checklist](docs/preview-0.md)
-
-## Why durable sessions on AKS?
-
-An agent can pause for a person's approval without holding execution compute,
-survive restarts, and leave a record of what happened.
-[Sessions](https://github.com/agent-primitives/sessions) owns the journal,
-approvals, zero-call replay and fork; [Agent Substrate](https://github.com/agent-substrate/substrate)
-provides isolated execution and snapshots.
-
-This repo is the thin Azure layer on top: Entra caller identity, keyless model
-access through workload identity, network policy, Helm packaging and backup/restore.
-It is not a new runtime.
-Sessions stays cloud-neutral; this Azure layer's role mapping, supported Helm installation and approval-bound delegated tool access are planned, not current guarantees.
+This is a host and deployment setup for platform teams using Azure Kubernetes
+Service (AKS). It uses [Sessions](https://github.com/agent-primitives/sessions) to
+record agent work and approvals. It adds the Azure pieces: Entra sign-in for approvers,
+model access without keys (workload identity), network isolation, journal backup and
+restore, and a Helm chart. It is not a new agent runtime or a ready-to-run service.
 
 ## Status
 
-**Experimental, pre-release.** Public source availability is not a preview release.
-The current host is a **loopback-only proof**, not governed or multi-tenant
-activation. Authentication and an explicit approver policy are wired; sessions
-resource authorization is not yet enforced. Do not expose the API to untrusted users.
-
-- **Validated:** offline Go and Helm checks; local kind stopped-writer backup and
-  isolated strict replay with zero model/tool calls. A separate AKS Sessions
-  approval/replay proof used a fake model and unauthenticated, scripted decisions;
-  it did not validate this chart or this Azure host assembly.
-- **Not yet validated:** a live Entra tenant, live keyless model inference through
-  this host, Substrate isolation/snapshot recovery in this assembly, or an AKS
-  1.37 chart install. No HA or production-readiness claim.
-
-The [Preview 0 checklist](docs/preview-0.md) is the acceptance bar for a **preview
-release**, not a gate on public experimental source. Its unfinished requirements
-remain open; publishing source does not qualify them.
-
-## How the pieces fit
-
-The chart's default legacy profile separates the host from a fixture
-harness/executor pod:
-
-```mermaid
-flowchart TB
-    C[Trusted caller] --> H["Host<br/>Authentication + approver policy"]
-    J["Sessions journal<br/>Azure Disk"] <--> H
-    H --> E["Fixture harness<br/>Executor pod"]
-    H --> T["Keyless model<br/>transport"]
-    T --> M[Azure model endpoint]
-```
-
-A trusted caller reaches the host, which writes the sessions journal and calls
-the fixture harness/executor. Model calls go through the host's keyless transport
-to Azure; the harness gets no model credential. Both pods
-share a prepared data subtree for the executor socket and durable receipts.
-The chart does **not** install Substrate. Substrate owns isolated execution and
-snapshots in the intended assembly; the fixture pod is not that isolation boundary.
-The session API stays loopback-only and has no Service or Ingress.
-
-An opt-in [native document producer profile](charts/aks-durable-agents/README.md#native-document-producer-profile)
-replaces the fixture pod with static producers from prepared archives. It uses the
-host's built-in health probe, but still needs a separately supplied producer image
-and archives. Its [external qualification inputs](ops/canvas/README.md#scope-and-prerequisites)
-are not distributed here; this is not a standalone public deployment.
-
-## Repository map
-
-| Directory | Provides |
-| --- | --- |
-| [`cmd/host/`](cmd/host/) | Sessions host executable; [configuration and security limits](docs/host.md). |
-| [`entraauth/`](entraauth/) | Entra delegated caller verification; [trust and tenant setup](docs/entraauth.md). |
-| [`modeltransport/`](modeltransport/) | Workload-identity Chat transport; [Go wiring](docs/modeltransport.md) and [bounded model policy](modeltransport/README.md). |
-| [`internal/`](internal/) | Host assembly, approver policy and Unix-socket executor client. |
-| [`charts/`](charts/) | Digest-pinned two-pod packaging, retained single-writer storage and NetworkPolicies. |
-| [`ops/backup/`](ops/backup/) | Stopped-writer backup and isolated, socket-denied replay restore. |
-| [`ops/canvas/`](ops/canvas/) | Native producer offline checks and optional external-input kind qualification. |
+**Experimental source. The workflow above is not yet validated end to end on AKS. Do not use it in production or expose it to untrusted users.**
 
 ## Getting started
 
-Start offline, without Azure credentials or model keys. With Python 3.14.3 and
-the Go toolchain from [`go.mod`](go.mod) (currently 1.27.2), run from the repository root:
+You can run the offline checks today. They use fake credentials and local test
+servers; they do not deploy an agent or call Azure. You need Git, Go and Python;
+see the [tested tool versions](docs/development.md).
 
 ```sh
+git clone https://github.com/Azure/aks-durable-agents.git
+cd aks-durable-agents
 go mod download
 go test ./...
 python3 -B -m unittest discover -s ops/backup -p 'test_*.py'
 ```
 
-For Helm lint, rendering and refusal tests, install Helm 3.20.0, Python 3.14.3
-and the [pinned test requirements](charts/aks-durable-agents/tests/requirements.txt),
-then follow the [offline chart checks](charts/aks-durable-agents/README.md#offline-verification).
-The [local kind rehearsal](ops/backup/README.md#local-kind-rehearsal) exercises
-backup/replay with a fake model. It requires Docker, kind, kubectl, Helm and
-matching operator-built fixture/client binaries that are not included here.
-Their source/build recipe and the tagged integration test's external JavaScript
-reviewer are not distributed here either. Offline unit/chart checks are the
-self-contained entry point; the chart and rehearsal are not a standalone public
-distribution. See [external test inputs](docs/development.md#external-fixture-qualification).
-It uses kind Kubernetes 1.32.2 with chart YAML rendered for 1.37, not a Helm install
-or AKS qualification.
+A passing run checks the host components and backup code. There is no
+self-contained agent demo or cluster install yet: the deployment recipes require
+operator-built images and other inputs not shipped here.
 
-For an existing cluster, follow the [chart's prerequisites and policy-first install](charts/aks-durable-agents/README.md).
-It targets **AKS 1.37**, Linux amd64, OIDC and workload identity, Cilium enforcement
-and Azure Disk CSI. Reviewed probe-capable image digests, prepared private storage,
-and identity/TLS/model-policy inputs are required; bare defaults cannot run.
-The root Dockerfile alone lacks the **legacy fixture profile's** probe binary;
-the native profile uses `/host health-probe` and requires its own reviewed producer
-image and prepared archives.
-Workloads start dormant until the operator verifies policy enforcement.
-Read the [backup and restore recipe](ops/backup/README.md) before opening retained data.
+## Go deeper
 
-## Documentation
+- [Current limits and validation](docs/status.md): what has been tested, missing authorization and development dependencies.
+- [Architecture](docs/architecture.md): how the host, execution and storage fit together.
+- [Development](docs/development.md): full offline checks and external test inputs.
+- [Cluster deployment prerequisites](charts/aks-durable-agents/README.md) and [backup/restore](ops/backup/README.md).
+- [Preview release checklist](docs/preview-0.md): what must be proved before a preview release.
+- [All documentation and repository map](docs/README.md).
 
-See the [documentation index](docs/README.md),
-[development checks and pull-request guidance](docs/development.md),
-[host configuration and remaining authorization work](docs/host.md),
-[Sessions](https://github.com/agent-primitives/sessions) and
-[Agent Substrate](https://github.com/agent-substrate/substrate).
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and CLA process,
-[SUPPORT.md](SUPPORT.md) for help and [SECURITY.md](SECURITY.md) for private
+See [SUPPORT.md](SUPPORT.md) for help and [SECURITY.md](SECURITY.md) for private
 vulnerability reporting. Experimental source has no production support or SLA.
 This source is licensed under the [MIT License](LICENSE).
 
@@ -160,6 +66,8 @@ provided by the bot. You will only need to do this once across all repos using o
 This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
 For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or
 contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and contribution guidance.
 
 ## Trademarks
 

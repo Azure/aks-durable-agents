@@ -5,6 +5,41 @@
 Send changes as pull requests. Keep validation claims tied to the checks actually
 run; offline fixtures do not qualify a live deployment.
 
+## Start offline
+
+The [README checks](../README.md#getting-started) run without Azure credentials or
+model keys. Use Python **3.14.3** and the Go toolchain from [`go.mod`](../go.mod)
+(currently **1.27.2**). They exercise components with fake credentials and local
+test servers; they do not run an end-to-end agent workflow.
+
+For Helm lint, rendering and refusal tests, use Helm **3.20.0** and the
+[pinned Python requirements](../charts/aks-durable-agents/tests/requirements.txt),
+then follow the [offline chart checks](../charts/aks-durable-agents/README.md#offline-verification).
+
+## Deployment and rehearsal limits
+
+The [local kind rehearsal](../ops/backup/README.md#local-kind-rehearsal) exercises
+backup/replay with a fake model. It requires Docker, kind, kubectl, Helm and
+matching operator-built fixture/client binaries that are not included here.
+Their source/build recipe and the tagged integration test's external JavaScript
+reviewer are not distributed here either. Offline unit/chart checks are the
+self-contained entry point; the chart and rehearsal are not a standalone public
+distribution. See [external test inputs](#external-fixture-qualification).
+The rehearsal uses kind Kubernetes 1.32.2 with chart YAML rendered for 1.37, not a
+Helm install or AKS qualification.
+
+For an existing cluster, follow the [chart's prerequisites and policy-first install](../charts/aks-durable-agents/README.md).
+It targets **AKS 1.37**, Linux amd64, OpenID Connect (OIDC) and workload identity,
+Cilium enforcement and Azure Disk CSI. Reviewed probe-capable image digests,
+prepared private storage, and identity/TLS/model-policy inputs are required;
+bare defaults cannot run. The root Dockerfile alone lacks the **legacy fixture
+profile's** probe binary; the native profile uses `/host health-probe` and
+requires its own reviewed producer image and prepared archives.
+Workloads start dormant until the operator verifies policy enforcement.
+Read the [backup and restore recipe](../ops/backup/README.md) before opening retained data.
+
+## Full development checks
+
 CI runs on pull requests and pushes to `main`. To run the same checks locally,
 use the Go toolchain pinned in `go.mod` (currently Go 1.27.2; language floor 1.27):
 
