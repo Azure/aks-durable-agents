@@ -323,3 +323,35 @@ func TestEntraVerifierStartupCancellation(t *testing.T) {
 		t.Fatalf("canceled startup error = %v", err)
 	}
 }
+
+// A startup deadline that expires while the first discovery or key fetch is in
+// flight reports DeadlineExceeded, as entraauth.New(ctx) did, not Canceled.
+func TestEntraVerifierStartupDeadline(t *testing.T) {
+	for _, path := range []string{"/v2.0/.well-known/openid-configuration", "/discovery/v2.0/keys"} {
+		t.Run(path, func(t *testing.T) {
+			identity, _ := entraFixture(t)
+			base := identity.HTTPClient.Transport
+			identity.HTTPClient = &http.Client{Transport: fixtureRoundTrip(func(r *http.Request) (*http.Response, error) {
+				if !strings.HasSuffix(r.URL.Path, path) {
+					return base.RoundTrip(r)
+				}
+				select {
+				case <-r.Context().Done():
+					return nil, r.Context().Err()
+				case <-time.After(10 * time.Second):
+					return nil, errors.New("startup deadline did not end the fetch")
+				}
+			})}
+			ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+			defer cancel()
+			v, err := newEntraVerifier(ctx, identity)
+			if v != nil {
+				v.Close()
+				t.Fatal("expired startup returned a verifier")
+			}
+			if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || debugReason(err) != "deadline" {
+				t.Fatalf("expired startup error = %v (reason %q), want deadline", err, debugReason(err))
+			}
+		})
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -260,9 +261,15 @@ func (e *verificationError) Is(target error) bool {
 	return (e.reason == "canceled" && target == context.Canceled) || (e.reason == "deadline" && target == context.DeadlineExceeded)
 }
 func failure(reason string) error { return &verificationError{reason: reason} }
+
+// contextFailure classifies an ended context. A cancellation whose cause is
+// DeadlineExceeded (a lifetime detached from a startup deadline) is a deadline.
 func contextFailure(ctx context.Context) error {
 	switch ctx.Err() {
 	case context.Canceled:
+		if errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
+			return failure("deadline")
+		}
 		return failure("canceled")
 	case context.DeadlineExceeded:
 		return failure("deadline")

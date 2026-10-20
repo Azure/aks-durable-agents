@@ -168,10 +168,11 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 // load. The verifier must outlive it: Run drains admitted RPCs after the signal,
 // and those still verify. application.Close ends the verifier after the drain.
 func newEntraVerifier(ctx context.Context, c entraauth.Config) (*entraauth.Verifier, error) {
-	life, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	life, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
 	// On success cancel is never called: nothing leaks (the parent is
-	// WithoutCancel) and Verifier.Close ends the lifetime.
-	stop := context.AfterFunc(ctx, cancel)
+	// WithoutCancel) and Verifier.Close ends the lifetime. The cause keeps an
+	// expired startup deadline reported as DeadlineExceeded, not Canceled.
+	stop := context.AfterFunc(ctx, func() { cancel(context.Cause(ctx)) })
 	v, err := entraauth.New(life, c)
 	if !stop() {
 		// ctx ended during startup and canceled the lifetime: fail as before.

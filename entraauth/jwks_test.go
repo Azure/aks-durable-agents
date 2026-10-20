@@ -72,21 +72,29 @@ func (c *signaledDeadlineContext) Err() error {
 }
 
 // Cancellation during initial discovery must retain standard context
-// classification, not be masked by the sanitized network failure.
+// classification, not be masked by the sanitized network failure. A lifetime
+// canceled with a DeadlineExceeded cause (a detached startup deadline) is a deadline.
 func TestInitialDiscoveryCancellation(t *testing.T) {
-	for _, reason := range []string{"canceled", "deadline"} {
-		t.Run(reason, func(t *testing.T) {
+	for _, name := range []string{"canceled", "deadline", "deadline cause"} {
+		t.Run(name, func(t *testing.T) {
 			f := fixture(t)
 			var parent context.Context
 			var stop context.CancelFunc
-			want := context.Canceled
-			if reason == "deadline" {
+			reason, want := "canceled", context.Canceled
+			switch name {
+			case "deadline cause":
+				reason, want = "deadline", context.DeadlineExceeded
+				var cancel context.CancelCauseFunc
+				parent, cancel = context.WithCancelCause(context.Background())
+				stop = func() { cancel(context.DeadlineExceeded) }
+			case "deadline":
+				reason = "deadline"
 				deadline := &signaledDeadlineContext{Context: context.Background(), done: make(chan struct{})}
 				var once sync.Once
 				stop = func() { once.Do(func() { close(deadline.done) }) }
 				parent = deadline
 				want = context.DeadlineExceeded
-			} else {
+			default:
 				parent, stop = context.WithCancel(context.Background())
 			}
 			defer stop()
