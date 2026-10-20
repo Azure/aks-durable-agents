@@ -18,6 +18,8 @@ What the host enforces:
   installs the actual sessions unary/stream authentication interceptors with
   `entraauth.Verifier`. Failed authentication reaches no Sessions handler.
   Unary verification is admission-only; stream context expiry is cooperative.
+  Rejections and failed signing-key refreshes are logged by fixed reason code,
+  rate-limited, never with token, claim or provider text ([details](entraauth.md#trust-and-failure-contract)).
 - In required mode, `Approve` additionally invokes an `api.Authorizer` using
   `authn.Caller(ctx)` and an exact issuer/subject approver allowlist. An owner is
   **not implicitly an approver**; an allowlisted non-owner can approve. Empty

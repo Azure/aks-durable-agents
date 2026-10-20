@@ -90,11 +90,19 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 	}
 	var verifier authn.CallerVerifier
 	if c.Mode == authn.Required {
-		a.verifier, err = entraauth.New(ctx, c.Identity)
+		authLog := logger
+		if authLog == nil {
+			authLog = slog.New(slog.DiscardHandler)
+		}
+		identity := c.Identity
+		if identity.OnRefreshError == nil {
+			identity.OnRefreshError = refreshErrorLogger(authLog, time.Now)
+		}
+		a.verifier, err = newEntraVerifier(ctx, identity)
 		if err != nil {
 			return nil, err
 		}
-		verifier = a.verifier
+		verifier = newLoggingVerifier(a.verifier, authLog, time.Now)
 	}
 	// The deployment is host policy, not a harness-controlled override.
 	modelFn := func(ctx context.Context, r api.ModelRequest) (api.ModelResponse, error) {
@@ -154,6 +162,26 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 		return nil, err
 	}
 	return a, nil
+}
+
+// newEntraVerifier lets ctx (the signal context in Run) cancel only the initial key
+// load. The verifier must outlive it: Run drains admitted RPCs after the signal,
+// and those still verify. application.Close ends the verifier after the drain.
+func newEntraVerifier(ctx context.Context, c entraauth.Config) (*entraauth.Verifier, error) {
+	life, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stop := context.AfterFunc(ctx, cancel)
+	v, err := entraauth.New(life, c)
+	if !stop() {
+		// ctx ended during startup and canceled the lifetime: fail as before.
+		if v != nil {
+			v.Close()
+		}
+		if err == nil {
+			err = ctx.Err()
+		}
+		return nil, err
+	}
+	return v, err
 }
 
 func (a *application) Close() {
