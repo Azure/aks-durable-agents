@@ -6,7 +6,7 @@ Preview 0 is the acceptance bar for a **preview release**, not a gate on public
 experimental source. Preview 0 is **not yet qualified**. Public source can be
 inspected and built with the documented development pins while these requirements
 remain open. It is not a production-readiness or support commitment.
-Status checked **2026-10-19**. **Done** means the stated scope has evidence;
+Status checked **2026-10-20**. **Done** means the stated scope has evidence;
 **in progress** covers unfinished work, including planned tasks, not a claim
 that a live run has started; **blocked** means a named prerequisite is missing.
 Offline tests do not close live qualification items.
@@ -66,13 +66,14 @@ release and recovery checks are conditional on including Substrate.
 ## 2. No unreleased dependencies — blocked
 
 - **Blocked — released sessions with authn and per-RPC authorization.**
-  [The current module](../go.mod) still selects a fork pseudo-version for the
-  unreleased [authentication seam](https://github.com/agent-primitives/sessions/pull/180).
-  The latest release checked, [v0.2.0](https://github.com/agent-primitives/sessions/releases/tag/v0.2.0),
-  does not supply that seam. Wait for a compatible release that also includes
-  the required [authorization contract](https://github.com/agent-primitives/sessions/issues/127),
-  replace the pseudo-version pin, and rerun the host and chart checks. Do not
-  remove the replacement while keeping an incompatible source version.
+  [The current module](../go.mod) selects canonical upstream commit `f18a2cb1454d`,
+  including the merged [authentication seam](https://github.com/agent-primitives/sessions/pull/180),
+  with no fork replacement. It is still an unreleased pseudo-version; the latest
+  release checked, [v0.2.0](https://github.com/agent-primitives/sessions/releases/tag/v0.2.0),
+  does not supply that seam. [Per-RPC authorization (#190)](https://github.com/agent-primitives/sessions/pull/190)
+  remains pending, as does approval attribution. Wait for a compatible release
+  that includes the required [authorization contract](https://github.com/agent-primitives/sessions/issues/127),
+  replace the pseudo-version pin, and rerun the host and chart checks.
 - **Blocked if Substrate is included — released adapter, Substrate and Blob.**
   The sessions `integrations/substrate` adapter is a separate Go module with no
   release tag yet; a root sessions release does not release that nested module.

@@ -101,7 +101,7 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 		bounded, cancel := context.WithTimeout(ctx, 25*time.Second)
 		defer cancel()
 		r.Model = c.Deployment
-		bounded, err := chatParamsContext(bounded, r.Params)
+		bounded, r, err := chatRequestContext(bounded, r)
 		if err != nil {
 			return api.ModelResponse{}, err
 		}
@@ -111,7 +111,7 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 		bounded, cancel := context.WithTimeout(ctx, 25*time.Second)
 		defer cancel()
 		r.Model = c.Deployment
-		bounded, err := chatParamsContext(bounded, r.Params)
+		bounded, r, err := chatRequestContext(bounded, r)
 		if err != nil {
 			return api.ModelResponse{}, err
 		}

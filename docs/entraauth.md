@@ -152,19 +152,17 @@ without a tenant, credentials, or any cloud calls:
 go test -race -count=1 -run TestGRPCAuthentication ./entraauth
 ```
 
-The `go.mod` versioned `replace` selects sessions [PR #180](https://github.com/agent-primitives/sessions/pull/180)
-commit `ce018b2daa0f4061675fa7bfcd551af35299ea7e` through the public fork
-`github.com/gambtho/agentsessions`, pinned to pseudo-version
-`v0.1.3-0.20261018160920-ce018b2daa0f`. This supplies the unreleased `authn` seam
-(`NewInterceptors`, `CallerVerifier`, `Caller`). Go cannot resolve this commit
-through the upstream module path while it is only on the fork. The versioned
-replacement and `go.sum` make local and CI builds use the same checksummed source,
-without an extra checkout or vendoring. Canonical imports and the nominal
-`require github.com/agent-primitives/sessions v0.2.0` stay unchanged; the
-replacement selects the actual source **module-wide**, including adapter tests.
+The `go.mod` requirement selects canonical upstream Sessions commit
+`f18a2cb1454d1eea0c9e9063646a5251653bd95e`, pseudo-version
+`v0.2.1-0.20261019224537-f18a2cb1454d`, with no fork replacement. It includes the
+merged [authentication seam (#180)](https://github.com/agent-primitives/sessions/pull/180)
+(`NewInterceptors`, `CallerVerifier`, `Caller`); the Entra verifier contract is
+unchanged. Unary authentication is admission-only: a completed handler result is
+not overwritten solely because its context ended during execution. Streaming
+expiry enforcement remains in the upstream interceptor.
 
-Once a compatible upstream release contains the seam, change just the `replace`
-line's right-hand side to `github.com/agent-primitives/sessions vX.Y.Z`, using that
-release's actual version, then run `go mod tidy` to refresh checksums. The nominal
-requirement remains v0.2.0 until a later cleanup bumps it and removes the
-replacement. Do not switch back to the incompatible v0.2.0 source.
+This is still an unreleased development pin, not delivery of
+[per-RPC authorization (#190)](https://github.com/agent-primitives/sessions/pull/190)
+or approval attribution. When a compatible release includes the required seams,
+update the requirement and run `go mod tidy`, then rerun the host and chart
+checks. Do not select v0.2.0, which lacks the authentication seam.
