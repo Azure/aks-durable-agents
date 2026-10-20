@@ -356,15 +356,38 @@ class ChartTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, "native profile must not bypass TLS/identity gates")
         self.assertIn("tlsSecretName", result.stderr)
 
+    def test_image_pin_updater_preserves_canvas_configuration(self):
+        manifest = {"version": 1, "sourceCommit": "a" * 40, "images": {
+            "host": {"repository": "ghcr.io/azure/aks-durable-agents/host", "digest": "sha256:" + "1" * 64},
+            "harness": {"repository": "ghcr.io/azure/aks-durable-agents/session-fixture", "digest": "sha256:" + "2" * 64},
+        }}
+        texts = [(CHART / "values.yaml").read_text(), yaml.safe_dump(self.canvas_values(), sort_keys=False)]
+        for text in texts:
+            with self.subTest(enabled=yaml.safe_load(text)["canvas"]["enabled"]), tempfile.TemporaryDirectory() as directory:
+                values = Path(directory) / "values.yaml"
+                receipt = Path(directory) / "images.json"
+                values.write_text(text)
+                receipt.write_text(json.dumps(manifest))
+                result = subprocess.run([sys.executable, "-B", str(CHART.parents[1] / "ops/images/update_pins.py"),
+                                         "update", "--manifest", str(receipt), "--values", str(values)],
+                                        text=True, capture_output=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                expected = yaml.safe_load(text)
+                for role, pin in manifest["images"].items():
+                    expected["image"][role].update(pin)
+                expected["image"]["host"]["includesHealthProbe"] = True
+                self.assertEqual(yaml.safe_load(values.read_text()), expected)
+                self.assertEqual(values.read_text().split("\ncanvas:\n", 1)[1], text.split("\ncanvas:\n", 1)[1])
+
     def canvas_values(self):
         values = self.native_values()
         values["networkPolicy"] = {"enabled": True}
-        values["image"]["canvas"] = {
-            "repository": "example.invalid/canvas-engine",
-            "digest": "sha256:" + "c" * 64,
-            "includesHealthProbe": True,
-        }
         values["canvas"] = {
+            "image": {
+                "repository": "example.invalid/canvas-engine",
+                "digest": "sha256:" + "c" * 64,
+                "includesHealthProbe": True,
+            },
             "enabled": True, "instanceID": "review-instance-1",
             "origin": "https://127.0.0.1:9443",
             "sessionsTLSSecretName": "sessions-private-tls",
@@ -518,10 +541,10 @@ class ChartTests(unittest.TestCase):
             (("auth", "mode"), "required", "mode"),
             (("auth", "trustedNetwork"), False, "trustedNetwork"),
             (("networkPolicy", "enabled"), False, "enabled"),
-            (("image", "canvas", "repository"), "example.invalid/engine:latest", "repository"),
-            (("image", "canvas", "digest"), "", "digest"),
-            (("image", "canvas", "includesHealthProbe"), False, "includesHealthProbe"),
-            (("image", "canvas", "token"), "no-secrets", "token"),
+            (("canvas", "image", "repository"), "example.invalid/engine:latest", "repository"),
+            (("canvas", "image", "digest"), "", "digest"),
+            (("canvas", "image", "includesHealthProbe"), False, "includesHealthProbe"),
+            (("canvas", "image", "token"), "no-secrets", "token"),
             (("canvas", "instanceID"), "", "instanceID"),
             (("canvas", "instanceID"), "a" * 64, "instanceID"),
             (("canvas", "instanceID"), "Uppercase", "instanceID"),
@@ -584,7 +607,7 @@ class ChartTests(unittest.TestCase):
         self.documents(values)
         # Helm null removes these optional maps entirely. The Canvas-only
         # requirements must not activate merely because a map/key is absent.
-        values["image"]["canvas"] = None
+        values["canvas"]["image"] = None
         values["canvas"]["persistence"] = None
         self.assertEqual(render(values).stdout, render(self.defaults).stdout)
         values["canvas"]["persistence"] = {"existingClaim": None, "size": None, "storageClass": None}

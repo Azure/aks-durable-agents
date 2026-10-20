@@ -21,19 +21,14 @@
       "then": {
         "properties": {
           "canvas": {
-            "required": ["instanceID", "origin", "sessionsTLSSecretName", "tlsSecretName", "persistence"],
+            "required": ["instanceID", "origin", "sessionsTLSSecretName", "tlsSecretName", "persistence", "image"],
             "properties": {
               "instanceID": {"pattern": "^[a-z][a-z0-9-]{0,62}$"},
               "origin": {"pattern": "^https://127\\.0\\.0\\.1:[1-9][0-9]{0,4}$"},
               "sessionsTLSSecretName": {"minLength": 1},
               "tlsSecretName": {"minLength": 1},
-              "persistence": {"required": ["existingClaim", "size", "storageClass"]}
-            }
-          },
-          "image": {
-            "required": ["canvas"],
-            "properties": {
-              "canvas": {
+              "persistence": {"required": ["existingClaim", "size", "storageClass"]},
+              "image": {
                 "required": ["repository", "digest", "includesHealthProbe"],
                 "properties": {
                   "repository": {"pattern": "^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9]+([._/-][a-z0-9]+)*$"},
@@ -55,6 +50,15 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "repository": {"type": "string"},
+            "digest": {"type": "string"},
+            "includesHealthProbe": {"type": "boolean"}
+          }
+        },
         "enabled": {"type": "boolean"},
         "instanceID": {"type": "string"},
         "origin": {"type": "string"},
@@ -79,15 +83,6 @@
         "harness"
       ],
       "properties": {
-        "canvas": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "repository": {"type": "string"},
-            "digest": {"type": "string"},
-            "includesHealthProbe": {"type": "boolean"}
-          }
-        },
         "host": {
           "type": "object",
           "additionalProperties": false,

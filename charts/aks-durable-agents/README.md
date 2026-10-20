@@ -239,12 +239,11 @@ Keep all existing host/model/native inputs and add these operator inputs (the
 placeholders are deliberately not deployable):
 
 ```yaml
-image:
-  canvas:
+canvas:
+  image:
     repository: <reviewed-registry/repository>
     digest: sha256:<actual-64-lowercase-hex-digest>
     includesHealthProbe: true
-canvas:
   enabled: true
   instanceID: <unique-project-instance>
   origin: https://127.0.0.1:9443

@@ -8,11 +8,6 @@ image:
   harness:
     repository: "ghcr.io/azure/aks-durable-agents/session-fixture"
     digest: "sha256:0942af46da49f0e4cb267467bd98fd7a921b67b1c6eff139ebe4fc6e32ad2524"
-  canvas:
-    repository: ""
-    digest: ""
-    # Attest the reviewed image owns the HTTP /readyz health-probe command.
-    includesHealthProbe: false
 
 # Install dormant. Apply/verify policies before enabling workloads (see README).
 workloads:
@@ -91,6 +86,11 @@ networkPolicy:
 
 # Explicit private TLS, native-harness, auth-off profile. Never an auth boundary.
 canvas:
+  image:
+    repository: ""
+    digest: ""
+    # Attest the reviewed image owns the HTTP /readyz health-probe command.
+    includesHealthProbe: false
   enabled: false
   instanceID: ""
   # HTTPS literal-loopback origin; local port-forward port, not necessarily 8443.

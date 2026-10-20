@@ -42,7 +42,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: canvas-engine
-          image: {{ printf "%s@%s" .Values.image.canvas.repository .Values.image.canvas.digest | quote }}
+          image: {{ printf "%s@%s" .Values.canvas.image.repository .Values.canvas.image.digest | quote }}
           imagePullPolicy: IfNotPresent
           command: [/usr/local/bin/canvas-engine]
           args: [-config, /config/engine.json]
