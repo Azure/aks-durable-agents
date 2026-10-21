@@ -89,3 +89,23 @@ harness:
 
 networkPolicy:
   enabled: true
+
+# Explicit private TLS, native-harness, auth-off profile. Never an auth boundary.
+canvas:
+  image:
+    repository: ""
+    digest: ""
+    # Attest the reviewed image owns the HTTP /readyz health-probe command.
+    includesHealthProbe: false
+  enabled: false
+  instanceID: ""
+  # HTTPS literal-loopback origin; local port-forward port, not necessarily 8443.
+  origin: ""
+  # Existing host Secret: exact Service DNS SAN, tls.crt/tls.key and ca.crt.
+  sessionsTLSSecretName: ""
+  # Separate engine Secret: IP SAN 127.0.0.1, tls.crt/tls.key.
+  tlsSecretName: ""
+  persistence:
+    existingClaim: ""
+    size: 1Gi
+    storageClass: managed-csi
