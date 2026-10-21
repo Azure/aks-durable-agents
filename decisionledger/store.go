@@ -167,17 +167,8 @@ func openStore(path, id, lineage string, create bool) (*Store, error) {
 			return fail()
 		}
 		err = s.transaction(context.Background(), func(c *sql.Conn) error {
-			for _, stmt := range []string{
-				`PRAGMA user_version=1`,
-				`CREATE TABLE metadata(id INTEGER PRIMARY KEY CHECK(id=1),schema_version INTEGER NOT NULL,store_id TEXT NOT NULL,lineage TEXT NOT NULL)`,
-				`CREATE TABLE subjects(workspace TEXT NOT NULL,kind TEXT NOT NULL,subject_id TEXT NOT NULL,generation INTEGER NOT NULL,digest TEXT NOT NULL,snapshot TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('open','decided','superseded')),PRIMARY KEY(workspace,kind,subject_id,generation))`,
-				`CREATE UNIQUE INDEX one_open ON subjects(workspace,kind,subject_id) WHERE state='open'`,
-				`CREATE TABLE requests(workspace TEXT NOT NULL,issuer TEXT NOT NULL,oid TEXT NOT NULL,request_key TEXT NOT NULL,kind TEXT NOT NULL,subject_id TEXT NOT NULL,generation INTEGER NOT NULL,record_id TEXT NOT NULL UNIQUE,outcome TEXT NOT NULL CHECK(outcome IN ('recorded','refused')),record TEXT NOT NULL,PRIMARY KEY(workspace,issuer,oid,request_key),FOREIGN KEY(workspace,kind,subject_id,generation) REFERENCES subjects(workspace,kind,subject_id,generation))`,
-				`CREATE UNIQUE INDEX one_decision ON requests(workspace,kind,subject_id,generation) WHERE outcome='recorded'`,
-			} {
-				if _, err := c.ExecContext(context.Background(), stmt); err != nil {
-					return ErrUnavailable
-				}
+			if err := createSchema(context.Background(), c); err != nil {
+				return err
 			}
 			_, err := c.ExecContext(context.Background(), "INSERT INTO metadata VALUES(1,1,?,?)", s.id, lineage)
 			return err
@@ -487,6 +478,9 @@ func (s *Store) commit(ctx context.Context, actor api.CallerIdentity, validUntil
 
 // verify runs only during construction, before the Store can be shared or closed.
 func (s *Store) verify() error {
+	if err := s.verifySchema(); err != nil {
+		return err
+	}
 	ctx := context.Background()
 	var version, count int
 	var id, lineage string

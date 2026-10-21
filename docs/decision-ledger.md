@@ -136,12 +136,42 @@ and explicit schema revision, not reuse of `approve`; direct Resume must enforce
 the same dispatch boundary. Until then a consumer must not display these records
 as native-approved, continued or executed.
 
-Canvas consumers must compare exact host/store lineage, subject/hash/generation,
+Any review client must compare exact host/store lineage, subject/hash/generation,
 request/action/actor and policy snapshot against retained intent, then persist
-host evidence with their own local decision transition. Unknown/absent/mismatched
-read-back never advances a workflow. Document path/schema/review-scope validation
-remains Canvas-owned; this package has no document subject. No cross-store atomic
-commit or execution authority is claimed.
+host evidence with its own local decision transition. Unknown/absent/mismatched
+read-back never advances a workflow. For example, Canvas also retains ownership
+of document path/schema/review-scope validation; this package has no document
+subject or client dependency. No cross-store atomic commit or execution authority
+is claimed.
+
+### Lossless copied evidence
+
+A consumer must copy every recorded field unchanged, including the policy-selected
+historical role, issuer/subject, workspace, subject ID, policy version, ordered
+grant IDs, request digest, lineage and timestamp. Never rewrite a role to
+`Agent.Approver`, truncate an identifier or normalize Unicode to fit a narrower
+consumer. Projected identifiers and roles retain this producer's noncontrol
+UTF-8/256-byte domain; request keys remain printable non-space ASCII/128 bytes.
+The actor remains the exact verified identity pair. Grants remain sorted, unique
+and bounded to 64 entries. Consumer-specific operation/target keys may have a
+separate narrower domain, but cannot silently narrow retained decision evidence.
+Current scoped policy and entitlement are checked separately; a recorded role
+string does not itself grant current authority. Whole request/authority envelope
+limits still apply in addition to the producer's record bound.
+
+The opt-in `decision_projection_conformance` test issues decisions through the
+real service with synthetic request verification/policy and consumes their
+unaltered projection through the real target-version Begin/Reserve/Commit/reopen
+path. It is build-tagged while the consumer package is developed separately;
+run it in a combined source checkout containing both packages:
+
+```sh
+go test -race -tags=decision_projection_conformance ./internal/targetversions \
+  -run '^TestDecisionProjectionConformance$' -count=1
+```
+
+This checks representation and immutable persistence, not the absent owning
+adapter, live Entra, qualification, runtime fencing or effect consumption.
 
 ## Storage, compatibility and privacy
 
@@ -152,7 +182,12 @@ symlink components and unsafe SQLite sidecars are refused. Linux/POSIX file and
 lock semantics apply. `Open(path, expectedStoreID, hostLineageID)` never creates
 or migrates state: retain the expected store identity independently. Reopening an
 existing empty/truncated, foreign, inconsistent or unknown-schema DB refuses.
-There is no in-memory fallback or automatic state adoption.
+Schema 1 requires the exact library-owned table/index definitions as well as both
+version markers, identity and data-coherence checks. Reopen rejects missing
+indexes, added columns/objects and replaced constraints even when the markers
+remain 1; SQL definitions must match the library DDL, not merely an equivalent
+external spelling. SQLite's own internal objects are excluded from that identity.
+There is no schema repair, in-memory fallback or automatic state adoption.
 
 A separate persistent 0600 `<database>.lock` file carries a lifetime exclusive
 lock and rejects another cooperating writer **before opening the DB file**.
