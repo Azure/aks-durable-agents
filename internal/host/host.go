@@ -109,12 +109,13 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 			approval.verifyApproval = func(ctx context.Context) (authn.VerifiedCaller, bool, error) {
 				caller, match, err := a.verifier.VerifyApproval(ctx)
 				if err != nil {
-					logged.failed(debugReason(err))
+					logged.approvalFailed(debugReason(err))
 				}
 				return caller, match, err
 			}
 		}
-		authLog.Info("approval sources active", "subjects", len(approval.approvers), "app_roles", identity.ApproverRoles)
+		authLog.Info("approval sources active", "subjects", len(approval.approvers), "app_roles", identity.ApproverRoles,
+			"member_only", identity.MemberOnly, "required_roles", identity.RequiredRoles, "required_group_count", len(identity.RequiredGroups))
 	}
 	// The deployment is host policy, not a harness-controlled override.
 	modelFn := func(ctx context.Context, r api.ModelRequest) (api.ModelResponse, error) {

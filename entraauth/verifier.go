@@ -34,11 +34,16 @@ type Config struct {
 	TenantID, Issuer, Audience string
 	AllowedClientIDs           []string
 	RequiredScope              string
-	// RequiredRoles admits any listed app role; RequiredGroups requires all IDs.
-	// Empty lists and MemberOnly=false preserve unrestricted delegated admission.
-	RequiredRoles, RequiredGroups []string
-	MemberOnly                    bool
+	// RequiredRoles admits any listed app role. Values must be nonempty with no
+	// ASCII whitespace or control characters; duplicates are rejected.
+	RequiredRoles []string
+	// RequiredGroups requires all listed lowercase GUID group IDs; duplicates
+	// are rejected. An empty list imposes no group restriction.
+	RequiredGroups []string
+	// MemberOnly requires an explicit integer acct=0. False imposes no account-type restriction.
+	MemberOnly bool
 	// ApproverRoles grants approval for any listed role, not ordinary admission.
+	// Value rules and duplicate rejection are the same as RequiredRoles.
 	// Hosts must call VerifyApproval before combining roles with subject policy.
 	ApproverRoles []string
 	// SubjectClaim is oid by default; only oid and sub are supported. An oid

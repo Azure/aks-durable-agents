@@ -134,6 +134,10 @@ server := grpc.NewServer(
   failed refresh with its `reason` and `keys_expire_in`: a warning that says the
   snapshot nears expiry in the last six hours, and an error once it has expired.
   Reasons that are not short lowercase codes are logged as `unclassified`.
+  Approval-path verification failures use `approval verification failed`, not
+  `caller authentication failed`, with a separate per-reason rate limit. A caller
+  context ending on that path is logged at debug as `caller context ended during
+  approval verification`.
 
 ## Optional caller and approver checks
 
@@ -154,6 +158,12 @@ image containing these checks. A pre-feature image refuses the new auth JSON.
 After source merge, follow the [publish, verify and pin process](../ops/images/README.md#publish-then-pin)
 before enabling these settings; do not assume the chart's default host digest
 contains the checks.
+
+`memberOnly` means **`acct=0` (tenant `userType: Member`)**, not a home-tenant
+account guarantee. [B2B users can be Members](https://learn.microsoft.com/en-us/entra/external-id/user-properties#can-microsoft-entra-b2b-users-be-added-as-members-instead-of-guests),
+so a B2B member can satisfy this check. The `acct` emission for that specific
+B2B-member case is still to be confirmed in a real-tenant run; this setting must
+not be used to infer where the user authenticates.
 
 Matching is exact and case-sensitive. Role values must be nonempty with no ASCII
 whitespace/control characters; group IDs must be lowercase GUIDs. Duplicate
@@ -187,7 +197,12 @@ caller list if it should admit approvers without another role.
 **No silent subject fallback when role claims are absent.** With approver roles
 configured, every approval requires a nonempty, well-formed string-array `roles`
 claim, including for listed subjects. A listed subject needs at least one API
-app-role assignment (not necessarily an approver role). A missing/empty claim is
+app-role assignment (not necessarily an approver role). **Operator upgrade note:**
+before adding `approverRoles` to a subject-only deployment, assign the configured
+approver app role to those subjects too and acquire fresh tokens. Otherwise,
+listed subjects whose tokens have no `roles` claim are intentionally refused.
+A listed subject with another valid API app role still qualifies through the
+subject route (OR). A missing/empty claim is
 refused with `approval requires a nonempty roles claim; configure API app role
 assignments`; malformed claims are refused with `approval requires a valid roles
 claim`. Ordinary calls are unaffected by `approverRoles`. Startup cannot know
@@ -207,8 +222,11 @@ clear operator diagnostic. Other policy reasons are `role_required`,
 `group_required`, and `member_required`.
 
 On startup the host logs `approval sources active` with the configured subject
-**count** and configured `app_roles` names. These are operator settings, never
-claim values or subject IDs. Approval role checks re-verify the same request's
+**count** and configured `app_roles` names, together with `member_only`, configured
+`required_roles` names and `required_group_count`. These are operator settings,
+never claim values, subject IDs or group IDs. Invalid policy configuration is
+refused at host startup with a field-specific rule, without echoing the value;
+`Config.ValidatePolicy` also exposes this check without trust I/O. Approval role checks re-verify the same request's
 credential and bind its identity to `authn.Caller(ctx)`. They retain no roles or
 authority by subject; calling the policy without incoming credentials fails
 closed. No upstream Sessions role transport or owner isolation is implied.

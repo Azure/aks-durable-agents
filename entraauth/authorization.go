@@ -3,26 +3,46 @@ package entraauth
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 
 	"github.com/agent-primitives/sessions/authn"
 	"github.com/golang-jwt/jwt/v5"
 )
 
-func (c *Config) copyPolicy() error {
+// ValidatePolicy checks optional operator policy values without trust I/O.
+// Errors name the configuration field and rule, never the supplied value.
+// New still returns generic verification errors for invalid configuration.
+func (c Config) ValidatePolicy() error {
 	for _, list := range []struct {
-		values *[]string
+		name   string
+		values []string
 		group  bool
-	}{{&c.RequiredRoles, false}, {&c.ApproverRoles, false}, {&c.RequiredGroups, true}} {
+	}{{"requiredRoles", c.RequiredRoles, false}, {"approverRoles", c.ApproverRoles, false}, {"requiredGroups", c.RequiredGroups, true}} {
 		seen := make(map[string]bool)
-		for _, s := range *list.values {
-			if !plainWord(s) || (list.group && !guid.MatchString(s)) || seen[s] {
-				return failure("config")
+		for _, s := range list.values {
+			if list.group && !guid.MatchString(s) {
+				return fmt.Errorf("identity.%s values must be lowercase GUIDs", list.name)
+			}
+			if !plainWord(s) {
+				return fmt.Errorf("identity.%s values must be nonempty with no ASCII whitespace or control characters", list.name)
+			}
+			if seen[s] {
+				return fmt.Errorf("identity.%s must not contain duplicate values", list.name)
 			}
 			seen[s] = true
 		}
-		*list.values = slices.Clone(*list.values)
 	}
+	return nil
+}
+
+func (c *Config) copyPolicy() error {
+	if err := c.ValidatePolicy(); err != nil {
+		return failure("config")
+	}
+	c.RequiredRoles = slices.Clone(c.RequiredRoles)
+	c.ApproverRoles = slices.Clone(c.ApproverRoles)
+	c.RequiredGroups = slices.Clone(c.RequiredGroups)
 	return nil
 }
 

@@ -93,10 +93,30 @@ func TestApprovalSourcesORAndRequiredClaims(t *testing.T) {
 			if strings.Contains(log, token) || strings.Contains(log, approverOID) || strings.Contains(log, ownerOID) {
 				t.Fatal("claim values reached logs")
 			}
-			if tc.roles == nil && !strings.Contains(log, "reason=roles_missing") {
-				t.Fatal("missing roles not diagnosed")
+			if tc.roles == nil && (!strings.Contains(log, `msg="approval verification failed" reason=roles_missing`) || strings.Contains(log, `msg="caller authentication failed"`)) {
+				t.Fatal("missing approval roles logged as authentication failure")
 			}
 		})
+	}
+}
+
+func TestAdmissionPolicyStartupLog(t *testing.T) {
+	f := newHostFixture(t)
+	identity, _ := entraFixture(t)
+	identity.MemberOnly = true
+	identity.RequiredRoles = []string{"Reviewer", "Approver"}
+	identity.RequiredGroups = []string{ownerOID}
+	f.config.Mode, f.config.Identity = authn.Required, identity
+	sink := newLogSink()
+	f.startWith(t, t.Context(), sink.logger())
+	log := sink.String()
+	for _, field := range []string{`member_only=true`, `required_roles="[Reviewer Approver]"`, `required_group_count=1`} {
+		if !strings.Contains(log, field) {
+			t.Fatalf("missing configured admission restriction %s", field)
+		}
+	}
+	if strings.Contains(log, ownerOID) {
+		t.Fatal("group IDs reached startup log")
 	}
 }
 

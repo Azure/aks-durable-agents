@@ -62,13 +62,20 @@ func (l *loggingVerifier) Verify(ctx context.Context) (authn.VerifiedCaller, err
 	return caller, err
 }
 
-func (l *loggingVerifier) failed(reason string) {
+func (l *loggingVerifier) failed(reason string)         { l.logFailure(reason, false) }
+func (l *loggingVerifier) approvalFailed(reason string) { l.logFailure(reason, true) }
+
+func (l *loggingVerifier) logFailure(reason string, approval bool) {
+	message, contextMessage, key := "caller authentication failed", "caller context ended during authentication", reason
+	if approval {
+		message, contextMessage, key = "approval verification failed", "caller context ended during approval verification", "approval:"+reason
+	}
 	now := l.now()
 	l.mu.Lock()
-	r := l.reasons[reason]
+	r := l.reasons[key]
 	if r == nil {
 		r = &reasonLog{}
-		l.reasons[reason] = r
+		l.reasons[key] = r
 	}
 	if now.Before(r.next) {
 		r.suppressed++
@@ -82,10 +89,10 @@ func (l *loggingVerifier) failed(reason string) {
 		// The caller's own RPC context ended (disconnect or client deadline),
 		// for example while waiting on an unknown-key refresh. Not a credential
 		// or Entra failure, so keep it out of the warnings.
-		l.logger.Debug("caller context ended during authentication", "reason", reason, "suppressed", suppressed)
+		l.logger.Debug(contextMessage, "reason", reason, "suppressed", suppressed)
 		return
 	}
-	l.logger.Warn("caller authentication failed", "reason", reason, "suppressed", suppressed)
+	l.logger.Warn(message, "reason", reason, "suppressed", suppressed)
 }
 
 // refreshErrorLogger reports failed background Entra key refreshes. Refreshes
