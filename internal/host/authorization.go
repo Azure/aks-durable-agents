@@ -2,6 +2,8 @@ package host
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"github.com/agent-primitives/sessions/api"
 	v1 "github.com/agent-primitives/sessions/api/genpb"
@@ -11,7 +13,13 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-type approvalPolicy struct{ approvers map[api.CallerIdentity]bool }
+type approvalPolicy struct {
+	approvers      map[api.CallerIdentity]bool
+	verifyApproval func(context.Context) (authn.VerifiedCaller, bool, error)
+}
+
+var errApprovalRolesMissing = errors.New("approval requires a nonempty roles claim; configure API app role assignments")
+var errApprovalRolesInvalid = errors.New("approval requires a valid roles claim")
 
 func newApprovalPolicy(callers []api.CallerIdentity) *approvalPolicy {
 	p := &approvalPolicy{approvers: make(map[api.CallerIdentity]bool, len(callers))}
@@ -30,7 +38,27 @@ func (p *approvalPolicy) Authorize(ctx context.Context, r api.AuthorizationReque
 		return err
 	}
 	if r.Action == api.ActionApprove {
-		if r.SessionUID != "" && r.Caller.Valid() && p.approvers[r.Caller] {
+		if r.SessionUID == "" || !r.Caller.Valid() {
+			return api.ErrPermissionDenied
+		}
+		role := false
+		if p.verifyApproval != nil {
+			verified, match, err := p.verifyApproval(ctx)
+			if err != nil {
+				switch debugReason(err) {
+				case "roles_missing":
+					return errApprovalRolesMissing
+				case "roles_invalid":
+					return errApprovalRolesInvalid
+				}
+				return api.ErrPermissionDenied
+			}
+			if verified.Identity != r.Caller || !verified.ValidUntil.After(time.Now()) {
+				return api.ErrPermissionDenied
+			}
+			role = match
+		}
+		if p.approvers[r.Caller] || role {
 			return nil
 		}
 		return api.ErrPermissionDenied
@@ -45,7 +73,16 @@ func approvalGate(policy api.Authorizer) grpc.UnaryServerInterceptor {
 		}
 		caller, ok := authn.Caller(ctx)
 		approval, valid := req.(*v1.ApproveRequest)
-		if !ok || !valid || policy.Authorize(ctx, api.AuthorizationRequest{Caller: caller, Action: api.ActionApprove, SessionUID: approval.GetSession()}) != nil {
+		if !ok || !valid {
+			return nil, status.Error(codes.PermissionDenied, "approval not permitted")
+		}
+		if err := policy.Authorize(ctx, api.AuthorizationRequest{Caller: caller, Action: api.ActionApprove, SessionUID: approval.GetSession()}); err != nil {
+			if errors.Is(err, errApprovalRolesMissing) {
+				return nil, status.Error(codes.PermissionDenied, errApprovalRolesMissing.Error())
+			}
+			if errors.Is(err, errApprovalRolesInvalid) {
+				return nil, status.Error(codes.PermissionDenied, errApprovalRolesInvalid.Error())
+			}
 			return nil, status.Error(codes.PermissionDenied, "approval not permitted")
 		}
 		return next(ctx, req)

@@ -138,6 +138,26 @@ func TestLoggingVerifierFixedReasonsAndRateLimit(t *testing.T) {
 	}
 }
 
+func TestApprovalFailureLoggingSeparate(t *testing.T) {
+	sink := newLogSink()
+	now := time.Now()
+	v := newLoggingVerifier(&scriptedVerifier{}, sink.logger(), func() time.Time { return now })
+	v.failed("roles_missing")
+	for range 3 {
+		v.approvalFailed("roles_missing")
+	}
+	now = now.Add(authLogInterval)
+	v.approvalFailed("roles_missing")
+	v.approvalFailed("canceled")
+	log := sink.String()
+	if strings.Count(log, `msg="caller authentication failed"`) != 1 ||
+		!strings.Contains(log, `msg="approval verification failed" reason=roles_missing suppressed=0`) ||
+		!strings.Contains(log, `msg="approval verification failed" reason=roles_missing suppressed=2`) ||
+		!strings.Contains(log, `level=DEBUG msg="caller context ended during approval verification"`) {
+		t.Fatalf("incorrect failure classification or rate limit: %s", log)
+	}
+}
+
 // Refresh failures escalate as the unextended key snapshot nears expiry.
 func TestRefreshErrorLogger(t *testing.T) {
 	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)

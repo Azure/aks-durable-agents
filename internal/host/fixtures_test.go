@@ -274,7 +274,7 @@ type fixtureRoundTrip func(*http.Request) (*http.Response, error)
 
 func (f fixtureRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func entraFixture(t *testing.T) (entraauth.Config, func(string) string) {
+func entraFixture(t *testing.T, modify ...func(jwt.MapClaims)) (entraauth.Config, func(string) string) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -311,6 +311,9 @@ func entraFixture(t *testing.T) (entraauth.Config, func(string) string) {
 	t.Cleanup(client.CloseIdleConnections)
 	return entraauth.Config{TenantID: tenant, Issuer: fixtureIssuer, Audience: audience, AllowedClientIDs: []string{azp}, RequiredScope: "sessions.access", HTTPClient: client}, func(subject string) string {
 		token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{"iss": fixtureIssuer, "tid": tenant, "aud": audience, "azp": azp, "ver": "2.0", "scp": "sessions.access", "oid": subject, "sub": subject, "exp": time.Now().Add(time.Hour).Unix(), "nbf": time.Now().Add(-time.Minute).Unix()})
+		for _, change := range modify {
+			change(token.Claims.(jwt.MapClaims))
+		}
 		token.Header["kid"] = "fixture"
 		raw, err := token.SignedString(key)
 		if err != nil {

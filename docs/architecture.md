@@ -8,8 +8,9 @@ operational packaging. It does not replace Sessions or provide a document store.
 ## Why this exists
 
 Sessions is cloud-neutral; this repo supplies Azure-specific identity and
-operations: Entra caller verification with an explicit approver allowlist
-(role-based mapping is planned), keyless model access, network policy, opt-in
+operations: Entra caller verification with optional role, group and member
+checks, plus approval by explicit subject allowlist OR verified app role
+([policy details](entraauth.md#optional-caller-and-approver-checks)), keyless model access, network policy, opt-in
 Substrate wiring for isolation, and an Azure Disk-backed journal with a
 backup/restore recipe tested locally on kind. Substrate isolation and
 backup/restore on AKS, plus a qualified, supported Helm install, are planned—not
@@ -86,7 +87,7 @@ archive; there is no built-in journal-to-Blob backup path.
 
 - **Documents:** callers such as Canvas own their document store and review; this host owns no accepted-document history.
 - **Journal:** Sessions records execution, approval and replay on retained storage; the model attempt ledger and executor receipts are separate durable state.
-- **Approvals:** in `auth.mode=required`, the host verifies callers and applies an explicit approver allowlist. `auth.mode=off` disables authentication and the approval gate for trusted-network local development only. Approval and continuation remain separate Sessions operations.
+- **Approvals:** in `auth.mode=required`, the host verifies callers, applies configured admission restrictions and permits approval by an explicit subject allowlist OR a verified approver app role. Configured approver roles require a usable `roles` claim even for listed subjects. `auth.mode=off` disables authentication and the approval gate for trusted-network local development only. Approval and continuation remain separate Sessions operations.
 - **Human identity:** Entra delegated-token verification exists, but per-RPC resource authorization and server-derived approval attribution are still required; no untrusted or multi-tenant access is supported.
 - **Model access:** only the host's transport uses workload identity for Azure inference; harnesses receive model results, not Azure credentials.
 - **Execution:** the chart's fixture pod is not a sandbox; opt-in Substrate wiring needs separate infrastructure and has no boot-scoped recovery-authority guarantee.
