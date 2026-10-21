@@ -27,6 +27,17 @@ MANIFEST = {"version": 1, "sourceCommit": "d" * 40, "images": {
     "harness": {"repository": "ghcr.io/azure/aks-durable-agents/session-fixture", "digest": FIXTURE}}}
 RECEIPT = {"version": 1, "sourceCommit": "d" * 40, "hostDigest": PIN, "image": HELPER}
 
+# Selected Azure CLI 2.91.0 response rows; no account or resource identifiers.
+AZURE_VERSIONS = {"values": [{
+    "capabilities": {"supportPlan": ["KubernetesOfficial", "AKSLongTermSupport"]},
+    "isDefault": None, "isPreview": None,
+    "patchVersions": {"1.37.0": {"upgrades": []}}, "version": "1.37"}]}
+AZURE_QUOTA: list[dict[str, object]] = [
+    {"currentValue": "0", "limit": "10", "localName": "Total Regional vCPUs",
+     "name": {"localizedValue": "Total Regional vCPUs", "value": "cores"}, "unit": "Count"},
+    {"currentValue": "0", "limit": "10", "localName": "Standard DSv4 Family vCPUs",
+     "name": {"localizedValue": "Standard DSv4 Family vCPUs", "value": "standardDSv4Family"}, "unit": "Count"}]
+
 
 def environment():
     return dict(ENV, AKS_SCENARIO_ENABLED="true", AKS_BUDGET_CONFIRMED="true",
@@ -146,6 +157,50 @@ class LifecycleTests(unittest.TestCase):
         usages[1]["limit"] = 9
         with self.assertRaises(ValueError):
             lifecycle.check_quota(usages)
+
+    def test_versions_accept_cli_nullable_ga_flag(self):
+        lifecycle.check_versions(AZURE_VERSIONS)
+        row = dict(AZURE_VERSIONS["values"][0])
+        del row["isPreview"]  # The corresponding raw Azure REST response omits it.
+        lifecycle.check_versions({"values": [row]})
+
+    def test_nullable_version_metadata_still_requires_nonpreview_exact_patch(self):
+        row = AZURE_VERSIONS["values"][0]
+        for flag in (True, 0, 1, "false", "true", [], {}):
+            with self.subTest(flag=flag), self.assertRaises(ValueError):
+                lifecycle.check_versions({"values": [dict(row, isPreview=flag)]})
+        with self.assertRaises(ValueError):
+            lifecycle.check_versions({"values": [dict(row, patchVersions={"1.37.1": {}})]})
+
+    def test_quota_accepts_cli_numeric_strings_and_mixed_integer_counts(self):
+        lifecycle.check_quota(AZURE_QUOTA)
+        lifecycle.check_quota([dict(row, currentValue=0) for row in AZURE_QUOTA])
+        lifecycle.check_quota([dict(row, limit=10) for row in AZURE_QUOTA])
+        lifecycle.check_quota([dict(row, currentValue="4") for row in AZURE_QUOTA])
+
+    def test_quota_numeric_strings_preserve_both_limits_and_unique_rows(self):
+        for index in (0, 1):
+            rows = [dict(row) for row in AZURE_QUOTA]
+            rows[index]["currentValue"] = "5"
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                lifecycle.check_quota(rows)
+        for rows in (AZURE_QUOTA[:1], AZURE_QUOTA + AZURE_QUOTA[:1]):
+            with self.subTest(rows=rows), self.assertRaises(ValueError):
+                lifecycle.check_quota(rows)
+
+    def test_quota_rejects_noncanonical_or_noninteger_counts(self):
+        invalid = {
+            "currentValue": (None, True, False, -1, 0.0, "", "-1", "+0", "0.0", "0e0",
+                             "00", " 0", "0 ", "0\n", "０", [], {}),
+            "limit": (None, True, False, -1, 20.0, "", "-20", "+20", "20.0", "2e1",
+                      "020", " 20", "20 ", "20\n", "２０", [], {}),
+        }
+        for field, values in invalid.items():
+            for value in values:
+                rows = [dict(row, limit="20") for row in AZURE_QUOTA]
+                rows[0][field] = value
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, "invalid quota count"):
+                    lifecycle.check_quota(rows)
 
     def test_create_is_async_bounded_fixed_size_and_tagged_before_call(self):
         config = self.config()
