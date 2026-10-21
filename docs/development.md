@@ -8,7 +8,7 @@ run; offline fixtures do not qualify a live deployment.
 ## Start offline
 
 Component checks run without Azure credentials or model keys. Use Python
-**3.14.3** and the Go toolchain from [`go.mod`](../go.mod) (currently **1.27.2**):
+**3.14.3** and the Go toolchain from [`go.mod`](../go.mod) (currently **1.27.3**):
 
 ```sh
 go mod download
@@ -51,7 +51,7 @@ Read the [backup and restore recipe](../ops/backup/README.md) before opening ret
 ## Full development checks
 
 CI runs on pull requests and pushes to `main`. To run the same checks locally,
-use the Go toolchain pinned in `go.mod` (currently Go 1.27.2; language floor 1.27):
+use the Go toolchain pinned in `go.mod` (currently Go 1.27.3; language floor 1.27):
 
 ```sh
 set -e

@@ -10,7 +10,7 @@ agents, routers, worker pools, database or snapshot store.
 
 ## Version set
 
-Build with **Go 1.27.2**, including remote-only builds. Sessions core and the
+Build with **Go 1.27.3**, including remote-only builds. Sessions core and the
 separately versioned adapter use the same canonical upstream commit, without
 fork replacements:
 

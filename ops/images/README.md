@@ -18,7 +18,7 @@ host** is not a production chart default.
 
 ## Build locally
 
-Use Go **1.27.2** from `go.mod`, Make, Docker with BuildKit, and Linux amd64.
+Use Go **1.27.3** from `go.mod`, Make, Docker with BuildKit, and Linux amd64.
 Python **3.14.3** runs the smoke and pin tests. These commands use only public
 module dependencies and the pinned distroless base; no adjacent checkout, native
 RPC helper, JavaScript reviewer, Azure credential or model key is a build input.

@@ -53,7 +53,7 @@ What the host enforces:
 In default remote mode, `-harness` is repeatable; the alphabetically first
 configured harness is the creation default. Alternatively, configure exactly one
 [`-substrate-harness`](substrate.md#host-inputs), never both modes. There are no
-built-in echo/chat harnesses. All builds, including remote mode, use Go 1.27.2. For a local
+built-in echo/chat harnesses. All builds, including remote mode, use Go 1.27.3. For a local
 release-notes fixture, configure `release-notes=127.0.0.1:9000`, `/data/journal.db`,
 `/data/tools.json`, `/data/publish.sock` and a durable publication database.
 The model URL must be HTTPS with `/openai/v1/` (not the old plaintext fake `/v1`);
