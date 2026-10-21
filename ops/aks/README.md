@@ -1,13 +1,21 @@
-# AKS e2e bootstrap
+# Manual AKS e2e and independent expiry cleanup
 
-This is workflow infrastructure, not a live AKS qualification. The dispatch-only
-**Nightly AKS e2e** workflow performs read-only identity/resource-group validation.
-It has no cluster provisioning, model request, Helm install or scenario schedule.
-The existing kind workflow and its fake-model assertions are unchanged.
+The dispatch-only **Nightly AKS e2e** workflow defaults to read-only identity/RG
+validation. Its optional real-model scenario is separately operator-gated and has
+**no schedule**. Offline tests do not qualify a live AKS deployment. The existing
+kind workflow and its fake-model assertions are unchanged.
 
-New dispatch and cleanup workflows must be merged to the default branch before
-first use. Both workflows check out `refs/heads/main`; a dispatch on a feature
-branch is not a way to execute that branch's scenario in this bootstrap.
+Keep the scenario disabled until the separate required-auth qualification has
+passed Continue and strict replay, the helper publication is reviewed, and the
+operator approves a manual scenario run. A schedule is a separate later change,
+only after an accepted manual pass; this workflow cannot turn it on.
+
+Read-only validation and independent cleanup always load trusted `main` code.
+Scenario jobs pin checkout to the dispatch's immutable `github.sha`. Only `main`
+and the exact `feat/aks-e2e-scenario` implementation branch are eligible; a first
+branch run additionally requires an operator-approved temporary allowance for
+that exact branch in `nightly-aks`. Do not allow PR/fork refs or arbitrary branches.
+Remove the temporary allowance after qualification; keep `main` cleanup enabled.
 
 ## Operator configuration
 
@@ -105,38 +113,178 @@ Environment-based federation also creates roughly 96 deployment records per day
 for configured 15-minute sweeps.
 
 Cleanup jobs serialize in `aks-nightly-mutations`, with cancellation disabled.
-Any future scenario must use this **same job-level group for short cluster/FIC
+The scenario uses this **same job-level group for short cluster/FIC
 mutation sections**, recheck state inside it, and refuse a new run while prior
 resources remain. Do not hold the group across serving/model work or asynchronous
 provisioning waits: an independent expiry sweep must not wait behind a hung
-scenario. Do not dispatch a scenario until it implements this contract and the
-manual qualification/cleanup gates have passed.
+scenario. GitHub concurrency retains only one pending job: a newer arrival can
+cancel an older pending teardown despite `cancel-in-progress: false`. An unlocked
+finalizer makes cancelled/skipped/failed teardown a failed scenario; the expiry
+sweeper is a backstop, never a successful teardown claim.
 
 ## Replay image prerequisite
 
 The image pipeline publishes a separate `backup-helper.json` receipt; it does not
-change the two-image chart-pin manifest. Before a future scenario starts writers,
+change the two-image chart-pin manifest. Before the scenario creates a cluster or starts writers,
 its reviewed helper receipt must bind to the **actual chart-pinned host digest**,
 not merely the latest published host. See [reference images](../images/README.md)
-and [stopped-writer backup/restore](../backup/README.md). Node seccomp-profile
-installation is not part of this bootstrap; the existing helper fails closed
-without it.
+and [stopped-writer backup/restore](../backup/README.md). The existing two-image
+`images.json` must bind both chart host and harness pins to the same source commit
+as the helper receipt. Same host/wrong fixture is refused. Do not use a newly
+published helper with older incompatible chart pins; first review the matching
+image-pin update. Shape matching is not signature verification: the operator must
+review the successful canonical publication, signatures/attestations and receipts.
 
-## CI runner tools and scan policy
+The scenario installs only `ops-backup-no-network.json` on its two disposable
+Linux/amd64 nodes through a narrow root DaemonSet. It drops capabilities, denies
+privilege escalation, has no API token/identity/host network, mounts only the
+kubelet seccomp directory and rejects existing drift/symlinks. It verifies the
+root-owned 0644 file hash on every node and removes the installer before inference.
+No shared cluster/node is touched, no chart root hook is introduced, and no new
+node/autoscaling is permitted afterward. Recovery uses non-root Localhost seccomp
+and actual socket-denial probes, not merely `--network=none`.
 
-CI checksum-pins kubectl **v1.37.1** and kubelogin **v0.2.21**. Their binary scans
-are report-only: every advisory and scan error stays visible in the run summary
-and separate seven-day artifacts. Integrity errors still block. These binaries
-are runner-only, not part of the application images.
+## CI runner tools and vulnerability policy
 
-Our source and image-packaged Go scans remain strict and unfiltered. See the
-[runner scan policy](TOOL-SCANS.md) for checksums, report semantics and publication
-limits. These checks do not provision a cluster or authorize a live scenario.
+The installer pins kubectl **v1.37.1** and kubelogin **v0.2.21** with verified
+SHA256 checksums. These binaries stay on the ephemeral runner; they are not
+included in the host, fixture, helper images or restored workloads. The scenario
+client and scanner build with the repository's declared `go.mod` toolchain,
+without an independent Go version bump in this installer.
+
+A separate credential-free CI job scans both executables. The scenario repeats
+that scan within its work budget before Kubernetes credentials or inference.
+Runner binary scans are **report-only**: every advisory is recorded, without an
+exception list, in the run summary and separate seven-day two-file artifacts.
+Scan errors warn and mean unscanned, not clean. Checksum/integrity failures,
+cancellation and scenario-budget expiry still block. See the
+[CI runner scan policy](TOOL-SCANS.md).
+
+Our source `govulncheck ./...` remains strict and unfiltered. Image validation and
+publication also require clean scans of the actual packaged Go executables;
+runner advisories never bypass those gates. A source toolchain bump does not fix
+upstream runner binaries or authorize a live scenario.
+
+## Scenario opt-in and operator inputs
+
+These **repository variables** are additional non-secret inputs. Do not set
+`AKS_SCENARIO_ENABLED=true` before the qualification/approval gates above pass.
+Setting bootstrap alone never enables provisioning.
+
+| Variable | Required assertion/input |
+| --- | --- |
+| `AKS_SCENARIO_ENABLED` | `true` only after qualification and explicit manual-run approval |
+| `AKS_BUDGET_CONFIRMED` | `true` after confirming the existing subscription budget/recipient is active |
+| `MODEL_ENDPOINT` | Reviewed HTTPS endpoint ending `/openai/v1/`, no query or credentials |
+| `MODEL_DEPLOYMENT` | Operator-verified available bounded model deployment |
+| `MODEL_PRICE_INPUT`, `MODEL_PRICE_OUTPUT` | Positive integer microUSD per million tokens |
+| `MODEL_PRICE_EXTRA` | Explicit `0` after checking there is no additional per-call charge |
+| `MODEL_PRICE_SOURCE` | Verified public HTTPS pricing source |
+| `MODEL_PRICE_AS_OF` | Verified `YYYY-MM-DD`, not future and at most 30 days old |
+| `BACKUP_HELPER_IMAGE` | Reviewed canonical helper `@sha256:…` reference |
+| `BACKUP_HELPER_RECEIPT` | Reviewed `backup-helper.json` content, unchanged closed schema |
+| `PUBLISHED_IMAGES` | Matching reviewed two-image `images.json` content, unchanged schema |
+
+CI has no model-deployment, pricing or subscription-budget ARM read grant; these
+are operator assertions, not automatic live verification. No new Azure grants,
+provider registration or persistent identities are created. Preserve identifiers
+as variables only: they can appear in public step headers before runtime masking.
+Never put credentials, private evidence, model prompts or user data in them.
+
+After the gates, verify the exact reviewed commit/ref before an explicitly approved
+manual command (not a command to run during offline implementation):
+
+```sh
+gh workflow run aks-e2e.yml -R Azure/aks-durable-agents \
+  --ref feat/aks-e2e-scenario -f run_scenario=true
+```
+
+The default without `run_scenario=true` stays read-only. A requested scenario with
+missing opt-in/budget approval fails before any environment/Azure login.
+
+### What a manual scenario attempts
+
+1. Refuse remaining clusters, model FICs or managed node RGs; check providers,
+   stable AKS 1.37.0 availability, regional/family quota including one surge node,
+   and anonymous public access to pinned host/fixture/helper images.
+2. Under the short mutation lock, create a new two-node `Standard_D2s_v4` cluster
+   in the dedicated RG, with Azure CNI overlay/Cilium, OIDC/WI, managed Entra Azure
+   RBAC and local admin accounts disabled. Persist run/attempt/expiry tags before
+   asynchronous creation; never adopt a previous cluster. Poll outside the lock.
+3. Create only the exact host FIC for this owned cluster. Use normal cluster-user
+   credentials plus kubelogin, not admin credentials. Install the chart dormant,
+   initialize an empty private UID/GID65532 subtree before its tmp directories,
+   verify retained chart policy objects and dormant positive/negative controls.
+4. Perform a bounded credential-only WI propagation check (no inference probe),
+   then enable the production host with real WI/model and **simulated approval**
+   (`auth.mode: off`, `trustedNetwork: true`). Access is loopback API-server
+   port-forward only; no ingress/public application service or human token.
+5. Require eight policy-control records across dormant/live phases. Each source
+   first proves a permitted path in its own Pod: untrusted-to-peer before
+   untrusted-to-harness denial, and host-to-harness before host-to-peer denial.
+   No additive allow policy is installed. Park after
+   one known-successful bounded model attempt and zero effects. Restart only the
+   host; prove the harness UID/marker/node, checkpoint and ledger unchanged.
+   Approve without effect; Continue must produce exactly one publication, receipt
+   and artifact without another model attempt. Never call demo seal/verify/meter.
+6. Fence both source Deployments to zero and wait for PVC consumers to disappear.
+   Call the existing backup tool **without `--stop`**, preserving that fence;
+   restore into fresh recovery namespace/PVC with the matching helper. Require
+   complete session/head/execution replay coverage, zero provider/executor calls,
+   socket denial and unchanged hashes/evidence. No restored writers are started.
+7. Attempt same-run teardown within the original hard deadline: only the exact
+   run ID **and attempt** may bypass expiry. Revoke/confirm the FIC first, delete the cluster, then verify
+   cluster/FIC/managed-node-RG absence. Namespace deletion is not cleanup. A failed
+   delete may attempt bounded stop of only the positively owned eligible cluster;
+   stop remains a failure, not zero residual cost or a cleanup success.
+
+One immutable provisioning epoch supplies a 30-minute work deadline and 15-minute
+teardown reserve across jobs and queue delays. Commands run in bounded process
+groups, including backup descendants; the clock is not reset after host restart.
+The unchanged model policy allows two total dispatch attempts, 8192 input/4096
+completion tokens per attempt and a USD2 full-run reservation; the expected
+scenario uses exactly one attempt, and failed/unknown outcomes stop it. No
+inference retry, larger input bound, third-attempt opt-in or autoscaling is used.
+Actions queue/cancellation/outages and Azure asynchronous operations can outlive
+these controls. A teardown queued past the hard deadline cannot issue further
+Azure commands; the unlocked finalizer fails and the trusted expiry sweeper is
+the backstop, not confirmed cleanup. There is no Azure-enforced dollar cap. Budget alerts are delayed.
+Orphan managed node RGs still require exact-scope operator recovery.
+
+### Evidence and failure tracker
+
+Only closed-schema `proof.json`, eight-record `network-proof.json`, `timings.json`
+and fixed status/summary metadata are retained for seven days. The AKS collector
+ignores console input entirely and refuses unknown fields, malformed or incomplete
+proof, symlinks/nonregular files and oversized data. Private command logs, model
+text, kubeconfig/cache, values, journals and backup archives are never uploaded.
+
+The separate bot-owned tracker is titled **AKS e2e regression**. Its managed body
+contains only allowlisted stage, workflow URL and commit SHA; existing kind bot
+validation/markers are preserved, and success never automatically closes it.
+Review this outward template before approving a live run (no report is posted by
+offline checks):
+
+```text
+<!-- aks-e2e-tracking -->
+
+<!-- aks-e2e-status:start -->
+Stage: teardown
+Workflow: https://github.com/Azure/aks-durable-agents/actions/runs/RUN_ID
+Commit: FULL_SHA
+<!-- aks-e2e-status:end -->
+```
+
+A green simulated-approval scenario is **not** real delegated Entra approval,
+required-auth/TLS, independent Azure billing telemetry, or hostile-tenant/model-
+domain isolation qualification. Those limitations remain even after a manual pass.
 
 ## Offline verification
 
 ```sh
 python3 -B -m unittest discover -s ops/aks -p 'test_*.py'
+# Opt-in local Docker exercise only; never contacts AKS or a model.
+RUN_AKS_CONTAINER_TESTS=true python3 -B -m unittest discover -s ops/aks -p 'test_profile.py'
 actionlint .github/workflows/aks-e2e.yml .github/workflows/aks-cleanup.yml
 ```
 
