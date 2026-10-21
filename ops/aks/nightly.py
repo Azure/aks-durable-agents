@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Disposable AKS production-host scenario. No Azure API, retries, or demo meter.
 
-All subprocess output and client/archive state are private. Public files exist
+All subprocess output and client/archive state are private. Success proofs exist
 only after the complete scenario, strict recovery, and final source fencing.
+Failures may publish only closed, fixed-enum diagnostics without error text.
 Cluster/FIC/node-RG teardown belongs to the workflow, not this program.
 """
 import argparse
@@ -60,9 +61,32 @@ finally:
     sys.path[:] = _search_path
 
 
+class SafeFailure(ValueError):
+    """Private error context with an explicit, non-sensitive failure category."""
+    def __init__(self, reason, message="scenario failed"):
+        super().__init__(message)
+        self.reason = reason
+
+
+def failure_reason(error):
+    if isinstance(error, SafeFailure):
+        return error.reason
+    if isinstance(error, KeyboardInterrupt):
+        return "interrupted"
+    if isinstance(error, OSError):
+        return "io-failed"
+    return "unclassified-failure"
+
+
+def failure_diagnostics(api, error):
+    return {"version": 1, "phase": getattr(api, "phase_name", "preflight"),
+            "operation": getattr(api, "operation", "phase"),
+            "reason": failure_reason(error), "cleanup": getattr(api, "cleanup_status", "not-run")}
+
+
 def require(condition, message="scenario invariant failed"):
     if not condition:
-        raise ValueError(message)
+        raise SafeFailure("invariant-failed", message)
 
 
 def strict_json(raw):
@@ -296,7 +320,8 @@ class Deadlines:
     def remaining(self, cleanup=False):
         now = max(self.clock(), self.anchor + time.monotonic() - self.monotonic)
         seconds = (self.hard if cleanup else self.work) - now
-        require(seconds > 0, "deadline exhausted")
+        if not seconds > 0:
+            raise SafeFailure("deadline-exhausted", "deadline exhausted")
         return seconds
 
 
@@ -332,10 +357,14 @@ class Executor:
                 stdout=stdout, stderr=stderr, env=self.env, start_new_session=True)
             try:
                 process.communicate(data, timeout=timeout)
-            except BaseException:
+            except BaseException as error:
                 self.kill(process)
-                raise ValueError("external command interrupted or expired") from None
-        require(process.returncode == 0, "external command failed")
+                reason = "command-timeout" if isinstance(error, subprocess.TimeoutExpired) else failure_reason(error)
+                # ValueError catchability lets fence attempt the second scale
+                # even when cancellation interrupts the first external command.
+                raise SafeFailure(reason, "external command interrupted or expired") from None
+        if process.returncode != 0:
+            raise SafeFailure("command-failed", "external command failed")
         path = Path(stdout.name) if isinstance(stdout.name, str) else self.directory / f"command-{self.sequence:04}.stdout"
         require(path.stat().st_size <= 16 * 1024 * 1024, "command output too large")
         return path.read_bytes()
@@ -434,6 +463,7 @@ class Scenario:
         self.values_path = workdir / "values.json"
         write_json(self.values_path, self.values)
         self.phase_name, self.phase_started, self.started = "preflight", time.monotonic(), time.monotonic()
+        self.operation, self.diagnostics, self.cleanup_status = "phase", None, "not-run"
         self.phases = {}
         self.deployments, self.labels = {}, {}
         self.owned = False
@@ -447,6 +477,7 @@ class Scenario:
         now = time.monotonic()
         self.phases[self.phase_name] = self.phases.get(self.phase_name, 0) + now - self.phase_started
         self.phase_name, self.phase_started = name, now
+        self.operation = "phase"
 
     def timings(self):
         now = time.monotonic()
@@ -508,29 +539,41 @@ class Scenario:
         self.nodes = self.nodes_ready()
 
     def profile(self):
+        self.operation = "profile-create"
         raw = (ROOT / "ops/backup/no-network.json").read_bytes()
         for obj in node_profile.manifests(raw):
             self.create(obj, namespace=node_profile.NAMESPACE)
+        self.operation = "profile-rollout"
         self.kube("rollout", "status", "daemonset/" + node_profile.NAME, "--timeout=180s", namespace=node_profile.NAMESPACE)
+        self.operation = "profile-verify"
         pods = self.get("pods", "-l", "nightly-profile=installer", namespace=node_profile.NAMESPACE)["items"]
         require(len(pods) == 2 and {p["spec"]["nodeName"] for p in pods} == self.nodes and all(ready(p) for p in pods))
         for pod in pods:
             self.kube("exec", pod["metadata"]["name"], "-c", "install", "--", "/bin/sh", "-ec", node_profile.verify_script(raw), namespace=node_profile.NAMESPACE)
+        self.operation = "profile-remove"
         self.kube("delete", "daemonset/" + node_profile.NAME, "configmap/" + node_profile.NAME, "--cascade=foreground", "--wait=true", "--timeout=120s", namespace=node_profile.NAMESPACE)
         self.kube("delete", "namespace", node_profile.NAMESPACE, "--wait=true", "--timeout=120s")
         require(not self.kube("get", "namespace", node_profile.NAMESPACE, "--ignore-not-found", "-o", "name").strip())
+        self.operation = "profile-node-check"
         self.nodes_ready()
 
     def install(self):
         self.profile()
+        self.operation = "namespace-create"
         self.create({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": NAMESPACE}})
         self.owned = True
+        self.operation = "volume-create"
         self.create({"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": {"name": PVC}, "spec": {
             "accessModes": ["ReadWriteOnce"], "storageClassName": STORAGE_CLASS, "resources": {"requests": {"storage": "1Gi"}}}})
+        self.operation = "chart-install"
         self.helm("install", RELEASE, self.chart, "--namespace", NAMESPACE, "-f", self.values_path)
+        self.operation = "policy-check"
         self.check_policies(initial=True)
+        self.operation = "fixture-init-create"
         self.create(prepare_manifest(self.subpath, self.pins["harness"]))
+        self.operation = "fixture-init-wait"
         self.wait("pod/nightly-prepare", "jsonpath={.status.phase}=Succeeded")
+        self.operation = "fixture-init-remove"
         self.kube("delete", "pod/nightly-prepare", "--wait=true", "--timeout=120s")
 
     def check_policies(self, initial=False):
@@ -771,14 +814,26 @@ def run_scenario(api):
             "replay": {"completed": True, "providerCalls": 0, "executorCalls": 0, "coverageComplete": True, "unchanged": True}}
         return proof, records
     finally:
-        failed_stage = api.phase_name if hasattr(api, "phase_name") and sys.exc_info()[0] is not None else None
+        primary = sys.exc_info()[1]
+        failed_stage = api.phase_name if hasattr(api, "phase_name") and primary is not None else None
+        # Keep the primary context on the Scenario, before cleanup resets phase
+        # and operation. Cleanup exceptions retain their existing precedence.
+        if primary is not None:
+            api.diagnostics = failure_diagnostics(api, primary)
         api.phase("cleanup")
         try:
             api.cleanup()
-        except (ValueError, OSError, KeyboardInterrupt):
-            if failed_stage is not None:
+        except (Exception, KeyboardInterrupt) as error:
+            api.cleanup_status = "failed"
+            if primary is None:
+                api.diagnostics = failure_diagnostics(api, error)
+            api.diagnostics["cleanup"] = "failed"
+            if failed_stage is not None and isinstance(error, (ValueError, OSError, KeyboardInterrupt)):
                 print("aks-nightly: cleanup also failed after stage=" + failed_stage, file=sys.stderr)
             raise
+        api.cleanup_status = "succeeded"
+        if primary is not None:
+            api.diagnostics["cleanup"] = "succeeded"
         if failed_stage is not None:
             api.phase_name = failed_stage
 
@@ -793,12 +848,14 @@ def main(argv=None):
     os.umask(0o077)
     stage = "preflight"
     api = None
+    public_ready = False
     try:
         private_directory(args.workdir)
         require(args.public_dir.is_absolute() and args.public_dir.resolve() == args.public_dir)
         require(args.public_dir != args.workdir and args.public_dir not in args.workdir.parents and args.workdir not in args.public_dir.parents, "private/public directories must be disjoint")
         private_directory(args.public_dir)
         require(not list(args.public_dir.iterdir()), "public output directory must be empty")
+        public_ready = True
         api = Scenario(args.workdir, args.client, args.chart, os.environ)
         proof, network = run_scenario(api)
         timings = api.timings()
@@ -810,9 +867,18 @@ def main(argv=None):
         write_json(args.public_dir / "proof.json", proof)
         write_json(args.public_dir / "network-proof.json", network)
         write_json(args.public_dir / "timings.json", timings)
-    except (Exception, KeyboardInterrupt):
+    except (Exception, KeyboardInterrupt) as error:
         stage = api.phase_name if api is not None else stage
         print("aks-nightly: failed stage=" + stage, file=sys.stderr)
+        # Diagnostics are best effort, never a replacement failure or an excuse
+        # to write into a directory that failed the public/private boundary.
+        try:
+            if public_ready:
+                validator = local_module("aks_safe_proof", HERE / "proof.py")
+                diagnostics = getattr(api, "diagnostics", None) or failure_diagnostics(api, error)
+                write_json(args.public_dir / "diagnostics.json", validator.validate_diagnostics(diagnostics))
+        except (Exception, KeyboardInterrupt):
+            pass
         return 1
     return 0
 
