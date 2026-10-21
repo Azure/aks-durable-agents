@@ -45,6 +45,14 @@ var schema = []string{
 	`CREATE TABLE abandonments (id TEXT PRIMARY KEY,operation TEXT NOT NULL UNIQUE REFERENCES operations(id),data BLOB NOT NULL)`,
 }
 
+func ownedBy(path string, uid uint32) error {
+	var stat unix.Stat_t
+	if err := unix.Lstat(path, &stat); err != nil || stat.Uid != uid {
+		return ErrIntegrity
+	}
+	return nil
+}
+
 func privatePath(path string, create bool) error {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return ErrInvalid
@@ -74,8 +82,8 @@ func privatePath(path string, create bool) error {
 	if e != nil || st.Mode().Perm() != 0700 {
 		return ErrIntegrity
 	}
-	if u, ok := st.Sys().(*unix.Stat_t); ok && int(u.Uid) != os.Getuid() {
-		return ErrIntegrity
+	if err := ownedBy(parent, uint32(os.Getuid())); err != nil {
+		return err
 	}
 	for _, suffix := range []string{"-journal", "-wal", "-shm"} {
 		st, e := os.Lstat(path + suffix)
@@ -85,8 +93,8 @@ func privatePath(path string, create bool) error {
 		if e != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 {
 			return ErrIntegrity
 		}
-		if u, ok := st.Sys().(*unix.Stat_t); ok && int(u.Uid) != os.Getuid() {
-			return ErrIntegrity
+		if err := ownedBy(path+suffix, uint32(os.Getuid())); err != nil {
+			return err
 		}
 	}
 	if !create {
@@ -187,8 +195,18 @@ func openStore(path, expected string, create bool) (*Store, error) {
 	return s, nil
 }
 func (s *Store) Close() error { return s.db.Close() }
-func (s *Store) transact(ctx context.Context, fn func(query) error) (err error) {
+func (s *Store) transact(ctx context.Context, fn func(query) error) error {
+	return s.transaction(ctx, false, fn)
+}
+
+func (s *Store) transaction(ctx context.Context, verifying bool, fn func(query) error) (err error) {
+	var c *sql.Conn
 	defer func() {
+		// Classify and publish verification failure while this connection is still
+		// held. A queued mutation must see the latch when it acquires the pool slot.
+		if c != nil {
+			defer c.Close()
+		}
 		if err == nil {
 			return
 		}
@@ -204,6 +222,9 @@ func (s *Store) transact(ctx context.Context, fn func(query) error) (err error) 
 		if !errors.Is(err, ErrConflict) && !errors.Is(err, ErrBusy) && !errors.Is(err, ErrIntegrity) && !errors.Is(err, ErrUnsupported) && !errors.Is(err, ErrInvalid) {
 			err = fmt.Errorf("%w: %v", ErrIntegrity, err)
 		}
+		if verifying && !errors.Is(err, ErrBusy) {
+			s.bad.Store(true)
+		}
 	}()
 	if s.bad.Load() {
 		return ErrIntegrity
@@ -212,7 +233,9 @@ func (s *Store) transact(ctx context.Context, fn func(query) error) (err error) 
 	if e != nil {
 		return e
 	}
-	defer c.Close()
+	if s.bad.Load() {
+		return ErrIntegrity
+	}
 	if _, e = c.ExecContext(ctx, "BEGIN IMMEDIATE"); e != nil {
 		return e
 	}

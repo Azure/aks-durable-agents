@@ -3,7 +3,6 @@ package targetversions
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 )
 
@@ -42,11 +41,7 @@ func (s *Store) History(ctx context.Context, targetID string, after uint64, limi
 // bytes, other stores, stopped writers or rollback-resistant restore continuity.
 // A failed check latches this handle against further mutation; it never repairs.
 func (s *Store) Verify(ctx context.Context) error {
-	e := s.transact(ctx, func(q query) error { return s.verify(ctx, q) })
-	if e != nil && ctx.Err() == nil && !errors.Is(e, ErrBusy) {
-		s.bad.Store(true)
-	}
-	return e
+	return s.transaction(ctx, true, func(q query) error { return s.verify(ctx, q) })
 }
 
 type factRows struct {
