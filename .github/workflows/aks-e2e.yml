@@ -2,6 +2,11 @@ name: Nightly AKS e2e
 
 on:
   workflow_dispatch:
+    inputs:
+      run_scenario:
+        description: 'Provision and run the real-model scenario (requires required-auth qualification and explicit operator enablement)'
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -9,6 +14,7 @@ defaults:
   run:
     shell: bash
 
+# Identifiers are non-secret operator configuration; step headers can expose them.
 env:
   AKS_BOOTSTRAP_ENABLED: ${{ vars.AKS_BOOTSTRAP_ENABLED }}
   AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
@@ -19,31 +25,59 @@ env:
   AKS_NODE_RESOURCE_GROUP: ${{ vars.AKS_NODE_RESOURCE_GROUP }}
   AKS_IDENTITY_RESOURCE_GROUP: ${{ vars.AKS_IDENTITY_RESOURCE_GROUP }}
   AKS_MODEL_IDENTITY_NAME: ${{ vars.AKS_MODEL_IDENTITY_NAME }}
+  AKS_SCENARIO_ENABLED: ${{ vars.AKS_SCENARIO_ENABLED }}
+  AKS_BUDGET_CONFIRMED: ${{ vars.AKS_BUDGET_CONFIRMED }}
+  MODEL_ENDPOINT: ${{ vars.MODEL_ENDPOINT }}
+  MODEL_DEPLOYMENT: ${{ vars.MODEL_DEPLOYMENT }}
+  MODEL_PRICE_INPUT: ${{ vars.MODEL_PRICE_INPUT }}
+  MODEL_PRICE_OUTPUT: ${{ vars.MODEL_PRICE_OUTPUT }}
+  MODEL_PRICE_EXTRA: ${{ vars.MODEL_PRICE_EXTRA }}
+  MODEL_PRICE_SOURCE: ${{ vars.MODEL_PRICE_SOURCE }}
+  MODEL_PRICE_AS_OF: ${{ vars.MODEL_PRICE_AS_OF }}
+  BACKUP_HELPER_IMAGE: ${{ vars.BACKUP_HELPER_IMAGE }}
+  BACKUP_HELPER_RECEIPT: ${{ vars.BACKUP_HELPER_RECEIPT }}
+  PUBLISHED_IMAGES: ${{ vars.PUBLISHED_IMAGES }}
 
 jobs:
   config:
-    if: ${{ github.repository == 'Azure/aks-durable-agents' && github.ref == 'refs/heads/main' }}
+    if: >-
+      ${{ github.repository == 'Azure/aks-durable-agents' &&
+          (github.ref == 'refs/heads/main' ||
+           (inputs.run_scenario && github.ref == 'refs/heads/feat/aks-e2e-scenario')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     permissions:
       contents: read
     outputs:
       configured: ${{ steps.config.outputs.configured }}
+      scenario: ${{ steps.config.outputs.scenario }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: refs/heads/main
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.14.3'
-      - name: Check repository configuration without Azure login
+      - name: Check configuration before any environment login
         id: config
-        run: python3 -B ops/aks/cleanup.py config | tee -a "$GITHUB_OUTPUT"
+        env:
+          RUN_SCENARIO: ${{ inputs.run_scenario }}
+        run: |
+          python3 -B ops/aks/cleanup.py config | tee -a "$GITHUB_OUTPUT"
+          if [[ "$RUN_SCENARIO" == true ]]; then
+            [[ "$AKS_BOOTSTRAP_ENABLED" == true && "$AKS_SCENARIO_ENABLED" == true && "$AKS_BUDGET_CONFIRMED" == true ]] || {
+              echo 'Scenario remains blocked: required-auth qualification and operator budget/config approval are required.' >&2
+              exit 1
+            }
+            echo 'scenario=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'scenario=false' >> "$GITHUB_OUTPUT"
+          fi
 
   validate:
     needs: config
-    if: ${{ needs.config.outputs.configured == 'true' }}
+    if: ${{ needs.config.outputs.configured == 'true' && !inputs.run_scenario }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment: nightly-aks
@@ -51,26 +85,337 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: refs/heads/main
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.14.3'
-      - name: Mask operator configuration before login
+      - name: Isolate Azure cache and mask operator identifiers
         run: |
+          umask 077
+          mkdir -m 700 "$RUNNER_TEMP/aks-azure"
           echo "AZURE_CONFIG_DIR=$RUNNER_TEMP/aks-azure" >> "$GITHUB_ENV"
           python3 - <<'PY'
           import os
-          for key, value in os.environ.items():
-              if key.startswith(("AZURE_", "AKS_")) and key not in ("AKS_BOOTSTRAP_ENABLED", "AZURE_CONFIG_DIR") and value:
-                  print("::add-mask::" + value)
+          for key in ("AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SUBSCRIPTION_ID", "AKS_RESOURCE_GROUP", "AKS_CLUSTER_NAME", "AKS_NODE_RESOURCE_GROUP", "AKS_IDENTITY_RESOURCE_GROUP", "AKS_MODEL_IDENTITY_NAME"):
+              if os.environ.get(key):
+                  print("::add-mask::" + os.environ[key])
           PY
-      - uses: Azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+      - uses: Azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Read-only bootstrap validation (not an AKS scenario)
         run: python3 -B ops/aks/cleanup.py validate | tee -a "$GITHUB_STEP_SUMMARY"
+
+  preflight:
+    needs: config
+    if: ${{ needs.config.outputs.scenario == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: nightly-aks
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14.3'
+      - name: Isolate Azure cache and mask non-secret target identifiers
+        run: python3 -B ops/aks/lifecycle.py mask
+      - uses: Azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Refuse unsupported configuration before paid resources
+        run: python3 -B ops/aks/lifecycle.py preflight
+
+  create:
+    needs: [config, preflight]
+    if: ${{ needs.config.outputs.scenario == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    environment: nightly-aks
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: aks-nightly-mutations
+      cancel-in-progress: false
+    outputs:
+      started: ${{ steps.clock.outputs.started }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14.3'
+      - name: Isolate Azure cache and mask non-secret target identifiers
+        run: python3 -B ops/aks/lifecycle.py mask
+      - uses: Azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Persist the one provisioning epoch before an asynchronous create
+        id: clock
+        run: |
+          started=$(date -u +%s)
+          echo "started=$started" >> "$GITHUB_OUTPUT"
+          echo "AKS_STARTED_EPOCH=$started" >> "$GITHUB_ENV"
+      - name: Create only an absent fixed-size owned disposable cluster
+        run: python3 -B ops/aks/lifecycle.py create
+
+  wait:
+    needs: [config, create]
+    if: ${{ needs.config.outputs.scenario == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: nightly-aks
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AKS_STARTED_EPOCH: ${{ needs.create.outputs.started }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14.3'
+      - name: Isolate Azure cache and mask non-secret target identifiers
+        run: python3 -B ops/aks/lifecycle.py mask
+      - uses: Azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Poll provisioning without holding the mutation lock
+        run: python3 -B ops/aks/lifecycle.py wait
+
+  federate:
+    needs: [config, create, wait]
+    if: ${{ needs.config.outputs.scenario == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    environment: nightly-aks
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: aks-nightly-mutations
+      cancel-in-progress: false
+    env:
+      AKS_STARTED_EPOCH: ${{ needs.create.outputs.started }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14.3'
+      - name: Isolate Azure cache and mask non-secret target identifiers
+        run: python3 -B ops/aks/lifecycle.py mask
+      - uses: Azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Bind only this owned cluster issuer to the exact host subject
+        run: python3 -B ops/aks/lifecycle.py federate
+
+  scenario:
+    needs: [config, create, wait, federate]
+    if: ${{ needs.config.outputs.scenario == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: nightly-aks
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AKS_STARTED_EPOCH: ${{ needs.create.outputs.started }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14.3'
+      - name: Isolate Azure cache and mask non-secret target identifiers
+        run: python3 -B ops/aks/lifecycle.py mask
+      - uses: Azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310
+        with:
+          version: v3.20.0
+      - name: Install checksum-pinned clients and compile the existing RPC client
+        run: python3 -B ops/aks/lifecycle.py tools
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ always() }}
+        with:
+          name: runner-tool-scans-aks-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/aks-tool-report/report.json
+            ${{ runner.temp }}/aks-tool-report/summary.md
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Obtain normal cluster-user credentials (never admin)
+        run: |
+          umask 077
+          mkdir -m 700 "$RUNNER_TEMP/aks-private"
+          export KUBECONFIG="$RUNNER_TEMP/aks-private/kubeconfig"
+          echo "KUBECONFIG=$KUBECONFIG" >> "$GITHUB_ENV"
+          python3 -B ops/aks/lifecycle.py credentials
+      - name: Real model, simulated approval, restart, effective isolation and zero-call replay
+        id: exercise
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/aks-private/work" "$RUNNER_TEMP/aks-public-raw"
+          export WORK_DEADLINE_EPOCH=$((AKS_STARTED_EPOCH + 1800))
+          export HARD_DEADLINE_EPOCH=$((AKS_STARTED_EPOCH + 2700))
+          python3 -B ops/aks/nightly.py --workdir "$RUNNER_TEMP/aks-private/work" \
+            --public-dir "$RUNNER_TEMP/aks-public-raw" --client "$RUNNER_TEMP/aks-nightly-tools/demo-client"
+      - name: Collect only allowlisted proof data, never console or private state
+        if: ${{ always() }}
+        env:
+          RESULT: ${{ steps.exercise.outcome || 'failure' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          result="$RESULT"
+          [[ "$result" == skipped ]] && result=failure
+          python3 -B ops/demo/e2e.py collect --profile aks \
+            --workspace "$RUNNER_TEMP/aks-public-raw" --console "$RUNNER_TEMP/not-read" \
+            --destination "$RUNNER_TEMP/aks-public" --summary "$GITHUB_STEP_SUMMARY" \
+            --result "$result" --run-url "$RUN_URL" --sha "$GITHUB_SHA" --stage scenario
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ always() }}
+        with:
+          name: aks-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/aks-public
+          retention-days: 7
+          if-no-files-found: error
+
+  teardown:
+    needs: [config, preflight, create, wait, federate, scenario]
+    if: ${{ always() && inputs.run_scenario && needs.create.outputs.started != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: nightly-aks
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: aks-nightly-mutations
+      cancel-in-progress: false
+    env:
+      AKS_STARTED_EPOCH: ${{ needs.create.outputs.started }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14.3'
+      - name: Isolate Azure cache and mask non-secret target identifiers
+        run: python3 -B ops/aks/lifecycle.py mask
+      - uses: Azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Remove only this run's FIC and cluster and verify managed-group absence
+        run: python3 -B ops/aks/lifecycle.py teardown
+
+  finalize:
+    needs: [config, preflight, create, wait, federate, scenario, teardown]
+    if: ${{ always() && inputs.run_scenario && github.repository == 'Azure/aks-durable-agents' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - name: Never turn cancelled, skipped or incomplete teardown into a green scenario
+        env:
+          CONFIG_RESULT: ${{ needs.config.result }}
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+          CREATE_RESULT: ${{ needs.create.result }}
+          WAIT_RESULT: ${{ needs.wait.result }}
+          FEDERATE_RESULT: ${{ needs.federate.result }}
+          SCENARIO_RESULT: ${{ needs.scenario.result }}
+          TEARDOWN_RESULT: ${{ needs.teardown.result }}
+        run: |
+          for result in "$CONFIG_RESULT" "$PREFLIGHT_RESULT" "$CREATE_RESULT" "$WAIT_RESULT" "$FEDERATE_RESULT" "$SCENARIO_RESULT" "$TEARDOWN_RESULT"; do
+            [[ "$result" == success ]] || {
+              echo 'AKS scenario failed or cleanup is unconfirmed. The independent expiry sweeper is a backstop, not successful teardown.' >&2
+              exit 1
+            }
+          done
+
+  report:
+    needs: [config, preflight, create, wait, federate, scenario, teardown, finalize]
+    if: >-
+      ${{ always() && inputs.run_scenario && vars.AKS_SCENARIO_ENABLED == 'true' &&
+          github.repository == 'Azure/aks-durable-agents' &&
+          (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/aks-e2e-scenario') &&
+          needs.finalize.result != 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    concurrency:
+      group: aks-e2e-tracker
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14.3'
+      - name: Report only fixed stage, workflow URL and commit to the separate AKS tracker
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CONFIG_RESULT: ${{ needs.config.result }}
+          STARTED: ${{ needs.create.outputs.started }}
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+          CREATE_RESULT: ${{ needs.create.result }}
+          WAIT_RESULT: ${{ needs.wait.result }}
+          FEDERATE_RESULT: ${{ needs.federate.result }}
+          SCENARIO_RESULT: ${{ needs.scenario.result }}
+          TEARDOWN_RESULT: ${{ needs.teardown.result }}
+        run: |
+          stage=finalize
+          if [[ -n "$STARTED" && "$TEARDOWN_RESULT" != success ]]; then
+            stage=teardown
+          else
+            for item in config preflight create wait federate scenario teardown; do
+              key="${item^^}_RESULT"
+              if [[ "${!key}" != success ]]; then stage="$item"; break; fi
+            done
+          fi
+          python3 -B ops/demo/e2e.py track --profile aks --repo "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" --sha "$GITHUB_SHA" --run-url "$RUN_URL" --stage "$stage"

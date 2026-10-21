@@ -173,13 +173,22 @@ def validate(config, cloud):
         raise ValueError("dedicated group ownership mismatch")
 
 
-def cleanup(config, cloud, now, apply=False, wait_seconds=180, monotonic=time.monotonic, sleep=time.sleep):
+def cleanup(config, cloud, now, apply=False, wait_seconds=180, monotonic=time.monotonic, sleep=time.sleep,
+            owned_run=None, node_wait_seconds=0):
     validate(config, cloud)
     item, credentials = cloud.cluster(), cloud.fics()
     metadata = cluster_metadata(item, config) if item is not None else None
     fic_metadata = credential_metadata(credentials, config, item)
     result = lambda status: {"status": status, "dryRun": not apply}
-    if any(m is not None and timestamp(m["expiresAt"]) > now for m in (metadata, fic_metadata)):
+    # The scenario may tear down its own run before expiry, never another run.
+    # Scheduled/default callers cannot opt into this implicitly.
+    if owned_run is not None:
+        if (not isinstance(owned_run, tuple) or len(owned_run) != 2
+                or any(not isinstance(v, str) or not re.fullmatch(r"[1-9][0-9]{0,19}", v) for v in owned_run)):
+            raise ValueError("invalid teardown run")
+        if metadata is not None and (metadata["runID"], metadata["runAttempt"]) != owned_run:
+            raise ValueError("teardown run mismatch")
+    elif any(m is not None and timestamp(m["expiresAt"]) > now for m in (metadata, fic_metadata)):
         return result("pending-unexpired")
     if not apply and (item is not None or credentials):
         return result("would-delete")
@@ -204,8 +213,11 @@ def cleanup(config, cloud, now, apply=False, wait_seconds=180, monotonic=time.mo
             if monotonic() >= deadline:
                 return result("pending-deleting")
             sleep(3)
-    if cloud.node_group_exists():
-        raise ValueError("managed node group remains; operator recovery required")
+    node_deadline = monotonic() + node_wait_seconds
+    while cloud.node_group_exists():
+        if monotonic() >= node_deadline:
+            raise ValueError("managed node group remains; operator recovery required")
+        sleep(3)
     return result("removed" if item is not None or credentials else "absent")
 
 
