@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Probe the actual binaries as the image user, with no network or host mounts.
+# An optional second argument smokes a published helper instead of rebuilding it.
 set -euo pipefail
 prefix=${1:-local/aks-durable-agents}
 container=
@@ -25,3 +26,12 @@ for role in host session-fixture; do
   cleanup
   container=
 done
+
+helper=${2:-$prefix/backup-helper:local}
+if [[ $# -lt 2 ]]; then
+  # PR/local validation uses the production host just built by make images.
+  # Publication instead builds from the immutable pushed host digest.
+  docker build --network=none --platform linux/amd64 -f ops/backup/Dockerfile \
+    --build-arg "HOST_IMAGE=$prefix/host:local" -t "$helper" ops/backup
+fi
+bash ops/images/helper-smoke.sh "$helper"

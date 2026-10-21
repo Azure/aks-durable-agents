@@ -1,12 +1,14 @@
 # Reference images
 
 The repository builds two Linux amd64 images for the chart's reference fixture
-profile. They are not a production-ready agent or a self-contained demo.
+profile and a separate stopped-writer backup/replay helper. They are not a
+production-ready agent or a self-contained demo.
 
 | Image | Contents |
 | --- | --- |
 | `ghcr.io/azure/aks-durable-agents/host` | Unchanged production `/host`, CA roots, and `/session-fixture` for the chart's readiness probe |
 | `ghcr.io/azure/aks-durable-agents/session-fixture` | Reference release-notes harness, durable local publication executor, inert loopback fake, and bounded evidence/reconstruction-replay commands |
+| `ghcr.io/azure/aks-durable-agents/backup-helper` | Digest-pinned Python, `ops/backup/backup.py`, and `/host` + `/session-fixture` copied from the same publication's immutable production host |
 
 Harness, executor and fake containers share the fixture image. No third executor
 image is needed. The production host still requires workload identity for model
@@ -51,6 +53,18 @@ provenance, SBOM generation timestamps and signing evidence; these are not
 claimed to be byte-identical across runs. The publish workflow additionally
 uses the source commit's timestamp and BuildKit's timestamp rewrite for layers.
 Buildx, BuildKit and the SBOM scanner are version/digest-pinned in the workflow.
+
+The smoke script also builds `local/aks-durable-agents/backup-helper:local` using
+`ops/backup/Dockerfile` and the local production host. An optional first argument
+selects another image prefix; an optional second argument selects an already
+built helper image instead of rebuilding it. `helper-smoke.sh IMAGE` checks
+configured and effective UID/GID 65532, both executable binaries, host probe
+refusal and fixture initialization/evidence. It runs the actual
+`backup.py _probe`: plain `--network none` must fail, and the existing
+[`no-network.json`](../backup/no-network.json) seccomp profile must deny IPv4,
+IPv6 and Unix socket creation. Runs are bounded, read-only, capability-free,
+without host mounts or credentials. This is an image/isolation smoke, not a
+completed-session replay or AKS node-profile qualification.
 
 ## Fixture interface and retained data
 
@@ -98,16 +112,19 @@ host operation is unchanged; the demo's explicit sealing is not a host repair.
 ## Publish, then pin
 
 `Images` validates PR image builds without package-write or OIDC permissions.
-On canonical `main` pushes and `v*` tags it builds both images, attaches BuildKit
-SPDX SBOM/provenance attestations, and signs the pushed **digests** using cosign
+On canonical `main` pushes and `v*` tags it builds all three images, attaches
+BuildKit SPDX SBOM/provenance attestations, and signs the pushed **digests** using cosign
 and GitHub OIDC. It uses only the job's ephemeral `GITHUB_TOKEN` and OIDC token,
 not a PAT or long-lived signing key. Tags are locators, not immutable identities;
 consumers must use digests. Main publication and tag publication have distinct
 certificate identities matching their Git refs.
 
-The `published-images` artifact (30-day retention) records `images.json`, extracted
-SBOMs and signature verification results. The signed image index covers its
-attached attestation manifests. SBOM generation is inventory, not a completed
+The `published-images` artifact (30-day retention) records the unchanged two-image
+`images.json`, a separate `backup-helper.json`, extracted SBOMs and signature
+verification results for all three images. The helper is built from the pushed
+production host **digest**, then pulled and smoke-tested before signing. The
+signed image index covers its attached attestation manifests. SBOM generation
+is inventory, not a completed
 security review. Missing build/signature/SBOM evidence fails publication.
 
 The first publication is a bootstrap: **default digests stay blank until actual
@@ -127,6 +144,39 @@ workflow/repository, or image-relevant source change cannot supply pins.
 Docs-only and pin-only main changes do not invalidate the source. Markdown and
 chart values are excluded from image publication so a pin merge does not
 needlessly republish images.
+
+### Backup helper receipt and future consumers
+
+`backup-helper.json` has exactly four fields (no extra keys):
+
+- `version`: integer `1` (not a boolean).
+- `sourceCommit`: full lowercase 40-character source SHA.
+- `hostDigest`: lowercase `sha256:` digest of the production host copied into it.
+- `image`: `ghcr.io/azure/aks-durable-agents/backup-helper@sha256:<64 lowercase hex>`.
+
+The publication CLI creates this receipt from the build outputs. It does not
+change the chart's host/harness pin schema or add a helper entry to `images.json`.
+`Verified image pins` reads/copies only `images.json`, ignoring the helper receipt.
+
+A future replay consumer must obtain the receipt from a trusted successful
+`Images` run, verify the helper digest's cosign identity and attached SBOM/
+provenance, and match the receipt's source revision to the trusted publication.
+The receipt alone is **not authenticity evidence**. Before starting any writers,
+pass the **actual rendered chart host image**, not a tag or a separately assumed
+pin, to `validate_host(receipt, rendered_host_image)` or the CLI below. A foreign
+repository, tag, malformed receipt or different host digest fails closed; success
+prints only the immutable helper reference:
+
+```sh
+python3 -B ops/images/backup_helper.py validate \
+  --receipt "$TRUSTED_PUBLICATION/backup-helper.json" \
+  --host-image "$RENDERED_CHART_HOST_IMAGE"
+```
+
+Use that verified helper reference with the existing [backup/restore
+recipe](../backup/README.md). Installing the socket-denial node profile remains
+an explicit operator prerequisite; publication does not install it or grant
+cloud permissions. This change does not implement a nightly scenario consumer.
 
 ### Open the pin PR as a person or lane
 
@@ -175,9 +225,12 @@ Before publication, confirm:
   Actions PR creation may remain disabled by org/enterprise policy. No workflow
   requests repository-content write or PR write, and no policy bypass is needed.
 
-After the first publication, a package administrator must make **both** `host`
-and `session-fixture` packages public. A public repository does not automatically
-make GHCR packages public. Then dispatch pinning as above. Do not enable the demo
+After the first publication, a package administrator must make `host`,
+`session-fixture` and the separately consumed `backup-helper` packages public.
+The chart pin handoff still verifies only host and session-fixture. A future
+helper consumer must also verify anonymous helper digest access before use.
+A public repository does not automatically make GHCR packages public. Then
+dispatch pinning as above. Do not enable the demo
 or claim anonymous installation until anonymous digest pulls and signatures have
 actually been verified.
 
