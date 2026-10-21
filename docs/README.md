@@ -28,6 +28,8 @@ Start with the [project overview](../README.md) and [current validation status](
   endpoint/scope configuration and transport failure behavior.
 - [Bounded Chat policy and durable attempt ledger](../modeltransport/README.md):
   token limits, cost reservations and stops after failed or unknown outcomes.
+- [Qualification record foundation](qualification.md): unwired internal evidence
+  storage and verification; no operational candidate runner or activation authority.
 
 The chart's fixture harness is not a Substrate sandbox. See the
 [architecture and isolation boundaries](architecture.md#default-chart-host-and-fixture-harness) before
