@@ -33,6 +33,18 @@ Workspace, Kind, ID, Generation and Digest. Only recorded decisions with empty
 RefusalCode and non_executing_decision_v1 are accepted. G1 hashes its own ordered
 copy under g1-copied-decision-record-v1; **this is not an E1 record encoder**.
 
+The copied evidence domain follows the producer: workspace/subject/store/lineage,
+policy/grant identifiers and recorded roles accept noncontrol UTF-8 up to 256
+bytes, while request keys retain the producer's 128-byte printable-ASCII limit.
+Actor issuer/subject retain the producer's exact nonempty identity pair. Never
+truncate identifiers or rewrite a policy-selected role into `Agent.Approver`.
+Recorded and current policy-selected role strings are retained as evidence;
+role meaning and scoped permission are checked by the trusted policy adapter,
+not inferred from a hard-coded label here. Action/actor/subject/operation equality
+checks remain mandatory. [Producer conformance fixtures](../internal/targetversions/testdata/decision-ledger/README.md)
+exercise real emitted records through Begin/Reserve/Commit without a code
+import from the unmerged producer.
+
 E1 v1 suite activation maps activate to accept. Rollback, recover and
 abandon_activation records in this unwired package are synthetic future-input
 contracts, **not capabilities delivered by E1 v1**. Those typed actions and
@@ -80,9 +92,10 @@ abandonment intents and ordered events accompany mutable target/operation
 projections. Application code only appends immutable rows; SQLite file access
 is not an adversarial tamper-proof boundary. Events retain complete post-state
 snapshots, receipts and reciprocal links so Open/Verify can replay projections
-and compare local references. Versions can exist as pending candidates; they
-are active only after Commit. There is no public version-by-ID read API:
-ReadOperation exposes its immutable candidate; History supplies lifecycle facts.
+and compare local references. Versions can exist as pending candidates; their
+local recorded active binding changes only after Commit. That does not establish
+a live runtime switch. There is no public version-by-ID read API: ReadOperation
+exposes its immutable candidate; History supplies lifecycle facts.
 
 ArtifactTuple requires suite OCI manifest SHA-256, member, composition, platform,
 inventory/cases, harness/runtime/model/config, judge/settings and binding
@@ -94,7 +107,8 @@ assertions. Reusing a retained Q identity with changed contents conflicts.
 Fresh Q can permit changed qualification context while retained package,
 member/composition/platform/inventory/cases/source stay exact.
 
-Keys and opaque identifiers are at most 128 printable ASCII bytes. Reasons are
+Store-owned operation keys and identifiers are at most 128 printable ASCII
+bytes; copied producer evidence uses the broader domain above. Reasons are
 nonempty UTF-8 up to 4096 bytes; request, authority and receipt metadata are
 bounded to 64 KiB. Evidence bytes live in separately retained stores. G1
 fingerprints use versioned domain-separated SHA-256, fixed field order,
@@ -179,7 +193,9 @@ triggers are not checked; this is not protection from an administrator changing
 SQLite behavior. An integrity failure in Verify latches that Store handle against
 further mutation; transient SQLite contention returns ErrBusy without latching.
 Unknown target/operation references and mismatched receipt bindings return
-ErrConflict. Neither Open nor Verify repairs corrupt state.
+ErrConflict. All public refusal paths return fixed sentinel/context messages,
+without raw parser, SQL, path or stored-identity diagnostics in their error chains.
+Neither Open nor Verify repairs corrupt state.
 
 These are **local consistency checks**, not artifact authenticity, authority,
 anti-rollback or coordinated restore proof. A coherently older snapshot cannot

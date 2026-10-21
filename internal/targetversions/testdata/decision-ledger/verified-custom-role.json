@@ -1,0 +1,46 @@
+{
+  "ID": "4a04a7947c8ddb4d95f8777e9c4339b8",
+  "StoreID": "ca05fb9a5e28a3a31a55ea5633102224",
+  "HostLineageID": "host",
+  "Request": {
+    "Workspace": "workspace",
+    "Key": "activate-next",
+    "Subject": {
+      "Workspace": "workspace",
+      "Kind": "suite_version",
+      "ID": "proposal",
+      "Generation": 1,
+      "Digest": "58b873d3330aa970101a55f55822b56d6770251561f4a874874d4d96b88c37ec"
+    },
+    "Action": "accept",
+    "Feedback": ""
+  },
+  "RequestDigest": "f334b8432e0e283b947583e269c6d00cf5761c42db5f11f491b4386a98d7f03d",
+  "Actor": {
+    "Issuer": "issuer",
+    "Subject": "person"
+  },
+  "Outcome": "recorded",
+  "RefusalCode": "",
+  "Authorization": {
+    "Actor": {
+      "Issuer": "issuer",
+      "Subject": "person"
+    },
+    "Subject": {
+      "Workspace": "workspace",
+      "Kind": "suite_version",
+      "ID": "proposal",
+      "Generation": 1,
+      "Digest": "58b873d3330aa970101a55f55822b56d6770251561f4a874874d4d96b88c37ec"
+    },
+    "Action": "accept",
+    "Role": "Approver",
+    "PolicyVersion": "p1",
+    "GrantIDs": [
+      "grant"
+    ]
+  },
+  "CommittedAt": "2026-10-21T16:01:44.008366503Z",
+  "Mode": "non_executing_decision_v1"
+}

@@ -19,7 +19,7 @@ func (s *Store) History(ctx context.Context, targetID string, after uint64, limi
 	}
 	rows, e := s.db.QueryContext(ctx, "SELECT data FROM events WHERE target=? AND sequence>? ORDER BY sequence LIMIT ?", targetID, after, limit)
 	if e != nil {
-		return nil, e
+		return nil, normalizeError(ctx, e)
 	}
 	defer rows.Close()
 	out := []Event{}
@@ -27,14 +27,14 @@ func (s *Store) History(ctx context.Context, targetID string, after uint64, limi
 		var b []byte
 		var ev Event
 		if e = rows.Scan(&b); e != nil {
-			return nil, e
+			return nil, normalizeError(ctx, e)
 		}
 		if e = json.Unmarshal(b, &ev); e != nil {
-			return nil, ErrIntegrity
+			return nil, normalizeError(ctx, e)
 		}
 		out = append(out, ev)
 	}
-	return out, rows.Err()
+	return out, normalizeError(ctx, rows.Err())
 }
 
 // Verify certifies local references/projections only, not runtime fences, artifact

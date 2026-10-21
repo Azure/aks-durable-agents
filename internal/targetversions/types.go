@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -159,6 +160,31 @@ func keyOK(v string) bool {
 	}
 	return true
 }
+
+// Copied decision evidence follows the producer's UTF-8 identifier domain,
+// independently of this store's narrower operation-key namespace.
+func evidenceText(v string, max int) bool {
+	if len(v) == 0 || len(v) > max || !utf8.ValidString(v) {
+		return false
+	}
+	for _, r := range v {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+func evidenceFeedback(v string) bool {
+	if len(v) > 2048 || !utf8.ValidString(v) {
+		return false
+	}
+	for _, r := range v {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return false
+		}
+	}
+	return true
+}
 func digestOK(v string) bool {
 	if len(v) != 64 {
 		return false
@@ -207,15 +233,15 @@ func (s SubjectRef) fields() []string {
 	return []string{s.Workspace, s.Kind, s.ID, number(s.Generation), s.Digest}
 }
 func (s SubjectRef) valid() bool {
-	return keyOK(s.Workspace) && keyOK(s.ID) && s.Kind == "suite_version" && s.Generation > 0 && s.Generation <= math.MaxInt64 && digestOK(s.Digest)
+	return evidenceText(s.Workspace, 256) && evidenceText(s.ID, 256) && s.Kind == "suite_version" && s.Generation > 0 && s.Generation <= math.MaxInt64 && digestOK(s.Digest)
 }
-func (a Identity) valid() bool { return keyOK(a.Issuer) && keyOK(a.Subject) }
+func (a Identity) valid() bool { return a.Issuer != "" && a.Subject != "" }
 func grantsOK(gs []string) bool {
 	if len(gs) == 0 || len(gs) > 64 {
 		return false
 	}
 	for i, g := range gs {
-		if !keyOK(g) || (i > 0 && gs[i-1] >= g) {
+		if !evidenceText(g, 256) || (i > 0 && gs[i-1] >= g) {
 			return false
 		}
 	}
@@ -245,13 +271,7 @@ func (d DecisionRecord) copiedDigest() string {
 }
 func (d DecisionRecord) valid(ref SubjectRef, act string) bool {
 	a := d.Authorization
-	return keyOK(d.ID) && keyOK(d.StoreID) && keyOK(d.HostLineageID) && keyOK(d.Request.Key) && d.Request.Workspace == ref.Workspace && d.Request.Subject == ref && ref.valid() && d.Request.Action == act && len(d.Request.Feedback) <= 2048 && utf8.ValidString(d.Request.Feedback) && digestOK(d.RequestDigest) && d.Actor.valid() && d.Outcome == "recorded" && d.RefusalCode == "" && d.Mode == "non_executing_decision_v1" && !d.CommittedAt.IsZero() && a != nil && a.Actor == d.Actor && a.Subject == ref && a.Action == act && keyOK(a.PolicyVersion) && grantsOK(a.GrantIDs) && a.Role == role(act)
-}
-func role(act string) string {
-	if act == "abandon_activation" {
-		return "Agent.Operator"
-	}
-	return "Agent.Approver"
+	return evidenceText(d.ID, 256) && evidenceText(d.StoreID, 256) && evidenceText(d.HostLineageID, 256) && keyOK(d.Request.Key) && d.Request.Workspace == ref.Workspace && d.Request.Subject == ref && ref.valid() && d.Request.Action == act && evidenceFeedback(d.Request.Feedback) && digestOK(d.RequestDigest) && d.Actor.valid() && d.Outcome == "recorded" && d.RefusalCode == "" && d.Mode == "non_executing_decision_v1" && !d.CommittedAt.IsZero() && a != nil && a.Actor == d.Actor && a.Subject == ref && a.Action == act && evidenceText(a.PolicyVersion, 256) && grantsOK(a.GrantIDs) && evidenceText(a.Role, 256)
 }
 func (r Request) fingerprint() string {
 	f := []string{r.TargetID, r.Key, r.Intent, r.SourceVersionID, number(r.ExpectedRevision), r.Predecessor.Kind, r.Predecessor.ID}
@@ -277,7 +297,7 @@ func (a AuthorizationSnapshot) bound(o Operation) bool {
 	return a.OperationID == o.ID && a.Generation == o.Generation && a.OperationRevision == o.Revision && a.Phase == o.Phase
 }
 func (a AuthorizationSnapshot) valid(target, act string, now time.Time) bool {
-	return bounded(a) && a.DecisionRecord.valid(a.Subject, act) && a.DecisionDigest == a.DecisionRecord.copiedDigest() && a.Actor == a.DecisionRecord.Actor && a.Subject == a.DecisionRecord.Request.Subject && a.Action == act && a.Role == role(act) && a.TargetID == target && keyOK(a.PolicyVersion) && keyOK(a.PolicyEpoch) && grantsOK(a.GrantIDs) && !a.AuthorizedAt.IsZero() && !a.AuthorizedAt.After(now) && a.ExpiresAt.After(now) && a.CredentialExpiresAt.After(now)
+	return bounded(a) && a.DecisionRecord.valid(a.Subject, act) && a.DecisionDigest == a.DecisionRecord.copiedDigest() && a.Actor == a.DecisionRecord.Actor && a.Subject == a.DecisionRecord.Request.Subject && a.Action == act && evidenceText(a.Role, 256) && a.TargetID == target && evidenceText(a.PolicyVersion, 256) && keyOK(a.PolicyEpoch) && grantsOK(a.GrantIDs) && !a.AuthorizedAt.IsZero() && !a.AuthorizedAt.After(now) && a.ExpiresAt.After(now) && a.CredentialExpiresAt.After(now)
 }
 func same(a, b any) bool {
 	x, _ := json.Marshal(a)

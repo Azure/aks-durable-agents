@@ -1,0 +1,46 @@
+{
+  "ID": "01d67cef9517e6f53ccbf7653ce29498",
+  "StoreID": "ada9ad3fc2e191b8adf6aef9a0e488d6",
+  "HostLineageID": "host",
+  "Request": {
+    "Workspace": "workspace",
+    "Key": "activate-next",
+    "Subject": {
+      "Workspace": "workspace",
+      "Kind": "suite_version",
+      "ID": "proposal",
+      "Generation": 1,
+      "Digest": "d59f259a1e2e8db4d791fce7aa236873d8f97f8774ca1d393bc4636bd6370432"
+    },
+    "Action": "accept",
+    "Feedback": ""
+  },
+  "RequestDigest": "7025681d6160527b2465dfb48cddf2def6e1272384fe5c021c24c6ab2862a266",
+  "Actor": {
+    "Issuer": "issuer",
+    "Subject": "person"
+  },
+  "Outcome": "recorded",
+  "RefusalCode": "",
+  "Authorization": {
+    "Actor": {
+      "Issuer": "issuer",
+      "Subject": "person"
+    },
+    "Subject": {
+      "Workspace": "workspace",
+      "Kind": "suite_version",
+      "ID": "proposal",
+      "Generation": 1,
+      "Digest": "d59f259a1e2e8db4d791fce7aa236873d8f97f8774ca1d393bc4636bd6370432"
+    },
+    "Action": "accept",
+    "Role": "Agent.Approver",
+    "PolicyVersion": "politique-équipe",
+    "GrantIDs": [
+      "grant"
+    ]
+  },
+  "CommittedAt": "2026-10-21T16:01:44.226580897Z",
+  "Mode": "non_executing_decision_v1"
+}

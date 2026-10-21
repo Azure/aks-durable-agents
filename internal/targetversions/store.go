@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -150,7 +149,7 @@ func Open(path, expectedStoreID string) (*Store, error) {
 }
 func openStore(path, expected string, create bool) (*Store, error) {
 	if e := privatePath(path, create); e != nil {
-		return nil, fmt.Errorf("%w: private path: %v", ErrIntegrity, e)
+		return nil, ErrIntegrity
 	}
 	// DELETE is SQLite's initial persistent mode. Open checks it without changing
 	// it, so an unsupported schema is never converted from a different journal mode.
@@ -158,7 +157,7 @@ func openStore(path, expected string, create bool) (*Store, error) {
 	u := url.URL{Scheme: "file", Path: path, RawQuery: params.Encode()}
 	db, e := sql.Open("sqlite", u.String())
 	if e != nil {
-		return nil, e
+		return nil, normalizeError(context.Background(), e)
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db, now: func() time.Time { return time.Now().UTC() }}
@@ -194,7 +193,33 @@ func openStore(path, expected string, create bool) (*Store, error) {
 	}
 	return s, nil
 }
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error { return normalizeError(context.Background(), s.db.Close()) }
+
+// normalizeError exposes only fixed classes, never private diagnostics or causes.
+func normalizeError(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	for _, class := range []error{context.Canceled, context.DeadlineExceeded} {
+		if errors.Is(err, class) {
+			return class
+		}
+	}
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) && (sqliteErr.Code()&255 == sqlite3.SQLITE_BUSY || sqliteErr.Code()&255 == sqlite3.SQLITE_LOCKED) {
+		return ErrBusy
+	}
+	for _, class := range []error{ErrConflict, ErrBusy, ErrIntegrity, ErrUnsupported, ErrInvalid} {
+		if errors.Is(err, class) {
+			return class
+		}
+	}
+	return ErrIntegrity
+}
+
 func (s *Store) transact(ctx context.Context, fn func(query) error) error {
 	return s.transaction(ctx, false, fn)
 }
@@ -207,22 +232,8 @@ func (s *Store) transaction(ctx context.Context, verifying bool, fn func(query) 
 		if c != nil {
 			defer c.Close()
 		}
-		if err == nil {
-			return
-		}
-		if ctx.Err() != nil {
-			err = ctx.Err()
-			return
-		}
-		var sqliteErr *sqlite.Error
-		if errors.As(err, &sqliteErr) && (sqliteErr.Code()&255 == sqlite3.SQLITE_BUSY || sqliteErr.Code()&255 == sqlite3.SQLITE_LOCKED) {
-			err = fmt.Errorf("%w: %w", ErrBusy, err)
-			return
-		}
-		if !errors.Is(err, ErrConflict) && !errors.Is(err, ErrBusy) && !errors.Is(err, ErrIntegrity) && !errors.Is(err, ErrUnsupported) && !errors.Is(err, ErrInvalid) {
-			err = fmt.Errorf("%w: %v", ErrIntegrity, err)
-		}
-		if verifying && !errors.Is(err, ErrBusy) {
+		err = normalizeError(ctx, err)
+		if verifying && err != nil && err != ErrBusy && err != context.Canceled && err != context.DeadlineExceeded {
 			s.bad.Store(true)
 		}
 	}()
@@ -254,10 +265,14 @@ func load[T any](ctx context.Context, q query, stmt string, args ...any) (T, err
 	var v T
 	var b []byte
 	e := q.QueryRowContext(ctx, stmt, args...).Scan(&b)
+	if errors.Is(e, sql.ErrNoRows) {
+		// Internal callers distinguish missing facts from failed reads.
+		return v, e
+	}
 	if e == nil {
 		e = json.Unmarshal(b, &v)
 	}
-	return v, e
+	return v, normalizeError(ctx, e)
 }
 func target(ctx context.Context, q query, id string) (Target, error) {
 	t, err := load[Target](ctx, q, "SELECT data FROM targets WHERE id=?", id)

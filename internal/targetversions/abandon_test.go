@@ -188,9 +188,9 @@ func TestAbandonIncompleteFencing(t *testing.T) {
 	s, _ := newStore(t)
 	_, o := pendingWithPredecessor(t, s)
 	a := abandonRequest(s, o, "bad-authority")
-	a.Authority.Role = "Agent.Approver"
+	a.Authority.Action = "accept"
 	if _, e := s.StartAbandon(ctx, a); e == nil {
-		t.Fatal("approver can abandon")
+		t.Fatal("activation authority can abandon")
 	}
 	o = abandonStart(t, s, o, "abandon")
 	p, n := abandonReceipts(s, o)
@@ -236,7 +236,7 @@ func TestRecoveryExactPredecessorAndFreshIdentity(t *testing.T) {
 		r.Candidate = o.Request.Candidate
 		r.Candidate.Artifact.SuiteDigest = strings.Repeat("b", 64)
 		r.Candidate.Qualification.Artifact = r.Candidate.Artifact
-	}, "source": func(r *Request) { r.SourceVersionID = o.Version.ID }, "operator": func(r *Request) { r.DecisionRecord.Authorization.Role = "Agent.Operator" }, "stale Q": func(r *Request) { r.Candidate.Artifact.Runtime = "new" }, "mutated Q identity": func(r *Request) {
+	}, "source": func(r *Request) { r.SourceVersionID = o.Version.ID }, "operator action": func(r *Request) { r.DecisionRecord.Authorization.Action = "abandon_activation" }, "stale Q": func(r *Request) { r.Candidate.Artifact.Runtime = "new" }, "mutated Q identity": func(r *Request) {
 		r.Candidate = clone(first.Request.Candidate)
 		r.Candidate.Artifact.Runtime = "new"
 		r.Candidate.Qualification.Artifact = r.Candidate.Artifact
