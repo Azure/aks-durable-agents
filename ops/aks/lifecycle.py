@@ -147,9 +147,19 @@ def check_versions(data):
         patches = item.get("patchVersions", {})
         if not isinstance(patches, dict):
             raise ValueError("malformed version patches")
-        if item.get("isPreview", False) is False and (item.get("version") == VERSION or VERSION in patches):
+        # Azure omits this optional flag for GA; CLI projects the unset value as null.
+        preview = item.get("isPreview")
+        if (preview is None or preview is False) and (item.get("version") == VERSION or VERSION in patches):
             return
     raise ValueError("reviewed stable Kubernetes patch is unavailable")
+
+
+def quota_count(value):
+    if isinstance(value, str) and re.fullmatch(r"0|[1-9][0-9]*", value):
+        value = int(value)
+    if type(value) is not int or value < 0:
+        raise ValueError("invalid quota count")
+    return value
 
 
 def check_quota(data):
@@ -158,8 +168,8 @@ def check_quota(data):
     for name in ("cores", "standarddsv4family"):
         rows = [x for x in data if isinstance(x, dict) and isinstance(x.get("name"), dict)
                 and str(x["name"].get("value", "")).lower() == name]
-        if (len(rows) != 1 or any(type(rows[0].get(k)) is not int for k in ("limit", "currentValue"))
-                or rows[0]["currentValue"] < 0 or rows[0]["limit"] - rows[0]["currentValue"] < 6):
+        if (len(rows) != 1
+                or quota_count(rows[0].get("limit")) - quota_count(rows[0].get("currentValue")) < 6):
             raise ValueError("insufficient verified quota including one surge node")
 
 
