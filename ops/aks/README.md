@@ -122,6 +122,17 @@ and [stopped-writer backup/restore](../backup/README.md). Node seccomp-profile
 installation is not part of this bootstrap; the existing helper fails closed
 without it.
 
+## CI runner tools and scan policy
+
+CI checksum-pins kubectl **v1.37.1** and kubelogin **v0.2.21**. Their binary scans
+are report-only: every advisory and scan error stays visible in the run summary
+and separate seven-day artifacts. Integrity errors still block. These binaries
+are runner-only, not part of the application images.
+
+Our source and image-packaged Go scans remain strict and unfiltered. See the
+[runner scan policy](TOOL-SCANS.md) for checksums, report semantics and publication
+limits. These checks do not provision a cluster or authorize a live scenario.
+
 ## Offline verification
 
 ```sh

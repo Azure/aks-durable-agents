@@ -67,6 +67,14 @@ go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
 govulncheck ./...
 ```
 
+Image validation additionally runs `bash ops/images/vulncheck.sh` after
+`make images` and `bash ops/images/smoke.sh`, using the same installed scanner.
+It strictly scans the actual packaged Go executables in all three images.
+Publication scans built binaries before push and packaged binaries before signing.
+Only kubectl/kubelogin runner scans are report-only, with full findings in the
+run summary and separate artifacts; see the [runner scan policy](../ops/aks/TOOL-SCANS.md).
+These Go checks do not audit OS layers or Python dependencies.
+
 For the chart checks, use Helm **3.20.0**, Python **3.14.3** and the pinned
 Python requirements:
 
