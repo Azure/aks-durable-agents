@@ -2,12 +2,12 @@
 image:
   host:
     repository: "ghcr.io/azure/aks-durable-agents/host"
-    digest: "sha256:864a68cb40efb4aaf4737fcf05baf546fdd4aceaba7f1911cde4ce6f878daf1b"
+    digest: "sha256:903a0d81572cebe58fcd1ae5477afbee6685352d651f4bb427fe1aaea92eafdf"
     # Operator attestation: legacy /session-fixture probe, or native /host health-probe.
     includesHealthProbe: true
   harness:
     repository: "ghcr.io/azure/aks-durable-agents/session-fixture"
-    digest: "sha256:0942af46da49f0e4cb267467bd98fd7a921b67b1c6eff139ebe4fc6e32ad2524"
+    digest: "sha256:155964139623a3763adb6739d60e25dacd3575d28d0f17f5de8bc9dc887259eb"
 
 # Install dormant. Apply/verify policies before enabling workloads (see README).
 workloads:
