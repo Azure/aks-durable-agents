@@ -4,7 +4,6 @@ package targetversions
 
 import (
 	"context"
-	"encoding/json"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	dl "github.com/Azure/aks-durable-agents/decisionledger"
+	"github.com/Azure/aks-durable-agents/decisionrecord"
 	"github.com/Azure/aks-durable-agents/entraauth"
 	"github.com/agent-primitives/sessions/api"
 	"github.com/agent-primitives/sessions/authn"
@@ -59,7 +59,7 @@ func TestDecisionProjectionConformance(t *testing.T) {
 			r.Candidate.Qualification.Artifact = r.Candidate.Artifact
 			a := r.Candidate.Artifact
 			subject := dl.Subject{Workspace: tc.workspace, Kind: dl.SuiteKind, ID: tc.subject, Generation: 1, Resource: r.TargetID, ExpiresAt: time.Now().Add(time.Hour), Source: "host", Suite: &dl.SuiteProposal{
-				ProposalID: tc.subject, TargetID: r.TargetID, ExpectedVersion: r.Predecessor.ID, ExpectedRevision: r.ExpectedRevision, Intent: "activate", OperationKey: r.Key, PredecessorDigest: digest, SuiteDigest: a.SuiteDigest, Member: a.Member, Composition: a.Composition, Platform: a.Platform, InventoryDigest: a.InventoryDigest, CasesDigest: a.CasesDigest, BindingDigest: a.BindingDigest, QualificationID: r.Candidate.Qualification.ID, EvidenceDigest: r.Candidate.Qualification.EvidenceDigest, SourceDigest: r.Candidate.SourceDigest,
+				ProposedBy: api.CallerIdentity{Issuer: "issuer", Subject: "proposer"}, ProposalID: tc.subject, TargetID: r.TargetID, ExpectedVersion: r.Predecessor.ID, ExpectedRevision: r.ExpectedRevision, Intent: "activate", OperationKey: r.Key, PredecessorDigest: digest, SuiteDigest: a.SuiteDigest, Member: a.Member, Composition: a.Composition, Platform: a.Platform, InventoryDigest: a.InventoryDigest, CasesDigest: a.CasesDigest, BindingDigest: a.BindingDigest, QualificationID: r.Candidate.Qualification.ID, EvidenceDigest: r.Candidate.Qualification.EvidenceDigest, SourceDigest: r.Candidate.SourceDigest,
 			}}
 			ledger, err := dl.Initialize(filepath.Join(t.TempDir(), "ledger", "decisions.db"), tc.lineage)
 			if err != nil {
@@ -81,17 +81,9 @@ func TestDecisionProjectionConformance(t *testing.T) {
 			if original.Outcome != "recorded" || original.Authorization == nil || original.Authorization.Role != tc.role {
 				t.Fatalf("producer did not record exact role: %+v", original)
 			}
-			raw, err := json.Marshal(original)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var copied DecisionRecord
-			if err = json.Unmarshal(raw, &copied); err != nil {
-				t.Fatal(err)
-			}
-			assertExactDecisionProjection(t, original, copied)
-			r.Subject = copied.Request.Subject
-			r.DecisionRecord = copied
+			// This is one shared type, not a JSON-translated consumer copy.
+			r.Subject = original.Request.Subject
+			r.DecisionRecord = original
 			operation, err := versions.Begin(ctx, r)
 			if err != nil {
 				t.Fatalf("producer evidence rejected at Begin: %v", err)
@@ -130,17 +122,9 @@ func TestDecisionProjectionConformance(t *testing.T) {
 		})
 	}
 }
-func assertExactDecisionProjection(t *testing.T, original dl.DecisionRecord, copied DecisionRecord) {
+func assertExactDecisionProjection(t *testing.T, original, retained decisionrecord.DecisionRecord) {
 	t.Helper()
-	raw, err := json.Marshal(copied)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var roundTrip dl.DecisionRecord
-	if err = json.Unmarshal(raw, &roundTrip); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(original, roundTrip) {
+	if !reflect.DeepEqual(original, retained) {
 		t.Fatal("consumer changed recorded evidence during projection or persistence")
 	}
 }

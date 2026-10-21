@@ -94,7 +94,7 @@ func TestStoreRefusesUnsafeOrForeignState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.Exec("PRAGMA user_version=2")
+	db.Exec("PRAGMA user_version=3")
 	db.Close()
 	if _, err := Open(path, id, "host-lineage"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("future schema: %v", err)

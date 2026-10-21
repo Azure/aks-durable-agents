@@ -5,12 +5,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/agent-primitives/sessions/api"
 )
 
 var testDigest = strings.Repeat("a", 64)
 
 func suiteSubject() Subject {
-	return Subject{Workspace: "workspace", Kind: SuiteKind, ID: "proposal", Generation: 1, Resource: "target", ExpiresAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), Source: "host-fixture", Suite: &SuiteProposal{ProposalID: "proposal", TargetID: "target", ExpectedVersion: "version1", ExpectedRevision: 1, Intent: "activate", OperationKey: "activation-key", PredecessorDigest: testDigest, SuiteDigest: testDigest, Member: "main", Composition: "none", Platform: "linux/amd64", InventoryDigest: testDigest, CasesDigest: testDigest, BindingDigest: testDigest, QualificationID: "qualification", EvidenceDigest: testDigest, SourceDigest: testDigest}}
+	return Subject{Workspace: "workspace", Kind: SuiteKind, ID: "proposal", Generation: 1, Resource: "target", ExpiresAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), Source: "host-fixture", Suite: &SuiteProposal{ProposedBy: api.CallerIdentity{Issuer: "issuer", Subject: "author"}, ProposalID: "proposal", TargetID: "target", ExpectedVersion: "version1", ExpectedRevision: 1, Intent: "activate", OperationKey: "activation-key", PredecessorDigest: testDigest, SuiteDigest: testDigest, Member: "main", Composition: "none", Platform: "linux/amd64", InventoryDigest: testDigest, CasesDigest: testDigest, BindingDigest: testDigest, QualificationID: "qualification", EvidenceDigest: testDigest, SourceDigest: testDigest}}
 }
 func effectSubject() Subject {
 	s := suiteSubject()
@@ -57,19 +59,19 @@ func TestActionsAndRequestBounds(t *testing.T) {
 	}
 	ref, _ := suiteSubject().Reference()
 	r := DecideRequest{Workspace: "workspace", Key: "key", Subject: ref, Action: Accept}
-	h, err := r.fingerprint()
+	h, err := requestFingerprint(r)
 	if err != nil {
 		t.Fatal(err)
 	}
 	r.Feedback = "please revise"
-	h2, _ := r.fingerprint()
+	h2, _ := requestFingerprint(r)
 	if h == h2 {
 		t.Fatal("feedback omitted")
 	}
 	for _, change := range []func(*DecideRequest){func(r *DecideRequest) { r.Key = strings.Repeat("x", 129) }, func(r *DecideRequest) { r.Key = "key space" }, func(r *DecideRequest) { r.Feedback = strings.Repeat("x", 2049) }, func(r *DecideRequest) { r.Feedback = "\x00" }, func(r *DecideRequest) { r.Workspace = "other" }} {
 		r := DecideRequest{Workspace: "workspace", Key: "key", Subject: ref, Action: Accept}
 		change(&r)
-		if _, err := r.fingerprint(); !errors.Is(err, ErrInvalid) {
+		if _, err := requestFingerprint(r); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("accepted invalid request: %v", err)
 		}
 	}

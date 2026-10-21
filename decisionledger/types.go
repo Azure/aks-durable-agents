@@ -14,6 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/Azure/aks-durable-agents/decisionrecord"
 	"github.com/agent-primitives/sessions/api"
 )
 
@@ -26,29 +27,28 @@ var (
 	ErrUnavailable     = errors.New("decision store unavailable; reconcile exact request")
 )
 
-type Kind string
-type Action string
+type Kind = decisionrecord.Kind
+type Action = decisionrecord.Action
+type SubjectRef = decisionrecord.SubjectRef
+type DecideRequest = decisionrecord.DecideRequest
+type Authorization = decisionrecord.Authorization
+type DecisionRecord = decisionrecord.DecisionRecord
 
 const (
-	SuiteKind        Kind   = "suite_version"
-	EffectKind       Kind   = "effect_approval"
-	Accept           Action = "accept"
-	Reject           Action = "reject"
-	RequestChanges   Action = "request_changes"
-	Approve          Action = "approve"
-	Deny             Action = "deny"
-	NonExecutingMode        = "non_executing_decision_v1"
+	SuiteKind        = decisionrecord.SuiteKind
+	EffectKind       = decisionrecord.EffectKind
+	Accept           = decisionrecord.Accept
+	Reject           = decisionrecord.Reject
+	RequestChanges   = decisionrecord.RequestChanges
+	Approve          = decisionrecord.Approve
+	Deny             = decisionrecord.Deny
+	NonExecutingMode = decisionrecord.NonExecutingMode
 )
 
-// SubjectRef includes kind in its namespace; a digest never grants authority.
-type SubjectRef struct {
-	Workspace  string
-	Kind       Kind
-	ID         string
-	Generation uint64
-	Digest     string
-}
 type SuiteProposal struct {
+	// ProposedBy is supplied by trusted host registration from the verified
+	// proposal creator, never from the approval request or agent provenance.
+	ProposedBy                                    api.CallerIdentity
 	ProposalID, TargetID, ExpectedVersion         string
 	ExpectedRevision                              uint64
 	Intent, OperationKey                          string
@@ -76,34 +76,6 @@ type Subject struct {
 	Source     string
 	Suite      *SuiteProposal
 	Effect     *EffectApproval
-}
-
-type DecideRequest struct {
-	Workspace, Key string
-	Subject        SubjectRef
-	Action         Action
-	Feedback       string
-}
-
-// Authorization is supplied by trusted policy, never by a decision request.
-// It must match this exact person, subject and action, while policy remains held.
-type Authorization struct {
-	Actor               api.CallerIdentity
-	Subject             SubjectRef
-	Action              Action
-	Role, PolicyVersion string
-	GrantIDs            []string
-}
-type DecisionRecord struct {
-	ID, StoreID, HostLineageID string
-	Request                    DecideRequest
-	RequestDigest              string
-	Actor                      api.CallerIdentity
-	Outcome                    string // recorded or refused; reject/deny are explicit human actions.
-	RefusalCode                string
-	Authorization              *Authorization
-	CommittedAt                time.Time
-	Mode                       string
 }
 
 func textOK(s string, max int) bool {
@@ -148,7 +120,7 @@ func validAction(k Kind, a Action) bool {
 	}
 	return false
 }
-func (r SubjectRef) valid() bool {
+func validReference(r SubjectRef) bool {
 	return textOK(r.Workspace, 256) && textOK(r.ID, 256) && (r.Kind == SuiteKind || r.Kind == EffectKind) && r.Generation > 0 && r.Generation <= math.MaxInt64 && digestOK(r.Digest)
 }
 
@@ -172,18 +144,20 @@ func (s Subject) Reference() (SubjectRef, error) {
 	}
 	fields := []string{s.Workspace, string(s.Kind), s.ID, number(s.Generation), s.Resource, s.ExpiresAt.UTC().Format(time.RFC3339Nano), s.Source}
 	var ids, digests []string
+	domain := "host-decision-subject-v1"
 	switch s.Kind {
 	case SuiteKind:
 		if s.Suite == nil || s.Effect != nil {
 			return bad()
 		}
 		p := s.Suite
-		if p.Intent != "activate" || p.TargetID != s.Resource || p.ExpectedRevision == 0 || p.ExpectedRevision > math.MaxInt64 || !keyOK(p.OperationKey) {
+		if !p.ProposedBy.Valid() || p.Intent != "activate" || p.TargetID != s.Resource || p.ExpectedRevision == 0 || p.ExpectedRevision > math.MaxInt64 || !keyOK(p.OperationKey) {
 			return bad()
 		}
 		ids = []string{p.ProposalID, p.TargetID, p.ExpectedVersion, p.Intent, p.OperationKey, p.Member, p.Composition, p.Platform, p.QualificationID}
 		digests = []string{p.PredecessorDigest, p.SuiteDigest, p.InventoryDigest, p.CasesDigest, p.BindingDigest, p.EvidenceDigest, p.SourceDigest}
-		fields = append(fields, number(p.ExpectedRevision))
+		fields = append(fields, number(p.ExpectedRevision), p.ProposedBy.Issuer, p.ProposedBy.Subject)
+		domain = "host-decision-subject-v2"
 	case EffectKind:
 		if s.Effect == nil || s.Suite != nil {
 			return bad()
@@ -210,10 +184,10 @@ func (s Subject) Reference() (SubjectRef, error) {
 	}
 	fields = append(fields, ids...)
 	fields = append(fields, digests...)
-	return SubjectRef{s.Workspace, s.Kind, s.ID, s.Generation, hashFields("host-decision-subject-v1", fields...)}, nil
+	return SubjectRef{Workspace: s.Workspace, Kind: s.Kind, ID: s.ID, Generation: s.Generation, Digest: hashFields(domain, fields...)}, nil
 }
-func (r DecideRequest) fingerprint() (string, error) {
-	if !r.Subject.valid() || r.Workspace != r.Subject.Workspace || !keyOK(r.Key) || len(r.Action) == 0 || len(r.Action) > 64 || !textOK(string(r.Action), 64) || len(r.Feedback) > 2048 || !utf8.ValidString(r.Feedback) {
+func requestFingerprint(r DecideRequest) (string, error) {
+	if !validReference(r.Subject) || r.Workspace != r.Subject.Workspace || !keyOK(r.Key) || len(r.Action) == 0 || len(r.Action) > 64 || !textOK(string(r.Action), 64) || len(r.Feedback) > 2048 || !utf8.ValidString(r.Feedback) {
 		return "", ErrInvalid
 	}
 	for _, c := range r.Feedback {
@@ -223,7 +197,7 @@ func (r DecideRequest) fingerprint() (string, error) {
 	}
 	return hashFields("host-decision-request-v1", r.Workspace, r.Key, string(r.Subject.Kind), r.Subject.ID, number(r.Subject.Generation), r.Subject.Digest, string(r.Action), r.Feedback), nil
 }
-func (a Authorization) valid(actor api.CallerIdentity, ref SubjectRef, action Action, roles []string) bool {
+func validAuthorization(a Authorization, actor api.CallerIdentity, ref SubjectRef, action Action, roles []string) bool {
 	if a.Actor != actor || a.Subject != ref || a.Action != action || !textOK(a.Role, 256) || !textOK(a.PolicyVersion, 256) || len(a.GrantIDs) == 0 || len(a.GrantIDs) > 64 {
 		return false
 	}

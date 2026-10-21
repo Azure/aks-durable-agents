@@ -170,7 +170,7 @@ func openStore(path, id, lineage string, create bool) (*Store, error) {
 			if err := createSchema(context.Background(), c); err != nil {
 				return err
 			}
-			_, err := c.ExecContext(context.Background(), "INSERT INTO metadata VALUES(1,1,?,?)", s.id, lineage)
+			_, err := c.ExecContext(context.Background(), "INSERT INTO metadata VALUES(1,2,?,?)", s.id, lineage)
 			return err
 		})
 		if err != nil {
@@ -323,7 +323,7 @@ func (s *Store) RegisterSubject(ctx context.Context, subject Subject) (SubjectRe
 	return ref, nil
 }
 func (s *Store) Supersede(ctx context.Context, ref SubjectRef) error {
-	if !ref.valid() {
+	if !validReference(ref) {
 		return ErrInvalid
 	}
 	return s.transaction(ctx, func(c *sql.Conn) error {
@@ -360,7 +360,7 @@ func (s *Store) readRecord(ctx context.Context, q querier, actor api.CallerIdent
 	if decode(raw, &r) != nil {
 		return DecisionRecord{}, ErrUnavailable
 	}
-	hash, err := r.Request.fingerprint()
+	hash, err := requestFingerprint(r.Request)
 	if err != nil || hash != r.RequestDigest || r.Actor != actor || r.ID != id || r.StoreID != s.id || r.HostLineageID != s.lineage || r.Request.Workspace != workspace || r.Request.Key != key || r.Request.Subject.Kind != kind || r.Request.Subject.ID != subjectID || r.Request.Subject.Generation != generation || r.Outcome != outcome || r.Mode != NonExecutingMode || r.CommittedAt.IsZero() {
 		return DecisionRecord{}, ErrUnavailable
 	}
@@ -369,7 +369,7 @@ func (s *Store) readRecord(ctx context.Context, q querier, actor api.CallerIdent
 		return DecisionRecord{}, ErrUnavailable
 	}
 	if r.Outcome == "recorded" {
-		if state != "decided" || r.RefusalCode != "" || r.Authorization == nil || !validAction(kind, r.Request.Action) || !r.Authorization.valid(actor, r.Request.Subject, r.Request.Action, []string{r.Authorization.Role}) {
+		if state != "decided" || r.RefusalCode != "" || r.Authorization == nil || !validAction(kind, r.Request.Action) || !validAuthorization(*r.Authorization, actor, r.Request.Subject, r.Request.Action, []string{r.Authorization.Role}) {
 			return DecisionRecord{}, ErrUnavailable
 		}
 	} else if r.Outcome != "refused" || r.Authorization != nil || !refusalCode(r.RefusalCode) {
@@ -392,7 +392,7 @@ func (s *Store) lookup(ctx context.Context, a api.CallerIdentity, w, k string) (
 	return s.readRecord(ctx, s.db, a, w, k)
 }
 func (s *Store) commit(ctx context.Context, actor api.CallerIdentity, validUntil time.Time, r DecideRequest, auth *Authorization, refusal string) (DecisionRecord, error) {
-	hash, err := r.fingerprint()
+	hash, err := requestFingerprint(r)
 	if err != nil {
 		return DecisionRecord{}, err
 	}
@@ -432,7 +432,7 @@ func (s *Store) commit(ctx context.Context, actor api.CallerIdentity, validUntil
 			return ErrUnavailable
 		}
 		if code == "" {
-			if auth == nil || !auth.valid(actor, r.Subject, r.Action, []string{auth.Role}) {
+			if auth == nil || !validAuthorization(*auth, actor, r.Subject, r.Action, []string{auth.Role}) {
 				return ErrDenied
 			}
 			result.Outcome = "recorded"
@@ -484,13 +484,13 @@ func (s *Store) verify() error {
 	ctx := context.Background()
 	var version, count int
 	var id, lineage string
-	if s.db.QueryRow("PRAGMA user_version").Scan(&version) != nil || version != 1 {
+	if s.db.QueryRow("PRAGMA user_version").Scan(&version) != nil || version != 2 {
 		return ErrUnavailable
 	}
 	if s.db.QueryRow("SELECT count(*) FROM metadata").Scan(&count) != nil || count != 1 {
 		return ErrUnavailable
 	}
-	if s.db.QueryRow("SELECT schema_version,store_id,lineage FROM metadata WHERE id=1").Scan(&version, &id, &lineage) != nil || version != 1 || id != s.id || lineage != s.lineage {
+	if s.db.QueryRow("SELECT schema_version,store_id,lineage FROM metadata WHERE id=1").Scan(&version, &id, &lineage) != nil || version != 2 || id != s.id || lineage != s.lineage {
 		return ErrUnavailable
 	}
 	var integrity string
@@ -530,7 +530,7 @@ func (s *Store) verify() error {
 		return ErrUnavailable
 	}
 	for _, e := range subjects {
-		if !e.ref.valid() {
+		if !validReference(e.ref) {
 			return ErrUnavailable
 		}
 		if _, _, err := s.subject(ctx, e.ref); err != nil {

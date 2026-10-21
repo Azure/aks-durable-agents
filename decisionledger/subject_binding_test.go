@@ -17,6 +17,8 @@ func TestSuiteSubjectFieldBindings(t *testing.T) {
 		"expiry":             func(s *Subject) { s.ExpiresAt = s.ExpiresAt.Add(time.Second) },
 		"source":             func(s *Subject) { s.Source = "other" },
 		"proposal":           func(s *Subject) { s.Suite.ProposalID = "other" },
+		"proposer issuer":    func(s *Subject) { s.Suite.ProposedBy.Issuer = "other" },
+		"proposer subject":   func(s *Subject) { s.Suite.ProposedBy.Subject = "other" },
 		"target":             func(s *Subject) { s.Resource = "other"; s.Suite.TargetID = "other" },
 		"expected version":   func(s *Subject) { s.Suite.ExpectedVersion = "other" },
 		"expected revision":  func(s *Subject) { s.Suite.ExpectedRevision++ },

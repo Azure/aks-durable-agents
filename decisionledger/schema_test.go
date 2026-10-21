@@ -6,6 +6,31 @@ import (
 	"testing"
 )
 
+func TestLegacySchemaMarkersRefused(t *testing.T) {
+	for name, statement := range map[string]string{
+		"user version":     "PRAGMA user_version=1",
+		"metadata version": "UPDATE metadata SET schema_version=1",
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newTestStore(t)
+			path, id := s.path, s.ID()
+			if _, err := s.db.Exec(statement); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := Open(path, id, "host-lineage")
+			if reopened != nil {
+				reopened.Close()
+			}
+			if !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("unknown proposer schema admitted: %v", err)
+			}
+		})
+	}
+}
+
 // Same version markers do not authorize a different table/index contract.
 func TestSchemaDefinitionsRequired(t *testing.T) {
 	for name, statement := range map[string]string{

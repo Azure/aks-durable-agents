@@ -62,6 +62,16 @@ func (s *Service) visible(ctx context.Context, h entraauth.VerifiedHuman, subjec
 	return ctx.Err()
 }
 
+// withDecisionPolicy enforces independent version approval before delegating
+// resource permissions. Decide calls it only after visibility and retry checks;
+// immutable host-retained proposer evidence cannot race a policy update.
+func (s *Service) withDecisionPolicy(ctx context.Context, h entraauth.VerifiedHuman, subject Subject, action Action, commit func(Authorization) error) error {
+	if subject.Kind == SuiteKind && action == Accept && subject.Suite.ProposedBy == h.Caller.Identity {
+		return ErrDenied
+	}
+	return s.policy.WithDecision(ctx, h, subject, action, commit)
+}
+
 // Get reads only the freshly verified person's request-key namespace. History
 // reads for another human or a workload need a separately authorized API.
 func (s *Service) Get(ctx context.Context, workspace, key string) (DecisionRecord, error) {
@@ -93,7 +103,7 @@ func (s *Service) Decide(ctx context.Context, r DecideRequest) (DecisionRecord, 
 	if err != nil {
 		return DecisionRecord{}, err
 	}
-	hash, err := r.fingerprint()
+	hash, err := requestFingerprint(r)
 	if err != nil {
 		return DecisionRecord{}, err
 	}
@@ -127,7 +137,7 @@ func (s *Service) Decide(ctx context.Context, r DecideRequest) (DecisionRecord, 
 	active := true
 	calls := 0
 	var commitErr error
-	policyErr := s.policy.WithDecision(ctx, h, subject, r.Action, func(a Authorization) error {
+	policyErr := s.withDecisionPolicy(ctx, h, subject, r.Action, func(a Authorization) error {
 		mu.Lock()
 		defer mu.Unlock()
 		if !active || calls != 0 {
@@ -135,7 +145,7 @@ func (s *Service) Decide(ctx context.Context, r DecideRequest) (DecisionRecord, 
 			return commitErr
 		}
 		calls++
-		if !a.valid(h.Caller.Identity, r.Subject, r.Action, h.Roles) {
+		if !validAuthorization(a, h.Caller.Identity, r.Subject, r.Action, h.Roles) {
 			commitErr = ErrDenied
 			return commitErr
 		}
