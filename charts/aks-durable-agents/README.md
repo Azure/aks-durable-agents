@@ -48,7 +48,14 @@ existing journals, receipts, policy run IDs, ledgers, PVC subpaths and operator
 values as one compatible set. Do not reset a ledger to adopt new example values.
 - Create the Entra application/permission configuration separately. Required
   auth needs `tenantID`, exact tenant `issuer`, GUID `audience`, nonempty
-  `allowedClientIDs`, `requiredScope`, and explicit `{issuer, subject}` approvers.
+  `allowedClientIDs`, `requiredScope`, and explicit `{issuer, subject}` approvers
+  or `approverRoles`. Approval uses **subject OR app role**, never bypassing
+  optional `memberOnly`/`requiredGroups` admission. `requiredRoles` admits any
+  listed caller role; all listed groups are required. All default off/empty.
+  Configured approver roles require a nonempty `roles` claim even for listed
+  subjects; startup logs source counts and operator role names, not claims.
+  See [policy setup and OR example](../../docs/entraauth.md#optional-caller-and-approver-checks).
+  New claim policies are refused with `auth.mode: off`.
   Each approver `issuer` must equal `auth.issuer` exactly; with `subjectClaim: oid`
   each `subject` must be a lowercase object ID GUID, and with `sub` it must have
   no ASCII whitespace or control characters. Values that rendered before can now

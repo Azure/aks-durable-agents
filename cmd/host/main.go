@@ -59,7 +59,7 @@ func parse(args []string) (host.Config, error) {
 	fs.StringVar(&c.TLSCert, "tls-cert", "", "PEM server certificate file")
 	fs.StringVar(&c.TLSKey, "tls-key", "", "PEM server private key file")
 	mode := fs.String("auth-mode", "required", "off or required; neither supplies sessions c1/c2")
-	authFile := fs.String("auth-config", "", "Entra identity and explicit approval allowlist JSON")
+	authFile := fs.String("auth-config", "", "Entra identity, optional claim policies and approval sources JSON")
 	fs.Var(harnessFlags(c.Harnesses), "harness", "repeatable static name=loopback-address")
 	sub := &host.SubstrateConfig{}
 	seen := make(map[string]bool)
@@ -132,6 +132,10 @@ func parse(args []string) (host.Config, error) {
 				AllowedClientIDs []string `json:"allowedClientIDs"`
 				RequiredScope    string   `json:"requiredScope"`
 				SubjectClaim     string   `json:"subjectClaim"`
+				RequiredRoles    []string `json:"requiredRoles"`
+				RequiredGroups   []string `json:"requiredGroups"`
+				MemberOnly       bool     `json:"memberOnly"`
+				ApproverRoles    []string `json:"approverRoles"`
 			} `json:"identity"`
 			Approvers []struct {
 				Issuer  string `json:"issuer"`
@@ -151,7 +155,7 @@ func parse(args []string) (host.Config, error) {
 		if d.Decode(&extra) != io.EOF {
 			return c, errors.New("trailing auth config data")
 		}
-		c.Identity = entraauth.Config{TenantID: a.Identity.TenantID, Issuer: a.Identity.Issuer, Audience: a.Identity.Audience, AllowedClientIDs: a.Identity.AllowedClientIDs, RequiredScope: a.Identity.RequiredScope, SubjectClaim: a.Identity.SubjectClaim}
+		c.Identity = entraauth.Config{TenantID: a.Identity.TenantID, Issuer: a.Identity.Issuer, Audience: a.Identity.Audience, AllowedClientIDs: a.Identity.AllowedClientIDs, RequiredScope: a.Identity.RequiredScope, SubjectClaim: a.Identity.SubjectClaim, RequiredRoles: a.Identity.RequiredRoles, RequiredGroups: a.Identity.RequiredGroups, MemberOnly: a.Identity.MemberOnly, ApproverRoles: a.Identity.ApproverRoles}
 		for _, caller := range a.Approvers {
 			c.Approvers = append(c.Approvers, api.CallerIdentity{Issuer: caller.Issuer, Subject: caller.Subject})
 		}

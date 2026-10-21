@@ -47,6 +47,14 @@ func (c Config) validate() error {
 	if c.Mode != authn.Off && c.Mode != authn.Required {
 		return errors.New("auth mode must be off or required")
 	}
+	if c.Mode == authn.Off && (c.Identity.MemberOnly || len(c.Identity.RequiredRoles) > 0 || len(c.Identity.RequiredGroups) > 0 || len(c.Identity.ApproverRoles) > 0) {
+		return errors.New("role, group and member policies require auth mode required")
+	}
+	if c.Mode == authn.Required {
+		if err := c.Identity.ValidatePolicy(); err != nil {
+			return err
+		}
+	}
 	if c.TrustedNetworkSessions && (c.Mode != authn.Off || c.TLSCert == "" || c.TLSKey == "" || !privateSessionsAddress(c.Addr)) {
 		return errors.New("trusted-network Sessions requires auth off, TLS certificate/key and an explicit IPv4 wildcard listener")
 	}

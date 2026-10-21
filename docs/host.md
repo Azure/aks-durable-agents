@@ -24,9 +24,12 @@ What the host enforces:
   Rejections and failed signing-key refreshes are logged by fixed reason code,
   rate-limited, never with token, claim or provider text ([details](entraauth.md#trust-and-failure-contract)).
 - In required mode, `Approve` additionally invokes an `api.Authorizer` using
-  `authn.Caller(ctx)` and an exact issuer/subject approver allowlist. An owner is
-  **not implicitly an approver**; an allowlisted non-owner can approve. Empty
-  allowlist denies every approval, including denial decisions. This check occurs
+  `authn.Caller(ctx)` and an exact issuer/subject approver allowlist OR optional
+  verified approver app roles. An owner is **not implicitly an approver**; an
+  allowlisted or role-authorized non-owner can approve. With neither source,
+  every approval is denied, including denial decisions. Configured member/group
+  checks always apply; configured approver roles require a usable `roles` claim
+  even for listed subjects ([configuration and OR example](entraauth.md#optional-caller-and-approver-checks)). This check occurs
   before session lookup, disclosure or journal mutation. Request `IdentityRef`
   remains untrusted provenance; this host does not claim verified audit attribution.
   Startup refuses an approver whose issuer is not exactly `identity.issuer`, whose

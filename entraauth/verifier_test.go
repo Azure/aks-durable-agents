@@ -247,6 +247,26 @@ func TestVerifyClaims(t *testing.T) {
 	})
 }
 
+func TestSignedTokenSizeLimit(t *testing.T) {
+	f := fixture(t)
+	v := f.verifier(t, nil)
+	key, _ := testKeys(t)
+	c := claims(f.clock())
+	if _, err := v.Verify(incoming(signed(t, c, "initial", key, nil))); err != nil {
+		t.Fatal("otherwise-valid token refused")
+	}
+	c["padding"] = strings.Repeat("x", 17000)
+	raw := signed(t, c, "initial", key, nil)
+	if len(raw) <= maxTokenBytes {
+		t.Fatal("fixture does not exceed the credential size limit")
+	}
+	_, err := v.Verify(incoming(raw))
+	safeFailure(t, err)
+	if got := err.(interface{ DebugReason() string }).DebugReason(); got != "credentials" {
+		t.Fatalf("reason=%s want=credentials", got)
+	}
+}
+
 // A permissive parser or ambiguous metadata must not bypass signature verification.
 func TestCredentialsAndAlgorithms(t *testing.T) {
 	f := fixture(t)

@@ -195,6 +195,19 @@
             "sub"
           ]
         },
+        "requiredRoles": {
+          "type": "array", "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "pattern": "^[^\\x00-\\x20\\x7f]+$"}
+        },
+        "approverRoles": {
+          "type": "array", "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "pattern": "^[^\\x00-\\x20\\x7f]+$"}
+        },
+        "requiredGroups": {
+          "type": "array", "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}
+        },
+        "memberOnly": {"type": "boolean"},
         "approvers": {
           "type": "array",
           "uniqueItems": true,
@@ -237,7 +250,11 @@
             "properties": {
               "trustedNetwork": {
                 "const": true
-              }
+              },
+              "requiredRoles": {"maxItems": 0},
+              "approverRoles": {"maxItems": 0},
+              "requiredGroups": {"maxItems": 0},
+              "memberOnly": {"const": false}
             }
           }
         },
@@ -272,9 +289,6 @@
               "allowedClientIDs": {
                 "minItems": 1
               },
-              "approvers": {
-                "minItems": 1
-              },
               "requiredScope": {
                 "type": "string",
                 "pattern": "^[^\\s]+$"
@@ -282,7 +296,11 @@
               "tlsSecretName": {
                 "minLength": 1
               }
-            }
+            },
+            "anyOf": [
+              {"properties": {"approvers": {"minItems": 1}}},
+              {"required": ["approverRoles"], "properties": {"approverRoles": {"minItems": 1}}}
+            ]
           }
         },
         {
