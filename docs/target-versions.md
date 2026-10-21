@@ -25,7 +25,11 @@ cross-store checks performed by SQLite. D2 emergency holds must be honored by
 that same gate, including at Commit. Separate databases are not an atomic
 multi-store transaction.
 
-The copied decision projection retains E1 names and meaning: ID, StoreID,
+The shared DTO-only [`decisionrecord` package](../decisionrecord/types.go) defines
+non-executing historical evidence for both E1 and G1. G1 aliases these types rather
+than declaring a consumer copy. Constructing a DTO authenticates nobody and grants
+no authority; verification, policy, subject binding and persistence remain with
+the owning packages. The decision record retains E1 names and meaning: ID, StoreID,
 HostLineageID, Request (Workspace, Key, Subject, Action, Feedback), RequestDigest,
 Actor (Issuer, Subject), Outcome, RefusalCode, Authorization (Actor, Subject,
 Action, Role, PolicyVersion, GrantIDs), CommittedAt and Mode. SubjectRef retains
@@ -41,9 +45,10 @@ truncate identifiers or rewrite a policy-selected role into `Agent.Approver`.
 Recorded and current policy-selected role strings are retained as evidence;
 role meaning and scoped permission are checked by the trusted policy adapter,
 not inferred from a hard-coded label here. Action/actor/subject/operation equality
-checks remain mandatory. [Producer conformance fixtures](../internal/targetversions/testdata/decision-ledger/README.md)
-exercise real emitted records through Begin/Reserve/Commit without a code
-import from the unmerged producer.
+checks remain mandatory. Local shared-type tests exercise actual store
+Begin/Reserve/Commit and reopen without a producer runtime import. Sharing the
+record types does not establish retained-subject authentication or current
+authority.
 
 E1 v1 suite activation maps activate to accept. Rollback, recover and
 abandon_activation records in this unwired package are synthetic future-input

@@ -15,7 +15,7 @@ func receipt(s *Store, o Operation, kind string) Receipt {
 }
 func authority(s *Store, o Operation) AuthorizationSnapshot {
 	d := clone(o.Request.DecisionRecord)
-	return AuthorizationSnapshot{OperationID: o.ID, Generation: o.Generation, OperationRevision: o.Revision, Phase: o.Phase, DecisionRecord: d, DecisionDigest: d.copiedDigest(), Actor: d.Actor, Subject: d.Request.Subject, Action: d.Request.Action, Role: d.Authorization.Role, TargetID: o.Request.TargetID, PolicyVersion: "current-policy", PolicyEpoch: "epoch", GrantIDs: []string{"current-grant"}, AuthorizedAt: s.now().Add(-time.Second), ExpiresAt: s.now().Add(time.Minute), CredentialExpiresAt: s.now().Add(time.Minute)}
+	return AuthorizationSnapshot{OperationID: o.ID, Generation: o.Generation, OperationRevision: o.Revision, Phase: o.Phase, DecisionRecord: d, DecisionDigest: copiedDecisionDigest(d), Actor: d.Actor, Subject: d.Request.Subject, Action: string(d.Request.Action), Role: d.Authorization.Role, TargetID: o.Request.TargetID, PolicyVersion: "current-policy", PolicyEpoch: "epoch", GrantIDs: []string{"current-grant"}, AuthorizedAt: s.now().Add(-time.Second), ExpiresAt: s.now().Add(time.Minute), CredentialExpiresAt: s.now().Add(time.Minute)}
 }
 func prepared(t *testing.T, s *Store, o Operation) Operation {
 	t.Helper()
@@ -204,7 +204,7 @@ func TestReceiptIdempotencyAndBinding(t *testing.T) {
 	a := authority(s, o)
 	for name, change := range map[string]func(*AuthorizationSnapshot){"record": func(a *AuthorizationSnapshot) {
 		a.DecisionRecord.ID = "other"
-		a.DecisionDigest = a.DecisionRecord.copiedDigest()
+		a.DecisionDigest = copiedDecisionDigest(a.DecisionRecord)
 	}, "digest": func(a *AuthorizationSnapshot) { a.DecisionDigest = strings.Repeat("b", 64) }, "actor": func(a *AuthorizationSnapshot) { a.Actor.Subject = "other" }, "subject": func(a *AuthorizationSnapshot) { a.Subject.ID = "other" }, "action": func(a *AuthorizationSnapshot) { a.Action = "recover" }, "expiry": func(a *AuthorizationSnapshot) { a.ExpiresAt = s.now().Add(-time.Second) }, "credential expiry": func(a *AuthorizationSnapshot) { a.CredentialExpiresAt = s.now().Add(-time.Second) }} {
 		t.Run(name, func(t *testing.T) {
 			bad := clone(a)

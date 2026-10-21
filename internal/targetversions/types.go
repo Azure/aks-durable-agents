@@ -15,6 +15,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/Azure/aks-durable-agents/decisionrecord"
 )
 
 var (
@@ -41,35 +43,13 @@ type Candidate struct {
 }
 type PredecessorRef struct{ Kind, ID string }
 
-// These types project E1's record names/meaning, without importing its unmerged
-// implementation. Digesting this copy is a G1 codec, never an E1 record encoder.
-type Identity struct{ Issuer, Subject string }
-type SubjectRef struct {
-	Workspace, Kind, ID string
-	Generation          uint64
-	Digest              string
-}
-type DecideRequest struct {
-	Workspace, Key   string
-	Subject          SubjectRef
-	Action, Feedback string
-}
-type DecisionAuthorization struct {
-	Actor                       Identity
-	Subject                     SubjectRef
-	Action, Role, PolicyVersion string
-	GrantIDs                    []string
-}
-type DecisionRecord struct {
-	ID, StoreID, HostLineageID string
-	Request                    DecideRequest
-	RequestDigest              string
-	Actor                      Identity
-	Outcome, RefusalCode       string
-	Authorization              *DecisionAuthorization
-	CommittedAt                time.Time
-	Mode                       string
-}
+// Shared DTOs carry historical evidence, not authority. Digesting this evidence
+// remains a G1 codec, never an E1 record encoder.
+type Identity = decisionrecord.Identity
+type SubjectRef = decisionrecord.SubjectRef
+type DecideRequest = decisionrecord.DecideRequest
+type DecisionAuthorization = decisionrecord.Authorization
+type DecisionRecord = decisionrecord.DecisionRecord
 
 // Current authority is a separate request-local snapshot. Credential validity is
 // checked only at reservation; its expiry never reinterprets a reserved operation.
@@ -229,13 +209,12 @@ func (a ArtifactTuple) valid() bool {
 func (c Candidate) binding() string {
 	return hash("g1-candidate-v1", append(c.Artifact.fields(), c.SourceDigest)...)
 }
-func (s SubjectRef) fields() []string {
-	return []string{s.Workspace, s.Kind, s.ID, number(s.Generation), s.Digest}
+func subjectFields(s SubjectRef) []string {
+	return []string{s.Workspace, string(s.Kind), s.ID, number(s.Generation), s.Digest}
 }
-func (s SubjectRef) valid() bool {
-	return evidenceText(s.Workspace, 256) && evidenceText(s.ID, 256) && s.Kind == "suite_version" && s.Generation > 0 && s.Generation <= math.MaxInt64 && digestOK(s.Digest)
+func validSubjectRef(s SubjectRef) bool {
+	return evidenceText(s.Workspace, 256) && evidenceText(s.ID, 256) && s.Kind == decisionrecord.SuiteKind && s.Generation > 0 && s.Generation <= math.MaxInt64 && digestOK(s.Digest)
 }
-func (a Identity) valid() bool { return a.Issuer != "" && a.Subject != "" }
 func grantsOK(gs []string) bool {
 	if len(gs) == 0 || len(gs) > 64 {
 		return false
@@ -253,25 +232,25 @@ func action(intent string) string {
 	}
 	return intent
 }
-func (d DecisionRecord) fields() []string {
+func decisionFields(d DecisionRecord) []string {
 	f := []string{d.ID, d.StoreID, d.HostLineageID, d.Request.Workspace, d.Request.Key}
-	f = append(f, d.Request.Subject.fields()...)
-	f = append(f, d.Request.Action, d.Request.Feedback, d.RequestDigest, d.Actor.Issuer, d.Actor.Subject, d.Outcome, d.RefusalCode, stamp(d.CommittedAt), d.Mode)
+	f = append(f, subjectFields(d.Request.Subject)...)
+	f = append(f, string(d.Request.Action), d.Request.Feedback, d.RequestDigest, d.Actor.Issuer, d.Actor.Subject, d.Outcome, d.RefusalCode, stamp(d.CommittedAt), d.Mode)
 	if d.Authorization == nil {
 		return append(f, "none")
 	}
 	a := d.Authorization
 	f = append(f, "authorization", a.Actor.Issuer, a.Actor.Subject)
-	f = append(f, a.Subject.fields()...)
-	f = append(f, a.Action, a.Role, a.PolicyVersion, number(uint64(len(a.GrantIDs))))
+	f = append(f, subjectFields(a.Subject)...)
+	f = append(f, string(a.Action), a.Role, a.PolicyVersion, number(uint64(len(a.GrantIDs))))
 	return append(f, a.GrantIDs...)
 }
-func (d DecisionRecord) copiedDigest() string {
-	return hash("g1-copied-decision-record-v1", d.fields()...)
+func copiedDecisionDigest(d DecisionRecord) string {
+	return hash("g1-copied-decision-record-v1", decisionFields(d)...)
 }
-func (d DecisionRecord) valid(ref SubjectRef, act string) bool {
+func validDecisionRecord(d DecisionRecord, ref SubjectRef, act string) bool {
 	a := d.Authorization
-	return evidenceText(d.ID, 256) && evidenceText(d.StoreID, 256) && evidenceText(d.HostLineageID, 256) && keyOK(d.Request.Key) && d.Request.Workspace == ref.Workspace && d.Request.Subject == ref && ref.valid() && d.Request.Action == act && evidenceFeedback(d.Request.Feedback) && digestOK(d.RequestDigest) && d.Actor.valid() && d.Outcome == "recorded" && d.RefusalCode == "" && d.Mode == "non_executing_decision_v1" && !d.CommittedAt.IsZero() && a != nil && a.Actor == d.Actor && a.Subject == ref && a.Action == act && evidenceText(a.PolicyVersion, 256) && grantsOK(a.GrantIDs) && evidenceText(a.Role, 256)
+	return evidenceText(d.ID, 256) && evidenceText(d.StoreID, 256) && evidenceText(d.HostLineageID, 256) && keyOK(d.Request.Key) && d.Request.Workspace == ref.Workspace && d.Request.Subject == ref && validSubjectRef(ref) && string(d.Request.Action) == act && evidenceFeedback(d.Request.Feedback) && digestOK(d.RequestDigest) && d.Actor.Valid() && d.Outcome == "recorded" && d.RefusalCode == "" && d.Mode == decisionrecord.NonExecutingMode && !d.CommittedAt.IsZero() && a != nil && a.Actor == d.Actor && a.Subject == ref && string(a.Action) == act && evidenceText(a.PolicyVersion, 256) && grantsOK(a.GrantIDs) && evidenceText(a.Role, 256)
 }
 func (r Request) fingerprint() string {
 	f := []string{r.TargetID, r.Key, r.Intent, r.SourceVersionID, number(r.ExpectedRevision), r.Predecessor.Kind, r.Predecessor.ID}
@@ -280,16 +259,16 @@ func (r Request) fingerprint() string {
 	q := r.Candidate.Qualification
 	f = append(f, q.ID, q.StoreID, q.Digest, q.EvidenceDigest, q.JournalsDigest, q.PolicyVersion, strconv.FormatBool(q.Complete), strconv.FormatBool(q.Passed), strconv.FormatBool(q.Eligible))
 	f = append(f, q.Artifact.fields()...)
-	f = append(f, r.Subject.fields()...)
-	return hash("g1-request-v1", append(f, r.DecisionRecord.fields()...)...)
+	f = append(f, subjectFields(r.Subject)...)
+	return hash("g1-request-v1", append(f, decisionFields(r.DecisionRecord)...)...)
 }
 func (r Request) valid() bool {
 	q := r.Candidate.Qualification
-	return bounded(r) && keyOK(r.TargetID) && keyOK(r.Key) && r.ExpectedRevision > 0 && r.ExpectedRevision < math.MaxInt64 && keyOK(r.Predecessor.ID) && (r.Predecessor.Kind == "genesis" || r.Predecessor.Kind == "version" || r.Predecessor.Kind == "abandonment") && (r.SourceVersionID == "" || keyOK(r.SourceVersionID)) && (r.Intent == "activate" || r.Intent == "rollback" || r.Intent == "recover") && r.Candidate.Artifact.valid() && digestOK(r.Candidate.SourceDigest) && keyOK(q.ID) && keyOK(q.StoreID) && digestOK(q.Digest) && digestOK(q.EvidenceDigest) && digestOK(q.JournalsDigest) && keyOK(q.PolicyVersion) && q.Complete && q.Passed && q.Eligible && q.Artifact == r.Candidate.Artifact && r.DecisionRecord.valid(r.Subject, action(r.Intent))
+	return bounded(r) && keyOK(r.TargetID) && keyOK(r.Key) && r.ExpectedRevision > 0 && r.ExpectedRevision < math.MaxInt64 && keyOK(r.Predecessor.ID) && (r.Predecessor.Kind == "genesis" || r.Predecessor.Kind == "version" || r.Predecessor.Kind == "abandonment") && (r.SourceVersionID == "" || keyOK(r.SourceVersionID)) && (r.Intent == "activate" || r.Intent == "rollback" || r.Intent == "recover") && r.Candidate.Artifact.valid() && digestOK(r.Candidate.SourceDigest) && keyOK(q.ID) && keyOK(q.StoreID) && digestOK(q.Digest) && digestOK(q.EvidenceDigest) && digestOK(q.JournalsDigest) && keyOK(q.PolicyVersion) && q.Complete && q.Passed && q.Eligible && q.Artifact == r.Candidate.Artifact && validDecisionRecord(r.DecisionRecord, r.Subject, action(r.Intent))
 }
 func (a AuthorizationSnapshot) fields() []string {
-	f := append(a.DecisionRecord.fields(), a.DecisionDigest, a.Actor.Issuer, a.Actor.Subject, a.OperationID, a.Phase, number(a.Generation), number(a.OperationRevision))
-	f = append(f, a.Subject.fields()...)
+	f := append(decisionFields(a.DecisionRecord), a.DecisionDigest, a.Actor.Issuer, a.Actor.Subject, a.OperationID, a.Phase, number(a.Generation), number(a.OperationRevision))
+	f = append(f, subjectFields(a.Subject)...)
 	f = append(f, a.Action, a.Role, a.TargetID, a.PolicyVersion, a.PolicyEpoch, stamp(a.AuthorizedAt), stamp(a.ExpiresAt), stamp(a.CredentialExpiresAt), number(uint64(len(a.GrantIDs))))
 	return append(f, a.GrantIDs...)
 }
@@ -297,7 +276,7 @@ func (a AuthorizationSnapshot) bound(o Operation) bool {
 	return a.OperationID == o.ID && a.Generation == o.Generation && a.OperationRevision == o.Revision && a.Phase == o.Phase
 }
 func (a AuthorizationSnapshot) valid(target, act string, now time.Time) bool {
-	return bounded(a) && a.DecisionRecord.valid(a.Subject, act) && a.DecisionDigest == a.DecisionRecord.copiedDigest() && a.Actor == a.DecisionRecord.Actor && a.Subject == a.DecisionRecord.Request.Subject && a.Action == act && evidenceText(a.Role, 256) && a.TargetID == target && evidenceText(a.PolicyVersion, 256) && keyOK(a.PolicyEpoch) && grantsOK(a.GrantIDs) && !a.AuthorizedAt.IsZero() && !a.AuthorizedAt.After(now) && a.ExpiresAt.After(now) && a.CredentialExpiresAt.After(now)
+	return bounded(a) && validDecisionRecord(a.DecisionRecord, a.Subject, act) && a.DecisionDigest == copiedDecisionDigest(a.DecisionRecord) && a.Actor == a.DecisionRecord.Actor && a.Subject == a.DecisionRecord.Request.Subject && a.Action == act && evidenceText(a.Role, 256) && a.TargetID == target && evidenceText(a.PolicyVersion, 256) && keyOK(a.PolicyEpoch) && grantsOK(a.GrantIDs) && !a.AuthorizedAt.IsZero() && !a.AuthorizedAt.After(now) && a.ExpiresAt.After(now) && a.CredentialExpiresAt.After(now)
 }
 func same(a, b any) bool {
 	x, _ := json.Marshal(a)

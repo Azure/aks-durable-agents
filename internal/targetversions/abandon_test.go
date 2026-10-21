@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/Azure/aks-durable-agents/decisionrecord"
 )
 
 func abandonRequest(s *Store, o Operation, key string) AbandonRequest {
@@ -14,12 +16,12 @@ func abandonRequest(s *Store, o Operation, key string) AbandonRequest {
 	a.Role = "Agent.Operator"
 	a.DecisionRecord.ID = "operator-" + key
 	a.DecisionRecord.Request.Subject = a.Subject
-	a.DecisionRecord.Request.Action = a.Action
+	a.DecisionRecord.Request.Action = decisionrecord.Action(a.Action)
 	a.DecisionRecord.Request.Key = key
 	a.DecisionRecord.Authorization.Subject = a.Subject
-	a.DecisionRecord.Authorization.Action = a.Action
+	a.DecisionRecord.Authorization.Action = decisionrecord.Action(a.Action)
 	a.DecisionRecord.Authorization.Role = a.Role
-	a.DecisionDigest = a.DecisionRecord.copiedDigest()
+	a.DecisionDigest = copiedDecisionDigest(a.DecisionRecord)
 	return AbandonRequest{Step: step(o), Key: key, Reason: "operator explicit abandonment", Authority: a}
 }
 func abandonStart(t *testing.T, s *Store, o Operation, key string) Operation {
@@ -101,7 +103,7 @@ func TestAbandonClaimErrors(t *testing.T) {
 			} else {
 				r.Authority.DecisionRecord.StoreID = o.Request.DecisionRecord.StoreID
 				r.Authority.DecisionRecord.ID = o.Request.DecisionRecord.ID
-				r.Authority.DecisionDigest = r.Authority.DecisionRecord.copiedDigest()
+				r.Authority.DecisionDigest = copiedDecisionDigest(r.Authority.DecisionRecord)
 			}
 			if _, e := s.StartAbandon(ctx, r); !errors.Is(e, want) {
 				t.Fatalf("claim failure misclassified: %v want %v", e, want)
@@ -360,8 +362,8 @@ func TestGenesisAbandonFreshActivate(t *testing.T) {
 	for _, intent := range []string{"recover", "rollback"} {
 		bad := clone(r)
 		bad.Intent = intent
-		bad.DecisionRecord.Request.Action = intent
-		bad.DecisionRecord.Authorization.Action = intent
+		bad.DecisionRecord.Request.Action = decisionrecord.Action(intent)
+		bad.DecisionRecord.Authorization.Action = decisionrecord.Action(intent)
 		if _, e := s.Begin(ctx, bad); e == nil {
 			t.Fatal("genesis recovery/rollback accepted")
 		}
