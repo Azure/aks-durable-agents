@@ -19,6 +19,9 @@ immutable: true
 data:
   model-policy.json: {{ $policy | toJson | quote }}
 {{- if eq .Values.auth.mode "required" }}
+{{- range .Values.auth.approvers }}
+{{- if ne .issuer $.Values.auth.issuer }}{{ fail "auth.approvers issuer must equal auth.issuer exactly" }}{{ end }}
+{{- end }}
 ---
 apiVersion: v1
 kind: ConfigMap

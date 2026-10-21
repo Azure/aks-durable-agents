@@ -7,10 +7,18 @@ run; offline fixtures do not qualify a live deployment.
 
 ## Start offline
 
-The [README checks](../README.md#getting-started) run without Azure credentials or
-model keys. Use Python **3.14.3** and the Go toolchain from [`go.mod`](../go.mod)
-(currently **1.27.2**). They exercise components with fake credentials and local
-test servers; they do not run an end-to-end agent workflow.
+Component checks run without Azure credentials or model keys. Use Python
+**3.14.3** and the Go toolchain from [`go.mod`](../go.mod) (currently **1.27.2**):
+
+```sh
+go mod download
+go test ./...
+python3 -B -m unittest discover -s ops/backup -p 'test_*.py'
+```
+
+These exercise components with fake credentials and local test servers, not a
+cluster workflow. For the self-contained fake-model kind workflow, use
+[`make demo`](../ops/demo/README.md); it builds its own client inside Docker.
 
 For Helm lint, rendering and refusal tests, use Helm **3.20.0** and the
 [pinned Python requirements](../charts/aks-durable-agents/tests/requirements.txt),
@@ -23,8 +31,10 @@ backup/replay with a fake model. It requires Docker, kind, kubectl, Helm and
 matching fixture/client binaries. The reference fixture source and
 [image build recipe](../ops/images/README.md) are included; the native RPC client
 and tagged integration test's external JavaScript reviewer are not distributed
-here. Offline unit/chart checks remain the self-contained entry point; the chart
-and rehearsal are not a standalone demo. See [external test inputs](#external-fixture-qualification).
+here. Those legacy rehearsal inputs are not required by the separate
+[self-contained kind demo](../ops/demo/README.md), which supplies its own SDK
+client and explicitly demo-only sealing step. See [external test inputs](#external-fixture-qualification)
+for the legacy rehearsal.
 The rehearsal uses kind Kubernetes 1.32.2 with chart YAML rendered for 1.37, not a
 Helm install or AKS qualification.
 

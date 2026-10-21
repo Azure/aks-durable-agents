@@ -25,7 +25,7 @@ type callerHealthServer struct {
 func (s *callerHealthServer) response(ctx context.Context) (*healthpb.HealthCheckResponse, error) {
 	s.calls.Add(1)
 	caller, ok := authn.Caller(ctx)
-	if !ok || caller.Issuer != issuer || caller.Subject != "immutable-object-id" {
+	if !ok || caller.Issuer != issuer || caller.Subject != objectID {
 		return nil, status.Error(codes.Internal, "handler did not receive exact verified caller")
 	}
 	return &healthpb.HealthCheckResponse{Status: healthpb.HealthCheckResponse_SERVING}, nil

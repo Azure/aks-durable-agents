@@ -74,8 +74,10 @@ server := grpc.NewServer(
   as delegated credentials. A scope match is authentication policy, not
   per-resource authorization.
 - Identity is the exact issuer/subject pair; `SubjectClaim` defaults to **`oid`**,
-  with no fallback to email, UPN, or `sub`. Selecting `sub` is an explicit opt-in
-  that changes ownership keys and requires an ownership/policy migration.
+  with no fallback to email, UPN, or `sub`. An `oid` must be a lowercase GUID;
+  `Config.ValidIdentity` reports whether an allowlist entry has the exact form
+  `Verify` returns. Selecting `sub` is an explicit opt-in that changes ownership
+  keys and requires an ownership/policy migration.
   Forwarded/spoofed identity metadata never substitutes for `authn.Caller(ctx)`.
 - `ClockSkew` is **0 through 2 minutes**, defaults to zero, and relaxes **`nbf`
   only**. Usable expiry is exactly `exp`: no expiry grace. Both the verifier and

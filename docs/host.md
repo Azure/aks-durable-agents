@@ -29,6 +29,13 @@ What the host enforces:
   allowlist denies every approval, including denial decisions. This check occurs
   before session lookup, disclosure or journal mutation. Request `IdentityRef`
   remains untrusted provenance; this host does not claim verified audit attribution.
+  Startup refuses an approver whose issuer is not exactly `identity.issuer`, whose
+  `oid` subject is not a lowercase GUID, or whose `sub` subject has ASCII
+  whitespace or control characters: it could never match. **Upgrade note:** such
+  entries used to load and only deny `Approve`; now they stop a required-mode host
+  at startup. Fix the entry's `issuer` or `subject` (lowercase GUID for `oid`) to
+  match the approver's token; do not switch `subjectClaim` to `sub`, which changes
+  ownership keys.
 - `-auth-mode=off` disables authentication and the approval gate for trusted-network
   development only, with an explicit startup warning. Private pod access requires
   the separate opt-in below; it does not authenticate callers. Required mode also
@@ -71,7 +78,7 @@ Example operator-managed auth JSON (illustrative IDs; **no tokens or secrets**):
   },
   "approvers": [{
     "issuer": "https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0",
-    "subject": "expected-resource-tenant-user-oid"
+    "subject": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
   }]
 }
 ```

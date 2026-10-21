@@ -80,6 +80,21 @@ artifacts and compatible binaries together; prepare a separate subtree for this
 fixture. The chart still needs separately prepared storage, model policy,
 identity and TLS inputs before workloads can run.
 
+### Read-only WAL replay
+
+SQLite `mode=ro` alone does not guarantee a WAL-mode journal can be opened on a
+read-only mount: its `-wal`/`-shm` sidecars may be unavailable or unusable. See
+[SQLite's read-only WAL requirements](https://sqlite.org/wal.html#readonly).
+For SQLite `CANTOPEN`, `verify-replay` returns conditional WAL guidance alongside
+the original SQLite error, in both its failed JSON proof and CLI error. It does
+not claim every open failure is caused by WAL, retry, repair or modify the store.
+
+Use the supported [backup/restore flow](../backup/README.md): checkpoint only a
+private writable copy, then inspect the restored copy in writable scratch. Keep
+the source database and sidecars together. Do not delete WAL/SHM files from live
+stores or mark mutable data immutable to bypass the failure. Ordinary writable
+host operation is unchanged; the demo's explicit sealing is not a host repair.
+
 ## Publish, then pin
 
 `Images` validates PR image builds without package-write or OIDC permissions.

@@ -1,4 +1,4 @@
-.PHONY: image-binaries images
+.PHONY: image-binaries images demo
 
 IMAGE_CONTEXT ?= .build/images
 IMAGE_PREFIX ?= local/aks-durable-agents
@@ -12,3 +12,7 @@ image-binaries:
 images: image-binaries
 	docker build --network=none --platform linux/amd64 -f images/Dockerfile --target host -t "$(IMAGE_PREFIX)/host:local" "$(IMAGE_CONTEXT)"
 	docker build --network=none --platform linux/amd64 -f images/Dockerfile --target session-fixture -t "$(IMAGE_PREFIX)/session-fixture:local" "$(IMAGE_CONTEXT)"
+
+# Separate local fake-model image; never changes or publishes production images.
+demo:
+	python3 -B ops/demo/demo.py
