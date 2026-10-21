@@ -22,6 +22,12 @@ auth:
   allowedClientIDs: []
   requiredScope: ""
   subjectClaim: oid
+  # Optional: any caller role, all group IDs, explicit acct=0 membership.
+  requiredRoles: []
+  requiredGroups: []
+  memberOnly: false
+  # Any approver role OR a listed subject grants approval (see docs/entraauth.md).
+  approverRoles: []
   approvers: []
   # Existing Secret with tls.crt and tls.key; never put key material in values.
   tlsSecretName: ""

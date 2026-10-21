@@ -1,5 +1,6 @@
 // Package entraauth verifies single-tenant Entra v2 delegated access tokens for
-// sessions. It authenticates callers, not their authority to perform an action.
+// sessions, with optional admission and approver-role checks. Hosts own action
+// authorization and must combine verified role results with their approval policy.
 package entraauth
 
 import (
@@ -33,6 +34,13 @@ type Config struct {
 	TenantID, Issuer, Audience string
 	AllowedClientIDs           []string
 	RequiredScope              string
+	// RequiredRoles admits any listed app role; RequiredGroups requires all IDs.
+	// Empty lists and MemberOnly=false preserve unrestricted delegated admission.
+	RequiredRoles, RequiredGroups []string
+	MemberOnly                    bool
+	// ApproverRoles grants approval for any listed role, not ordinary admission.
+	// Hosts must call VerifyApproval before combining roles with subject policy.
+	ApproverRoles []string
 	// SubjectClaim is oid by default; only oid and sub are supported. An oid
 	// value must be a lowercase GUID; a sub value must be nonempty with no ASCII
 	// whitespace or control characters. Selecting sub changes ownership mapping
@@ -95,6 +103,9 @@ func newVerifier(ctx context.Context, c Config, o options) (*Verifier, error) {
 	if c.SubjectClaim != "oid" && c.SubjectClaim != "sub" {
 		return nil, failure("config")
 	}
+	if err := c.copyPolicy(); err != nil {
+		return nil, err
+	}
 	clients := make(map[string]bool, len(c.AllowedClientIDs))
 	for _, id := range c.AllowedClientIDs {
 		if !guid.MatchString(id) {
@@ -156,6 +167,10 @@ func (v *Verifier) Close() {
 // Verify reads exactly one incoming authorization value. No token or claim map
 // is retained, forwarded, logged, or included in returned errors.
 func (v *Verifier) Verify(ctx context.Context) (authn.VerifiedCaller, error) {
+	return v.verify(ctx, v.admit)
+}
+
+func (v *Verifier) verify(ctx context.Context, check func(jwt.MapClaims) error) (authn.VerifiedCaller, error) {
 	if err := contextFailure(ctx); err != nil {
 		return authn.VerifiedCaller{}, err
 	}
@@ -210,6 +225,9 @@ func (v *Verifier) Verify(ctx context.Context) (authn.VerifiedCaller, error) {
 		!hasScope(claims["scp"], v.config.RequiredScope) || !subjectOK || !validSubject(v.config.SubjectClaim, subject) ||
 		!expOK || !nbfOK || !exp.After(now) || nbf.After(now.Add(v.config.ClockSkew)) {
 		return authn.VerifiedCaller{}, failure("claims")
+	}
+	if err := check(claims); err != nil {
+		return authn.VerifiedCaller{}, err
 	}
 	return authn.VerifiedCaller{Identity: api.CallerIdentity{Issuer: v.config.Issuer, Subject: subject}, ValidUntil: exp}, nil
 }

@@ -4,7 +4,9 @@
 
 `entraauth` authenticates single-tenant Microsoft Entra **v2 delegated access
 tokens** through the sessions `authn.CallerVerifier` interface. It does not grant
-session ownership or authorize operations. It adds no host activation, TLS, or
+session ownership. Optional admission checks constrain app roles, groups and
+member accounts; the host separately combines verified approver app roles with
+its explicit subject allowlist. It adds no host activation, TLS, or
 authorization enforcement. Live access requires a separately assembled trusted
 TLS host, the opt-in sessions authentication interceptors, and the sessions
 ownership/authorization enforcement PR sequence; this package alone is not a
@@ -133,6 +135,86 @@ server := grpc.NewServer(
   snapshot nears expiry in the last six hours, and an error once it has expired.
   Reasons that are not short lowercase codes are logged as `unclassified`.
 
+## Optional caller and approver checks
+
+All checks default to off: existing configurations retain their delegated-token
+admission and subject-only approval behavior. Configure these fields on
+`entraauth.Config`, under `identity` in host auth JSON, or under `auth` in Helm:
+
+| Go field | JSON / chart field | Requirement |
+| --- | --- | --- |
+| `RequiredRoles` | `requiredRoles` | At least **one** listed app-role value in `roles` on every call |
+| `RequiredGroups` | `requiredGroups` | **All** listed lowercase group object IDs in `groups` on every call |
+| `MemberOnly` | `memberOnly` | Explicit JSON integer `acct=0` on every call; guests and absent/malformed claims refused |
+| `ApproverRoles` | `approverRoles` | At least **one** listed app role grants approval, OR a configured approver subject |
+
+Matching is exact and case-sensitive. Role values must be nonempty with no ASCII
+whitespace/control characters; group IDs must be lowercase GUIDs. Duplicate
+configured values are rejected. These restrictions cannot be enabled with auth
+mode `off`. App roles never replace the required delegated `scp`, tenant,
+audience, client or signature checks. Directory roles (`wids`) are not app roles.
+
+**Approval uses OR:** after all configured admission checks pass, either an exact
+listed issuer/subject or an approver app role grants approval. An owner has no
+implicit approval right. For example:
+
+```yaml
+auth:
+  # Other required tenant, client, scope and TLS inputs omitted.
+  memberOnly: true
+  requiredGroups: ["abcdef01-2345-6789-abcd-ef0123456789"]
+  approverRoles: ["Approver"]
+  approvers:
+    - issuer: https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0
+      subject: 0a1b2c3d-4e5f-6789-abcd-ef0123456789
+```
+
+The listed subject with `roles=["Reviewer"]`, or an unlisted subject with
+`roles=["Approver"]`, can approve **only** with `acct=0` and the required group.
+Neither source bypasses those checks. An empty subject list is allowed with an
+approver role. Helm requires at least one approval source in required mode; the
+Go host permits neither source, which denies all approvals.
+`requiredRoles`, if set, also applies to approvers; include `Approver` in that
+caller list if it should admit approvers without another role.
+
+**No silent subject fallback when role claims are absent.** With approver roles
+configured, every approval requires a nonempty, well-formed string-array `roles`
+claim, including for listed subjects. A listed subject needs at least one API
+app-role assignment (not necessarily an approver role). A missing/empty claim is
+refused with `approval requires a nonempty roles claim; configure API app role
+assignments`; malformed claims are refused with `approval requires a valid roles
+claim`. Ordinary calls are unaffected by `approverRoles`. Startup cannot know
+whether future tenant tokens carry roles; this guard runs on each approval,
+not a tenant-wide heuristic. If ordinary `requiredRoles` admission rejects first,
+the RPC instead returns generic `UNAUTHENTICATED` and the operator log diagnoses
+`roles_missing` or `roles_invalid`.
+
+The verifier rejects missing/malformed required claims rather than inferring
+membership or calling Graph. When groups are required, any `hasgroups` indicator
+or `_claim_names.groups` distributed claim refuses with diagnostic
+`groups_overage`, even alongside a supplied group list. Malformed group markers
+or non-GUID lists report `groups_invalid`; missing lists report `groups_missing`.
+No token-supplied claim-source URL is fetched. Admission refusals remain generic
+`UNAUTHENTICATED` to callers; the host's fixed, rate-limited reason codes are the
+clear operator diagnostic. Other policy reasons are `role_required`,
+`group_required`, and `member_required`.
+
+On startup the host logs `approval sources active` with the configured subject
+**count** and configured `app_roles` names. These are operator settings, never
+claim values or subject IDs. Approval role checks re-verify the same request's
+credential and bind its identity to `authn.Caller(ctx)`. They retain no roles or
+authority by subject; calling the policy without incoming credentials fails
+closed. No upstream Sessions role transport or owner isolation is implied.
+
+For the API registration, define user app roles and assign users/groups to them
+so delegated tokens contain `roles`. Enable GUID group claims for group checks;
+**do not use `emit_as_roles`**, which replaces app roles with group values.
+Configure `acct` in `optionalClaims.accessToken` before enabling `memberOnly`.
+Test fresh tokens after assignment/configuration changes; previously issued
+tokens retain their permissions until expiry. The chart's auth ConfigMap is
+immutable: changing a policy requires the documented stop-and-replace upgrade
+procedure, not an in-place ConfigMap update.
+
 ## Real-tenant prerequisites (not performed by this package)
 
 Keep **API and client registrations separate** to avoid ID-token/audience
@@ -159,11 +241,12 @@ and [expose-an-API guidance](https://learn.microsoft.com/en-us/entra/identity-pl
    `scp` value **`sessions.access`**. Have test users in that tenant and a known
    user `oid` to check the exact expected identity.
 5. Restrict who can get a token. The verifier pins tenant, API, client, and
-   scope, not the user population: **every user who can get a delegated token
-   for an allowlisted client and `RequiredScope` authenticates**, and
+   scope and, **unless optional checks above are configured**, not the user
+   population: every user who can get a delegated token for an allowlisted client
+   and `RequiredScope` authenticates, and
    authenticated callers share session access ([host limits](host.md)). Depending
-   on tenant policy that can include B2B guests; the verifier does not check
-   guest status. Enable **Assignment required** (`appRoleAssignmentRequired=true`)
+   on tenant policy that can include B2B guests; enable `memberOnly` to require
+   explicit member status. Enable **Assignment required** (`appRoleAssignmentRequired=true`)
    and [assign](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/assign-user-or-group-access-portal)
    only the intended users or groups. With no app roles defined, an assignment
    uses the built-in **Default Access** role (`appRoleId`
@@ -175,13 +258,14 @@ and [expose-an-API guidance](https://learn.microsoft.com/en-us/entra/identity-pl
    user, and an unassigned guest if you have them, cannot get a token. The
    [`acct` optional claim](https://learn.microsoft.com/en-us/entra/identity-platform/optional-claims-reference)
    (`0` member, `1` guest), configured in the API registration's
-   `optionalClaims.accessToken`, shows guest status in a token; the verifier
-   does not read it.
+   `optionalClaims.accessToken`, shows guest status in a token; `memberOnly`
+   requires this claim to be present and exactly integer `0`.
 
 The API verifier needs **no client secret or refresh token**. App-only workload
 identity/client-credentials tokens cannot replace the delegated user token; do
-not add app roles/client-credentials for this path (step 5's assignment uses
-Default Access, not an app role). Tenant, issuer, audience, and client IDs are
+not add client-credentials for this path. Optional app-role checks use user
+assignments, not app-only permissions; step 5's Default Access alone emits no
+app role. Tenant, issuer, audience, and client IDs are
 not secrets. A bearer token **is secret**: do not store or log a
 live token, or put one in a handoff. Key-cache behavior follows the bounded
 rollover approach in Microsoft's [signing-key rollover guidance](https://learn.microsoft.com/en-us/entra/identity-platform/signing-key-rollover).

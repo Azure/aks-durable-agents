@@ -89,6 +89,7 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 		return nil, err
 	}
 	var verifier authn.CallerVerifier
+	approval := newApprovalPolicy(c.Approvers)
 	if c.Mode == authn.Required {
 		authLog := logger
 		if authLog == nil {
@@ -102,7 +103,18 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 		if err != nil {
 			return nil, err
 		}
-		verifier = newLoggingVerifier(a.verifier, authLog, time.Now)
+		logged := newLoggingVerifier(a.verifier, authLog, time.Now)
+		verifier = logged
+		if len(identity.ApproverRoles) > 0 {
+			approval.verifyApproval = func(ctx context.Context) (authn.VerifiedCaller, bool, error) {
+				caller, match, err := a.verifier.VerifyApproval(ctx)
+				if err != nil {
+					logged.failed(debugReason(err))
+				}
+				return caller, match, err
+			}
+		}
+		authLog.Info("approval sources active", "subjects", len(approval.approvers), "app_roles", identity.ApproverRoles)
 	}
 	// The deployment is host policy, not a harness-controlled override.
 	modelFn := func(ctx context.Context, r api.ModelRequest) (api.ModelResponse, error) {
@@ -157,7 +169,7 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 		return nil, err
 	}
 	svc := session.NewService(a.store, registry, session.WithLogger(logger))
-	a.sessions, a.health, err = newServers(c.Mode, verifier, newApprovalPolicy(c.Approvers), svc, transport)
+	a.sessions, a.health, err = newServers(c.Mode, verifier, approval, svc, transport)
 	if err != nil {
 		return nil, err
 	}
