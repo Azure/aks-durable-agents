@@ -148,6 +148,13 @@ admission and subject-only approval behavior. Configure these fields on
 | `MemberOnly` | `memberOnly` | Explicit JSON integer `acct=0` on every call; guests and absent/malformed claims refused |
 | `ApproverRoles` | `approverRoles` | At least **one** listed app role grants approval, OR a configured approver subject |
 
+**Host image prerequisite:** enabling `requiredRoles`, `requiredGroups`,
+`memberOnly` or `approverRoles` requires a published, verified and pinned host
+image containing these checks. A pre-feature image refuses the new auth JSON.
+After source merge, follow the [publish, verify and pin process](../ops/images/README.md#publish-then-pin)
+before enabling these settings; do not assume the chart's default host digest
+contains the checks.
+
 Matching is exact and case-sensitive. Role values must be nonempty with no ASCII
 whitespace/control characters; group IDs must be lowercase GUIDs. Duplicate
 configured values are rejected. These restrictions cannot be enabled with auth

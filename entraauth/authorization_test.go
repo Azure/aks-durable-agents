@@ -22,6 +22,7 @@ func TestOptionalAdmission(t *testing.T) {
 		{"roles missing", func(c *Config) { c.RequiredRoles = []string{"Reviewer"} }, func(c jwt.MapClaims) {}, "roles_missing"},
 		{"roles scalar", func(c *Config) { c.RequiredRoles = []string{"Reviewer"} }, func(c jwt.MapClaims) { c["roles"] = "Reviewer" }, "roles_invalid"},
 		{"roles mixed", func(c *Config) { c.RequiredRoles = []string{"Reviewer"} }, func(c jwt.MapClaims) { c["roles"] = []any{"Reviewer", 12} }, "roles_invalid"},
+		{"valid role plus malformed extra", func(c *Config) { c.RequiredRoles = []string{"Reviewer"} }, func(c jwt.MapClaims) { c["roles"] = []string{"Reviewer", "bad\trole"} }, "roles_invalid"},
 		{"roles case exact", func(c *Config) { c.RequiredRoles = []string{"Reviewer"} }, func(c jwt.MapClaims) { c["roles"] = []string{"reviewer"} }, "role_required"},
 		{"roles null", func(c *Config) { c.RequiredRoles = []string{"Reviewer"} }, func(c jwt.MapClaims) { c["roles"] = nil }, "roles_invalid"},
 		{"roles empty", func(c *Config) { c.RequiredRoles = []string{"Reviewer"} }, func(c jwt.MapClaims) { c["roles"] = []string{} }, "roles_missing"},
@@ -89,6 +90,7 @@ func TestApprovalRoleVerification(t *testing.T) {
 		{"null", nil, true, false, "roles_invalid"},
 		{"empty", []string{}, true, false, "roles_missing"},
 		{"malformed", []any{"Approver", false}, true, false, "roles_invalid"},
+		{"valid role plus malformed extra", []string{"Approver", "bad\trole"}, true, false, "roles_invalid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := claims(f.clock())
