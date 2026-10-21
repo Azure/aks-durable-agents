@@ -67,6 +67,14 @@ go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
 govulncheck ./...
 ```
 
+Image validation additionally runs `bash ops/images/vulncheck.sh` after
+`make images` and `bash ops/images/smoke.sh`, using the same installed scanner.
+It strictly scans the actual packaged Go executables in all three images.
+Publication scans built binaries before push and packaged binaries before signing.
+Only kubectl/kubelogin runner scans are report-only, with full findings in the
+run summary and separate artifacts; see the [runner scan policy](../ops/aks/TOOL-SCANS.md).
+These Go checks do not audit OS layers or Python dependencies.
+
 For the chart checks, use Helm **3.20.0**, Python **3.14.3** and the pinned
 Python requirements:
 
@@ -80,10 +88,14 @@ refusal tests with synthetic fixtures; bare defaults intentionally refuse missin
 operator inputs. See the [chart README](../charts/aks-durable-agents/README.md#offline-verification).
 
 Tests use fake credentials and local TLS servers, including the **real sessions
-OpenAI adapter** at the [canonical upstream pin](entraauth.md#offline-verification-and-the-sessions-dependency). They require neither Azure access nor model keys. The [AKS bootstrap](../ops/aks/README.md) adds read-only dispatch validation and
-owned-resource expiry cleanup, not a provisioned real-model scenario. Its cleanup
-sweep remains inactive until an operator supplies the complete reviewed repository
-configuration. There is no automatic live inference test. A separately approved CLI-identity smoke check must use an
+OpenAI adapter** at the [canonical upstream pin](entraauth.md#offline-verification-and-the-sessions-dependency). They require neither Azure access nor model keys. The [manual AKS workflow](../ops/aks/README.md) defaults to read-only dispatch validation and
+retains independent owned-resource expiry cleanup. Its optional real-model scenario
+is separately operator-gated, with simulated approval, parked-host restart, effective
+policy controls, fenced backup/strict replay and whole-cluster teardown. There is
+no scenario schedule: live execution and any AKS qualification claim remain blocked
+until the separate Continue/replay qualification and manual-run approvals pass.
+Offline tests use fake cloud commands and optional local Docker exercises, never
+Azure provisioning or inference. A separately approved CLI-identity smoke check must use an
 explicit `AzureCLICredential`, no retries, and at most three calls; missing RBAC
 must be reported, not assigned.
 
