@@ -100,7 +100,7 @@ func TestInterruptedReadBack(t *testing.T) {
 	}
 	for _, phase := range []string{"retained", "verifying", "terminal", "hot-journal"} {
 		t.Run(phase, func(t *testing.T) {
-			dir := filepath.Join(t.TempDir(), "store")
+			dir := filepath.Join(privateTestDir(t), "store")
 			cmd := exec.Command(os.Args[0], "-test.run=^TestInterruptedReadBack$")
 			cmd.Env = append(os.Environ(), "QUALIFICATION_CRASH_DIR="+dir, "QUALIFICATION_CRASH_PHASE="+phase)
 			if b, err := cmd.CombinedOutput(); err != nil {

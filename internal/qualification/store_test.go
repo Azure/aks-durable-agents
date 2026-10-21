@@ -16,9 +16,19 @@ func digest(c string) string { return "sha256:" + strings.Repeat(c, 64) }
 func testPlan() Plan {
 	return Plan{Subject: Subject{Workspace: "workspace", Target: "target", SuiteDigest: digest("a"), BindingDigest: digest("b"), ProfileDigest: digest("c"), ModelDigest: digest("d"), JudgeDigest: digest("e"), PolicyDigest: digest("f")}, Members: []Member{{ID: "agent", Digest: digest("1")}}, MemberID: "agent", CompositionDigest: digest("2"), Platform: "linux/amd64", IndexDigest: digest("3"), ExpiresAt: time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), Cases: []Case{{ID: "case", Digest: digest("4"), InputDigest: hashBytes([]byte("question")), Runs: 1, MinPasses: 1, Assertions: []Assertion{{ID: "answer", Kind: "contains", Value: "hello"}}}}}
 }
+func privateTestDir(t *testing.T) string {
+	t.Helper()
+	// Model operator-prepared private storage rather than inheriting the
+	// process umask applied to testing.TempDir's numbered directories.
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
 func testStore(t *testing.T) (*Store, string) {
 	t.Helper()
-	dir := filepath.Join(t.TempDir(), "qualification")
+	dir := filepath.Join(privateTestDir(t), "qualification")
 	s, err := Create(dir)
 	if err != nil {
 		t.Fatal(err)
