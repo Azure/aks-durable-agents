@@ -53,7 +53,6 @@ def evaluate(tool, binaryhash, raw, returncode):
     if tool not in PINS or binaryhash != PINS[tool][0]:
         return decision(tool, "integrity-error")
     try:
-        require(returncode == 0)
         require(len(raw) <= LIMIT)
         raw = raw.decode("utf-8") if isinstance(raw, bytes) else raw
         require(len(raw.encode("utf-8")) <= LIMIT)
@@ -97,6 +96,7 @@ def evaluate(tool, binaryhash, raw, returncode):
                 require(False)
             count += 1
         require(count > 0 and sboms == 1)
+        require(returncode == 0)
         return decision(tool, "findings" if findings else "clean", findings)
     except (ValueError, TypeError, KeyError, RecursionError):
         # Preserve already parsed findings, but never call an incomplete scan clean.

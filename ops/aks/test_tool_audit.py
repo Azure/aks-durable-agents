@@ -74,6 +74,11 @@ class AuditTests(unittest.TestCase):
                 self.assertEqual(self.evaluate(raw)["status"], "scan-error")
         self.assertEqual(self.evaluate(good, code=1)["status"], "scan-error")
 
+    def test_nonzero_scanner_exit_retains_valid_findings_as_scan_error(self):
+        result = self.evaluate(stream(finding(), finding("GO-2026-1111")), code=1)
+        self.assertEqual(result, {"tool": "kubectl", "status": "scan-error",
+                                  "findings": ["GO-2026-1111", "GO-2026-6809"]})
+
     def test_cli_reports_findings_to_summary_and_artifacts_without_blocking(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
