@@ -84,7 +84,7 @@ func dbURI(path string, readonly bool) string {
 		q.Set("mode", "ro")
 	} else {
 		q.Set("mode", "rw")
-		q.Add("_pragma", "synchronous(FULL)")
+		q.Add("_pragma", "synchronous(EXTRA)")
 		q.Add("_pragma", "journal_mode(DELETE)")
 		q.Add("_pragma", "busy_timeout(5000)")
 	}
@@ -190,6 +190,10 @@ func Open(dir, lineage string) (_ *Store, err error) {
 		path := filepath.Join(dir, name)
 		if _, e := os.Lstat(path); os.IsNotExist(e) && name != "lineage" && name != "records.db" {
 			continue
+		} else if e == nil && (name == "records.db-wal" || name == "records.db-shm") {
+			// DELETE-mode storage never owns WAL sidecars, even empty/private
+			// ones; leave the entire recovery set untouched for inspection.
+			return nil, ErrIntegrity
 		}
 		f, e := privateFile(path, false)
 		if e != nil {

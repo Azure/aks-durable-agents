@@ -77,8 +77,8 @@ lock and hash-addressed evidence directory. Existing Sessions/model/executor
 schemas are untouched. On Linux/POSIX, the store requires 0700 private directories
 and 0600 regular files (including a 0700 parent directory for creation), refuses
 symlinks and unsafe SQLite sidecars, and holds an
-exclusive nonblocking file lock for its lifetime. It uses FULL synchronous DELETE
-journaling and connection-local settings survive connection replacement. Foreign
+exclusive nonblocking file lock for its lifetime. It uses EXTRA synchronous DELETE
+journaling (including directory synchronization after journal removal) and connection-local settings survive connection replacement. Foreign
 lineage/future schema refuses before writable database PRAGMAs. WAL-format
 databases are rejected by their file header before SQLite opens them, because even
 read-only SQLite access can create WAL/SHM sidecars in a writable directory.

@@ -195,7 +195,7 @@ func TestStoreRecordTamperAndConnectionReplacement(t *testing.T) {
 		if err := s.db.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
 			t.Fatal(err)
 		}
-		if synchronous != 2 || mode != "delete" {
+		if synchronous != 3 || mode != "delete" {
 			t.Fatalf("lost pragmas: %d %s", synchronous, mode)
 		}
 	}
