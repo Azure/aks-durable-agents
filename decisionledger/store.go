@@ -25,6 +25,9 @@ type Store struct {
 	file              *os.File // separate lifetime lock file; never unlink while in use.
 	path, id, lineage string
 	now               func() time.Time
+	lifecycle         sync.Mutex
+	closing           bool
+	active            sync.WaitGroup
 	closeOnce         sync.Once
 	closeErr          error
 }
@@ -37,8 +40,15 @@ func randomID() string {
 	return hex.EncodeToString(b[:])
 }
 func (s *Store) ID() string { return s.id }
+
+// Close refuses new operations and drains admitted DB work before releasing the
+// lifetime lock. sql.DB.Close alone does not drain connections from db.Conn.
 func (s *Store) Close() error {
 	s.closeOnce.Do(func() {
+		s.lifecycle.Lock()
+		s.closing = true
+		s.lifecycle.Unlock()
+		s.active.Wait()
 		if err := s.db.Close(); err != nil {
 			s.closeErr = ErrUnavailable
 		}
@@ -203,7 +213,23 @@ func privateFile(path string, create, exclusive bool) (*os.File, error) {
 	return file, nil
 }
 
+// Admission and Close share a mutex so no WaitGroup.Add can race the drain.
+// Operations remain admitted while waiting for a connection and until it closes.
+func (s *Store) startOperation() error {
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
+	if s.closing {
+		return ErrUnavailable
+	}
+	s.active.Add(1)
+	return nil
+}
+
 func (s *Store) transaction(ctx context.Context, fn func(*sql.Conn) error) error {
+	if err := s.startOperation(); err != nil {
+		return err
+	}
+	defer s.active.Done()
 	c, err := s.db.Conn(ctx)
 	if err != nil {
 		return ErrUnavailable
@@ -263,6 +289,10 @@ func readSubject(ctx context.Context, q querier, ref SubjectRef) (Subject, strin
 	return subject, state, nil
 }
 func (s *Store) subject(ctx context.Context, ref SubjectRef) (Subject, string, error) {
+	if err := s.startOperation(); err != nil {
+		return Subject{}, "", err
+	}
+	defer s.active.Done()
 	return readSubject(ctx, s.db, ref)
 }
 func (s *Store) RegisterSubject(ctx context.Context, subject Subject) (SubjectRef, error) {
@@ -364,6 +394,10 @@ func refusalCode(s string) bool {
 	return false
 }
 func (s *Store) lookup(ctx context.Context, a api.CallerIdentity, w, k string) (DecisionRecord, error) {
+	if err := s.startOperation(); err != nil {
+		return DecisionRecord{}, err
+	}
+	defer s.active.Done()
 	return s.readRecord(ctx, s.db, a, w, k)
 }
 func (s *Store) commit(ctx context.Context, actor api.CallerIdentity, validUntil time.Time, r DecideRequest, auth *Authorization, refusal string) (DecisionRecord, error) {
@@ -450,6 +484,8 @@ func (s *Store) commit(ctx context.Context, actor api.CallerIdentity, validUntil
 	}
 	return out, nil
 }
+
+// verify runs only during construction, before the Store can be shared or closed.
 func (s *Store) verify() error {
 	ctx := context.Background()
 	var version, count int

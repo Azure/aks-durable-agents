@@ -109,6 +109,9 @@ func (s *Service) Decide(ctx context.Context, r DecideRequest) (DecisionRecord, 
 	}
 	prior, err := s.store.lookup(ctx, h.Caller.Identity, r.Workspace, r.Key)
 	if err == nil {
+		if err := s.visible(ctx, h, subject); err != nil {
+			return DecisionRecord{}, err
+		}
 		if prior.RequestDigest != hash {
 			return DecisionRecord{}, ErrConflict
 		}
