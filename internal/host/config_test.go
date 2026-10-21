@@ -5,6 +5,7 @@ import (
 	"github.com/Azure/aks-durable-agents/entraauth"
 	"github.com/agent-primitives/sessions/api"
 	"github.com/agent-primitives/sessions/authn"
+	"strings"
 	"testing"
 )
 
@@ -98,6 +99,31 @@ func TestConfigBoundary(t *testing.T) {
 
 // Required-mode approvers must match what the verifier emits; a mismatch would
 // otherwise pass startup and silently deny every approval.
+func TestPolicyValidationMessages(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		identity entraauth.Config
+		want     string
+	}{
+		{"uppercase group", entraauth.Config{RequiredGroups: []string{"ABCDEF01-2345-6789-abcd-ef0123456789"}}, "identity.requiredGroups values must be lowercase GUIDs"},
+		{"duplicate required role", entraauth.Config{RequiredRoles: []string{"Reviewer", "Reviewer"}}, "identity.requiredRoles must not contain duplicate values"},
+		{"duplicate approver role", entraauth.Config{ApproverRoles: []string{"Approver", "Approver"}}, "identity.approverRoles must not contain duplicate values"},
+		{"invalid required role", entraauth.Config{RequiredRoles: []string{"bad\trole"}}, "identity.requiredRoles values must be nonempty with no ASCII whitespace or control characters"},
+		{"invalid approver role", entraauth.Config{ApproverRoles: []string{""}}, "identity.approverRoles values must be nonempty with no ASCII whitespace or control characters"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Config{Mode: authn.Required, Identity: tc.identity}
+			err := c.validate()
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("validate()=%v want=%s", err, tc.want)
+			}
+			if strings.Contains(err.Error(), "ABCDEF01") || strings.Contains(err.Error(), "Reviewer") || strings.Contains(err.Error(), "bad\trole") {
+				t.Fatal("invalid value echoed in startup error")
+			}
+		})
+	}
+}
+
 func TestApproverIdentityBoundary(t *testing.T) {
 	const tenant, oid = "11111111-2222-3333-4444-555555555555", "0a1b2c3d-4e5f-6789-abcd-ef0123456789"
 	good := Config{Addr: "127.0.0.1:0", HealthAddr: "127.0.0.1:0", Journal: ":memory:", Mode: authn.Required, TLSCert: "cert", TLSKey: "key",

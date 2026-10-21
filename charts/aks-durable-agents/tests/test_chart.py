@@ -147,6 +147,41 @@ class ChartTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertIn(error_field, result.stderr)
 
+    def test_optional_claim_policies(self):
+        policies = {"requiredRoles": ["Reviewer", "Approver"],
+                    "requiredGroups": ["abcdef01-2345-6789-abcd-ef0123456789"],
+                    "memberOnly": True, "approverRoles": ["Approver"]}
+        for role_only in (False, True):
+            values = copy.deepcopy(self.defaults)
+            values["auth"].update(policies)
+            if role_only:
+                values["auth"]["approvers"] = []
+            docs = self.documents(values)
+            auth = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"].endswith("-auth"))
+            config = json.loads(auth["data"]["auth.json"])
+            for key, value in policies.items():
+                self.assertEqual(config["identity"][key], value)
+            self.assertEqual(config["approvers"], values["auth"]["approvers"])
+        for key, bad_values in (
+            ("requiredRoles", ([""], ["bad role"], ["Reader", "Reader"], "Reader")),
+            ("approverRoles", (["bad\nrole"], [False], ["Approver", "Approver"])),
+            ("requiredGroups", (["group-name"], ["ABCDEF01-2345-6789-abcd-ef0123456789"], [12])),
+            ("memberOnly", ("true", 1)),
+        ):
+            for bad in bad_values:
+                with self.subTest(key=key, bad=bad):
+                    values = copy.deepcopy(self.defaults)
+                    values["auth"][key] = bad
+                    result = render(values)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(key, result.stderr)
+        for key, value in policies.items():
+            with self.subTest(off_policy=key):
+                values = copy.deepcopy(self.defaults)
+                values["auth"].update(mode="off", trustedNetwork=True)
+                values["auth"][key] = value
+                self.assertNotEqual(render(values).returncode, 0)
+
     def test_approver_identity_refusals(self):
         # Approvers must match the verifier's issuer and subject form: a lowercase
         # GUID for oid, no ASCII whitespace or control characters for sub.
