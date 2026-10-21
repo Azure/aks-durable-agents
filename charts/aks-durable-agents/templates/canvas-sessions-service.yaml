@@ -1,0 +1,19 @@
+{{- if (.Values.canvas | default dict).enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agents.name" . }}-sessions
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "agents.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agents.labels" . | nindent 4 }}
+    app.kubernetes.io/component: host
+  ports:
+    - name: sessions-tls
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+{{- end }}

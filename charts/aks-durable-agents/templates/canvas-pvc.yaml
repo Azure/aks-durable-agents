@@ -1,0 +1,20 @@
+{{- if (.Values.canvas | default dict).enabled }}
+{{- if not .Values.canvas.persistence.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "agents.canvasClaim" . | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "agents.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOncePod]
+  volumeMode: Filesystem
+  storageClassName: {{ .Values.canvas.persistence.storageClass | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.canvas.persistence.size | quote }}
+{{- end }}
+{{- end }}
