@@ -24,6 +24,8 @@ NETWORK = [{"phase": p, "case": c, "stage": s, "passed": True}
            for p in ("dormant", "live") for c in ("untrusted-ingress", "host-egress")
            for s in ("control", "denial")]
 TIMINGS = {"version": 1, "phases": {"preflight": 0, "replay": 2.5}, "totalSeconds": 3}
+DIAGNOSTICS = {"version": 1, "phase": "install", "operation": "fixture-init-wait",
+               "reason": "command-timeout", "cleanup": "succeeded"}
 AKS_TITLE = "AKS e2e regression"
 AKS_MARKER = "<!-- aks-e2e-tracking -->"
 AKS_START, AKS_END = "<!-- aks-e2e-status:start -->", "<!-- aks-e2e-status:end -->"
@@ -55,6 +57,98 @@ class AksCollectorTests(unittest.TestCase):
 
     def output(self):
         return "".join(p.read_text() for p in self.dest.iterdir()) + self.summary.read_text()
+
+    def test_failure_and_cancellation_publish_only_validated_diagnostics_and_fixed_summary(self):
+        for result in ("failure", "cancelled"):
+            # Formatting is deliberately untrusted; published bytes must be reserialized.
+            (self.ws / "diagnostics.json").write_text(json.dumps(DIAGNOSTICS, indent=4))
+            run = self.collect(result=result, extra=("--stage", "teardown"))
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual((self.dest / "diagnostics.json").read_text(), json.dumps(DIAGNOSTICS, sort_keys=True) + "\n")
+            self.assertEqual(json.loads((self.dest / "status.json").read_text()),
+                             {"result": "failed", "stage": "teardown", "runURL": URL, "commitSHA": SHA})
+            self.assertEqual(self.summary.read_text(), "# AKS e2e summary\n\n- Result: failed\n"
+                + f"- Stage: teardown\n- Run: {URL}\n- Commit: {SHA}\n"
+                + "- Scenario phase: install\n- Operation: fixture-init-wait\n- Reason: command-timeout\n"
+                + "- Source fencing: succeeded\n- Underlying cause: not determined\n")
+            self.assertNotIn(SECRET, self.output())
+            self.reset_destination()
+
+    def test_success_ignores_diagnostics_and_still_requires_every_success_proof(self):
+        path = self.ws / "diagnostics.json"
+        for diagnostic in (DIAGNOSTICS, dict(DIAGNOSTICS, error=SECRET)):
+            path.write_text(json.dumps(diagnostic))
+            run = self.collect()
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertFalse((self.dest / path.name).exists())
+            self.assertNotIn("Diagnostics", self.summary.read_text())
+            self.assertNotIn("Underlying cause", self.summary.read_text())
+            self.reset_destination()
+        path.unlink()
+        os.mkfifo(path)  # Even an unsafe diagnostic is not opened on success.
+        self.assertEqual(self.collect().returncode, 0)
+        self.reset_destination()
+        path.unlink()
+        path.write_text(json.dumps(DIAGNOSTICS))
+        for name in ("proof.json", "network-proof.json", "timings.json"):
+            saved = (self.ws / name).read_bytes()
+            (self.ws / name).unlink()
+            run = self.collect()
+            self.assertEqual(run.returncode, 1, run.stderr)
+            self.assertFalse((self.dest / path.name).exists())
+            self.assertEqual(json.loads((self.dest / "status.json").read_text())["result"], "failed")
+            self.reset_destination()
+            (self.ws / name).write_bytes(saved)
+
+    def assert_diagnostics_unavailable(self):
+        for result in ("failure", "cancelled"):
+            run = self.collect(result=result)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertFalse((self.dest / "diagnostics.json").exists())
+            self.assertTrue(self.summary.read_text().endswith("- Diagnostics: unavailable\n- Underlying cause: not determined\n"))
+            self.assertNotIn(SECRET, self.output() + run.stderr)
+            self.assertNotIn(str(self.ws), self.output() + run.stderr)
+            self.assertEqual(set(json.loads((self.dest / "status.json").read_text())), {"result", "stage", "runURL", "commitSHA"})
+            self.reset_destination()
+
+    def test_missing_unsafe_and_malformed_diagnostics_are_unavailable(self):
+        self.assert_diagnostics_unavailable()
+        path = self.ws / "diagnostics.json"
+        for raw in (SECRET, b"\xff", "[" * 1500 + "]" * 1500,
+                    json.dumps(DIAGNOSTICS)[:-1] + ',"phase":"install"}',
+                    json.dumps(dict(DIAGNOSTICS, reason=SECRET)), json.dumps(dict(DIAGNOSTICS, error=SECRET)),
+                    json.dumps(dict(DIAGNOSTICS, version=True)),
+                    json.dumps(DIAGNOSTICS).replace('"version": 1', '"version": NaN'),
+                    json.dumps(DIAGNOSTICS).replace('"version": 1', '"version": Infinity'),
+                    json.dumps(DIAGNOSTICS).replace('"version": 1', '"version": 1e999'),
+                    b" " * (16 * 1024 + 1)):
+            with self.subTest(raw=str(raw)[:50]):
+                path.write_bytes(raw if isinstance(raw, bytes) else raw.encode())
+                self.assert_diagnostics_unavailable()
+        path.unlink()
+        private = self.root / "private-diagnostics"
+        private.write_text(json.dumps(DIAGNOSTICS))
+        for kind in ("symlink", "fifo", "directory"):
+            if kind == "symlink":
+                path.symlink_to(private)
+            elif kind == "fifo":
+                os.mkfifo(path)
+            else:
+                path.mkdir()
+            with self.subTest(kind=kind):
+                self.assert_diagnostics_unavailable()
+            path.rmdir() if kind == "directory" else path.unlink()
+        path.write_text(json.dumps(DIAGNOSTICS))
+        link = self.root / "link"
+        link.symlink_to(self.ws, target_is_directory=True)
+        original = self.ws
+        nested = original / "nested"
+        nested.mkdir()
+        (nested / path.name).write_text(json.dumps(DIAGNOSTICS))
+        for workspace in (link, link / "nested"):
+            self.ws = workspace
+            self.assert_diagnostics_unavailable()
+        self.ws = original
 
     def test_only_validated_public_json_and_fixed_metadata_are_copied(self):
         run = self.collect(extra=("--stage", "finalize"))

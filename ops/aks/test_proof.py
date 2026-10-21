@@ -1,7 +1,11 @@
 """Closed public AKS evidence contracts; no cloud or model calls."""
 import copy
+import json
 import math
+import os
+import tempfile
 import unittest
+from pathlib import Path
 
 import proof
 
@@ -13,6 +17,8 @@ GOOD = {
                "coverageComplete": True, "unchanged": True},
 }
 TIMINGS = {"version": 1, "phases": {"preflight": 0, "replay": 2.5}, "totalSeconds": 3}
+DIAGNOSTICS = {"version": 1, "phase": "install", "operation": "profile-rollout",
+               "reason": "command-failed", "cleanup": "succeeded"}
 
 
 def network():
@@ -23,6 +29,81 @@ def network():
 
 
 class ProofTests(unittest.TestCase):
+    def test_diagnostics_exact_closed_enums_and_types(self):
+        choices = {
+            "phase": ("preflight", "install", "network-dormant", "network-live", "park", "restart",
+                      "approve", "continue", "backup", "replay", "cleanup"),
+            "operation": ("phase", "profile-create", "profile-rollout", "profile-verify", "profile-remove",
+                          "profile-node-check", "namespace-create", "volume-create", "chart-install", "policy-check",
+                          "fixture-init-create", "fixture-init-wait", "fixture-init-remove"),
+            "reason": ("deadline-exhausted", "command-timeout", "command-failed", "interrupted",
+                       "invariant-failed", "io-failed", "unclassified-failure"),
+            "cleanup": ("succeeded", "failed", "not-run"),
+        }
+        self.assertEqual(proof.validate_diagnostics(dict(DIAGNOSTICS)), DIAGNOSTICS)
+        for key, values in choices.items():
+            for value in values:
+                candidate = dict(DIAGNOSTICS, **{key: value})
+                self.assertEqual(proof.validate_diagnostics(candidate), candidate)
+            for value in ("SECRET-CANARY", "", None, [], {}, 1, True, 1.0):
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    proof.validate_diagnostics(dict(DIAGNOSTICS, **{key: value}))
+        for value in (True, 1.0, "1", 2, None, [], {}):
+            with self.subTest(version=value), self.assertRaises(ValueError):
+                proof.validate_diagnostics(dict(DIAGNOSTICS, version=value))
+        for key in DIAGNOSTICS:
+            bad = dict(DIAGNOSTICS)
+            del bad[key]
+            with self.subTest(missing=key), self.assertRaises(ValueError):
+                proof.validate_diagnostics(bad)
+        for bad in (None, [], True, dict(DIAGNOSTICS, error="SECRET-CANARY")):
+            with self.assertRaises(ValueError):
+                proof.validate_diagnostics(bad)
+
+    def test_diagnostic_reader_reuses_all_bounded_descriptor_guards(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace = root / "public"
+            workspace.mkdir()
+            path = workspace / "diagnostics.json"
+            for raw in (json.dumps(DIAGNOSTICS), json.dumps(DIAGNOSTICS, indent=2)):
+                path.write_text(raw)
+                self.assertEqual(proof.load_public(workspace, path.name), DIAGNOSTICS)
+            for raw in ("SECRET-CANARY", b"\xff", "[" * 1500 + "]" * 1500,
+                        json.dumps(DIAGNOSTICS)[:-1] + ',"version":1}',
+                        json.dumps(dict(DIAGNOSTICS, reason="SECRET-CANARY")),
+                        json.dumps(DIAGNOSTICS).replace('"version": 1', '"version": NaN'),
+                        json.dumps(DIAGNOSTICS).replace('"version": 1', '"version": Infinity'),
+                        json.dumps(DIAGNOSTICS).replace('"version": 1', '"version": 1e999'),
+                        b" " * (proof.MAX_BYTES + 1)):
+                path.write_bytes(raw if isinstance(raw, bytes) else raw.encode())
+                with self.subTest(raw=str(raw)[:50]), self.assertRaises((ValueError, RecursionError)):
+                    proof.load_public(workspace, path.name)
+            path.unlink()
+            with self.assertRaises(OSError):
+                proof.load_public(workspace, path.name)
+            secret = root / "private"
+            secret.write_text(json.dumps(DIAGNOSTICS))
+            for kind in ("symlink", "fifo", "directory"):
+                if kind == "symlink":
+                    path.symlink_to(secret)
+                elif kind == "fifo":
+                    os.mkfifo(path)
+                else:
+                    path.mkdir()
+                with self.subTest(kind=kind), self.assertRaises((OSError, ValueError)):
+                    proof.load_public(workspace, path.name)
+                path.rmdir() if kind == "directory" else path.unlink()
+            path.write_text(json.dumps(DIAGNOSTICS))
+            link = root / "link"
+            link.symlink_to(workspace, target_is_directory=True)
+            nested = workspace / "nested"
+            nested.mkdir()
+            (nested / path.name).write_text(json.dumps(DIAGNOSTICS))
+            for unsafe in (link, link / "nested"):
+                with self.subTest(unsafe=unsafe), self.assertRaises(OSError):
+                    proof.load_public(unsafe, path.name)
+
     def test_complete_final_proof_is_accepted(self):
         self.assertEqual(proof.validate(copy.deepcopy(GOOD)), GOOD)
 
