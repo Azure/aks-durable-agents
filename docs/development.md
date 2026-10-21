@@ -8,7 +8,7 @@ run; offline fixtures do not qualify a live deployment.
 ## Start offline
 
 Component checks run without Azure credentials or model keys. Use Python
-**3.14.3** and the Go toolchain from [`go.mod`](../go.mod) (currently **1.27.2**):
+**3.14.3** and the Go toolchain from [`go.mod`](../go.mod) (currently **1.27.3**):
 
 ```sh
 go mod download
@@ -51,7 +51,7 @@ Read the [backup and restore recipe](../ops/backup/README.md) before opening ret
 ## Full development checks
 
 CI runs on pull requests and pushes to `main`. To run the same checks locally,
-use the Go toolchain pinned in `go.mod` (currently Go 1.27.2; language floor 1.27):
+use the Go toolchain pinned in `go.mod` (currently Go 1.27.3; language floor 1.27):
 
 ```sh
 set -e
@@ -80,8 +80,10 @@ refusal tests with synthetic fixtures; bare defaults intentionally refuse missin
 operator inputs. See the [chart README](../charts/aks-durable-agents/README.md#offline-verification).
 
 Tests use fake credentials and local TLS servers, including the **real sessions
-OpenAI adapter** at the [canonical upstream pin](entraauth.md#offline-verification-and-the-sessions-dependency). They require neither Azure access nor model keys. There is no
-automatic live test. A separately approved CLI-identity smoke check must use an
+OpenAI adapter** at the [canonical upstream pin](entraauth.md#offline-verification-and-the-sessions-dependency). They require neither Azure access nor model keys. The [AKS bootstrap](../ops/aks/README.md) adds read-only dispatch validation and
+owned-resource expiry cleanup, not a provisioned real-model scenario. Its cleanup
+sweep remains inactive until an operator supplies the complete reviewed repository
+configuration. There is no automatic live inference test. A separately approved CLI-identity smoke check must use an
 explicit `AzureCLICredential`, no retries, and at most three calls; missing RBAC
 must be reported, not assigned.
 
@@ -90,6 +92,7 @@ Run the backup and native producer unit tests separately:
 ```sh
 python3 -B -m unittest discover -s ops/backup -p 'test_*.py'
 python3 -B -m unittest discover -s ops/canvas -p 'test_*.py'
+python3 -B -m unittest discover -s ops/aks -p 'test_*.py'
 ```
 
 ## External fixture qualification

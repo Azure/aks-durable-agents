@@ -1,0 +1,76 @@
+name: Nightly AKS e2e
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  AKS_BOOTSTRAP_ENABLED: ${{ vars.AKS_BOOTSTRAP_ENABLED }}
+  AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  AKS_RESOURCE_GROUP: ${{ vars.AKS_RESOURCE_GROUP }}
+  AKS_CLUSTER_NAME: ${{ vars.AKS_CLUSTER_NAME }}
+  AKS_NODE_RESOURCE_GROUP: ${{ vars.AKS_NODE_RESOURCE_GROUP }}
+  AKS_IDENTITY_RESOURCE_GROUP: ${{ vars.AKS_IDENTITY_RESOURCE_GROUP }}
+  AKS_MODEL_IDENTITY_NAME: ${{ vars.AKS_MODEL_IDENTITY_NAME }}
+
+jobs:
+  config:
+    if: ${{ github.repository == 'Azure/aks-durable-agents' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    outputs:
+      configured: ${{ steps.config.outputs.configured }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14.3'
+      - name: Check repository configuration without Azure login
+        id: config
+        run: python3 -B ops/aks/cleanup.py config | tee -a "$GITHUB_OUTPUT"
+
+  validate:
+    needs: config
+    if: ${{ needs.config.outputs.configured == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: nightly-aks
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14.3'
+      - name: Mask operator configuration before login
+        run: |
+          echo "AZURE_CONFIG_DIR=$RUNNER_TEMP/aks-azure" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          import os
+          for key, value in os.environ.items():
+              if key.startswith(("AZURE_", "AKS_")) and key not in ("AKS_BOOTSTRAP_ENABLED", "AZURE_CONFIG_DIR") and value:
+                  print("::add-mask::" + value)
+          PY
+      - uses: Azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Read-only bootstrap validation (not an AKS scenario)
+        run: python3 -B ops/aks/cleanup.py validate | tee -a "$GITHUB_STEP_SUMMARY"

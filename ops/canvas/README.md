@@ -9,7 +9,7 @@ interruption by a killed process may require cleanup using `ownership.json`.
 
 ## Scope and prerequisites
 
-- Linux amd64, Docker, Go 1.27.2 with cached modules, Helm 3.20.0, kubectl, Python
+- Linux amd64, Docker, Go 1.27.3 with cached modules, Helm 3.20.0, kubectl, Python
   3.14.3, and **kind v0.33.0**. The installed kind executable is not upgraded.
 - An independently supplied clean Canvas checkout containing `canvas-harness`,
   `copilot-review`, and its versioned `examples/release-review` layouts. Its
