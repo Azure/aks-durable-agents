@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -134,10 +135,23 @@ func validID(s string) bool {
 	}
 	return true
 }
+
+// Workspace follows the host evidence namespace, not the narrower key/ID domain.
+func validWorkspace(s string) bool {
+	if len(s) == 0 || len(s) > 256 || !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
 func normalize(r Request) Request { r.Plan.ExpiresAt = r.Plan.ExpiresAt.Round(0).UTC(); return r }
 func validateRequest(r Request) error {
 	p := r.Plan
-	if !validID(r.Key) || !validID(r.Requester) || !validID(p.Subject.Workspace) || !validID(p.Subject.Target) || !validID(p.MemberID) || !validID(p.Platform) || p.ExpiresAt.IsZero() {
+	if !validID(r.Key) || !validID(r.Requester) || !validWorkspace(p.Subject.Workspace) || !validID(p.Subject.Target) || !validID(p.MemberID) || !validID(p.Platform) || p.ExpiresAt.IsZero() {
 		return ErrInvalid
 	}
 	for _, d := range []string{p.Subject.SuiteDigest, p.Subject.BindingDigest, p.Subject.ProfileDigest, p.Subject.ModelDigest, p.Subject.JudgeDigest, p.Subject.PolicyDigest, p.CompositionDigest, p.IndexDigest} {

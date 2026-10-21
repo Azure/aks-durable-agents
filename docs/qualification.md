@@ -17,6 +17,13 @@ repetition counts and thresholds; assertions; and expiry. Missing, duplicate or
 unsupported inventory refuses admission rather than being omitted. The package
 does not independently resolve an OCI artifact: that remains a runner prerequisite.
 
+Workspaces use the host evidence namespace: nonempty, valid non-control UTF-8,
+at most 256 bytes, retained without renaming, truncation or normalization. Request
+keys and other identifiers retain their narrower existing validation. Existing
+valid records remain readable. Binaries with the former ASCII/128-byte workspace
+restriction cannot reopen a store after a newly supported workspace is retained;
+do not downgrade such a store to those binaries.
+
 Admission is idempotent by workspace, target and request key. An exact duplicate
 returns the original record, including after restart or terminalization. Changed
 inventory, binding or requester conflicts. These fields are trusted host inputs,
@@ -72,7 +79,11 @@ and 0600 regular files (including a 0700 parent directory for creation), refuses
 symlinks and unsafe SQLite sidecars, and holds an
 exclusive nonblocking file lock for its lifetime. It uses FULL synchronous DELETE
 journaling and connection-local settings survive connection replacement. Foreign
-lineage/future schema refuses before writable database PRAGMAs. There is no
+lineage/future schema refuses before writable database PRAGMAs. WAL-format
+databases are rejected by their file header before SQLite opens them, because even
+read-only SQLite access can create WAL/SHM sidecars in a writable directory.
+Admission cancellation retains its context error rather than reporting corruption.
+There is no
 active-active writer or old-writer fencing guarantee across restored copies.
 Persisted field names and UTC time encodings are part of schema version 1;
 renaming them requires an explicit format/compatibility change.
@@ -128,3 +139,19 @@ The following remain separate work, not functionality supplied by this package:
 
 Until those boundaries are implemented and tested, an internal synthetic pass
 cannot make an unactivated suite eligible on the running host.
+
+## Workspace conformance test
+
+The opt-in `qualification_workspace_conformance` test uses the real decision
+ledger to record a synthetic decision, then admits a qualification plan in the
+same workspace. It checks namespace compatibility only, not a qualification-to-
+decision adapter or activation authority. When both packages are present in a
+combined source checkout, run:
+
+```sh
+go test -race -tags qualification_workspace_conformance ./internal/qualification -run '^TestQualificationWorkspaceJoin$' -count=1
+```
+
+The test is excluded from ordinary CI until the decision ledger is available in
+the same source tree. Ordinary qualification tests cover the UTF-8/byte-length
+boundaries and exact workspace round-trip independently.

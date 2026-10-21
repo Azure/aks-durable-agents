@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -199,6 +200,15 @@ func Open(dir, lineage string) (_ *Store, err error) {
 			f.Close()
 			return nil, ErrIntegrity
 		}
+		if name == "records.db" {
+			// Even mode=ro can create WAL/SHM sidecars. Require the rollback
+			// format before SQLite can touch the unverified recovery set.
+			var header [20]byte
+			if _, e = io.ReadFull(f, header[:]); e != nil || string(header[:16]) != "SQLite format 3\x00" || header[18] != 1 || header[19] != 1 {
+				f.Close()
+				return nil, ErrIntegrity
+			}
+		}
 		if name == "lineage" {
 			data := make([]byte, 129)
 			n, _ := f.Read(data)
@@ -351,6 +361,9 @@ func (s *Store) Admit(ctx context.Context, req Request) (Record, error) {
 			return nil
 		}
 		if !errors.Is(e, sql.ErrNoRows) {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return ErrIntegrity
 		}
 		if !req.Plan.ExpiresAt.After(time.Now()) {
