@@ -30,14 +30,31 @@ jobs:
         run: go vet ./...
       - name: Race tests
         run: go test -race ./...
+      - name: Non-shipping proof fixtures
+        run: |
+          go test -tags squadproof -list '^TestProofBuildBoundary$' ./internal/squadproof | grep -x TestProofBuildBoundary
+          go test -race -tags squadproof ./internal/squadproof
+          go vet -tags squadproof ./internal/squadproof ./cmd/squad-proof
+          go build -tags squadproof -o "$RUNNER_TEMP/squad-proof" ./cmd/squad-proof
+          go list -deps ./cmd/host ./cmd/demo-host ./cmd/demo-client ./cmd/session-fixture > "$RUNNER_TEMP/shipped-deps"
+          if grep -qx github.com/Azure/aks-durable-agents/internal/squadproof "$RUNNER_TEMP/shipped-deps"; then
+            echo 'proof code is reachable from a shipped command' >&2
+            exit 1
+          fi
+          if go build -o "$RUNNER_TEMP/unexpected-proof" ./cmd/squad-proof 2> "$RUNNER_TEMP/proof-default.log"; then
+            echo 'proof command compiled without its explicit build tag' >&2
+            exit 1
+          fi
+          grep -q 'build constraints exclude all Go files' "$RUNNER_TEMP/proof-default.log"
       - name: Staticcheck
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
-          staticcheck ./...
+          staticcheck -tags squadproof ./...
       - name: Vulnerability check
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           govulncheck ./...
+          govulncheck -tags squadproof ./internal/squadproof ./cmd/squad-proof
 
   runner_tools:
     name: AKS runner tool report
@@ -98,3 +115,42 @@ jobs:
         run: python3 -B -m unittest discover -s ops/canvas -p 'test_*.py'
       - name: Lint, template, golden and refusal tests
         run: python3 -B charts/aks-durable-agents/tests/test_chart.py
+
+  substrate_manifests:
+    name: Substrate manifest admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: agent-substrate/substrate
+          ref: e8d40c33f96f4b7a4984bfea7334a36ab5b45b7b # v0.5.0
+          path: .build/substrate-source
+          sparse-checkout: manifests/ate-install
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14.3'
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.20.0
+      - name: Install chart test dependencies
+        run: python3 -m pip install -r charts/aks-durable-agents/tests/requirements.txt
+      - name: Install checked kind and kubectl
+        run: |
+          tools="$RUNNER_TEMP/substrate-admission-tools"
+          mkdir -m 700 "$tools"
+          curl --fail --silent --show-error --location --connect-timeout 10 --max-time 120 https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64 -o "$tools/kind"
+          printf '%s  %s\n' aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d "$tools/kind" | sha256sum --check -
+          curl --fail --silent --show-error --location --connect-timeout 10 --max-time 120 https://dl.k8s.io/release/v1.37.0/bin/linux/amd64/kubectl -o "$tools/kubectl"
+          printf '%s  %s\n' 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f "$tools/kubectl" | sha256sum --check -
+          chmod 700 "$tools/kind" "$tools/kubectl"
+          echo "$tools" >> "$GITHUB_PATH"
+      - name: Validate every rendered workload against the kind API
+        run: |
+          python3 -B ops/aks/check_substrate_manifests.py \
+            --source .build/substrate-source \
+            --directory "$RUNNER_TEMP/substrate-admission"

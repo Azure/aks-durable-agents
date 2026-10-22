@@ -58,7 +58,7 @@ func parse(args []string) (host.Config, error) {
 	fs.StringVar(&c.ModelPolicy, "model-policy", "", "required bounded model policy JSON with dated prices and durable ledger")
 	fs.StringVar(&c.TLSCert, "tls-cert", "", "PEM server certificate file")
 	fs.StringVar(&c.TLSKey, "tls-key", "", "PEM server private key file")
-	mode := fs.String("auth-mode", "required", "off or required; neither supplies sessions c1/c2")
+	mode := fs.String("auth-mode", "required", "off (trusted network only) or required (host-RPC permissions, not journal-wide enforcement)")
 	authFile := fs.String("auth-config", "", "Entra identity, optional claim policies and approval sources JSON")
 	fs.Var(harnessFlags(c.Harnesses), "harness", "repeatable static name=loopback-address")
 	sub := &host.SubstrateConfig{}
@@ -69,6 +69,7 @@ func parse(args []string) (host.Config, error) {
 	}{
 		{"substrate-harness", "single name=atespace/template stateless-replay route", nil},
 		{"substrate-atespace", "Actor atespace", &sub.ActorAtespace},
+		{"substrate-placement-file", "optional private first/latest native placement receipt for one controlled session", &sub.PlacementFile},
 		{"ateapi-addr", "private TLS control endpoint", &sub.ControlAddr},
 		{"ateapi-server-name", "control certificate name (default endpoint host)", &sub.ControlServerName},
 		{"ateapi-ca-file", "control CA PEM file", &sub.CAFile},

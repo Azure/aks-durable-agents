@@ -35,5 +35,5 @@ jobs:
           languages: go
           build-mode: manual
       - name: Build for analysis
-        run: go build -a ./...
+        run: go build -a -tags squadproof ./...
       - uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4

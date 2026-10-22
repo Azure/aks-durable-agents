@@ -24,10 +24,26 @@ Publishing source does not close its unfinished requirements.
 
 ## Access and execution limits
 
-The current host is a **loopback-only proof**. Authentication and an explicit
-approver policy are wired; Sessions resource authorization is not yet enforced.
-It is not safe for untrusted users or multiple mutually untrusted tenants.
-See the [host's remaining authorization work](host.md#what-still-belongs-upstream).
+The current host is a **loopback-only proof**. Required mode installs Sessions'
+`WithAuthorization`: new sessions belong to the verified caller, ordinary
+operations are owner-only, and listed subjects OR verified approver roles can
+read and approve any valid owned session. Ownership does not grant approval.
+Approvers can read full prompts, outputs and tool arguments; no other cross-owner
+operation or listing is granted. UIDs must reach approvers out of band; there is
+no inbox or notifier. Listing remains owner-only and required-mode Fork is refused.
+Approve records a decision only, never an implicit Resume.
+
+Required mode must start on a **new private journal**. Ownerless sessions are
+denied to everyone, without automatic binding or migration. Deployment needs a
+published, verified and pinned image containing this change; the existing digest
+alone is not evidence. Auth-off is unchanged: anyone reaching the host can read,
+act and approve. See [rollout and disclosure](host.md#read-disclosure-and-rollout).
+
+Isolation is limited to this host's RPCs. The journal marker remains `off`, so
+unenforced writers can bypass it. Keep the journal private and exclusive; verified
+approval attribution and caller-bound retries are not implemented. Keep TLS,
+loopback and NetworkPolicy restrictions. It is not safe for untrusted users or
+multiple mutually untrusted tenants. See the [remaining limits](host.md#what-still-belongs-upstream).
 
 [Sessions](https://github.com/agent-primitives/sessions) supplies the journal,
 approvals, replay without new model/tool calls, and forks. It stays cloud-neutral.
@@ -35,7 +51,7 @@ This repository adds Entra caller identity, model access through workload identi
 network policy, Helm packaging and backup/restore recipes. Optional app-role,
 group and member admission checks and subject-OR-role approval are implemented
 ([configuration and limits](entraauth.md#optional-caller-and-approver-checks));
-these do not supply per-resource authorization or approval attribution. A
+the host combines them with owner checks, but not verified approval attribution. A
 supported Helm installation and approval-bound delegated tool access remain
 planned, not current guarantees. See [architecture and trust boundaries](architecture.md).
 
@@ -48,15 +64,18 @@ and [external producer inputs](../ops/canvas/README.md#scope-and-prerequisites).
 
 ## Development dependencies
 
-This source depends on **unreleased development versions**:
+The Sessions/Substrate assembly selects **released upstream versions**:
 
-| Component | Selected development version |
+| Component | Selected version |
 | --- | --- |
-| Sessions root | `github.com/agent-primitives/sessions v0.2.1-0.20261019224537-f18a2cb1454d` |
-| Sessions Substrate adapter (separate module) | `github.com/agent-primitives/sessions/integrations/substrate v0.0.0-20261019224537-f18a2cb1454d` |
-| Substrate runtime/client | `github.com/agent-substrate/substrate v0.4.1-0.20261013053953-96dffb287919` |
+| Sessions root | `github.com/agent-primitives/sessions v0.3.0` |
+| Sessions Substrate adapter (separate module) | `github.com/agent-primitives/sessions/integrations/substrate v0.3.0` |
+| Substrate runtime/client | `github.com/agent-substrate/substrate v0.5.0` |
 
-All modules use canonical upstream sources, with no fork replacements. These are
-public development pins, not a released or qualified assembly. Sessions core and
-its separate Substrate adapter select the same commit. The runtime/client pin
-remains the adapter's compatible version; see [the version set](substrate.md#version-set).
+All modules use canonical upstream sources, with no fork replacements. Released
+libraries do not qualify this host assembly; required-mode authorization is host
+wiring, not a consequence of selecting those versions.
+Root and adapter have separate v0.3.0 tags; the runtime/client must match the
+adapter's v0.5.0 contract. See the [version set and fresh-state warning](substrate.md#version-set).
+Main image publication and verified digest-pin updates remain separate from this
+source dependency refresh; no new image receipt or live proof is implied.

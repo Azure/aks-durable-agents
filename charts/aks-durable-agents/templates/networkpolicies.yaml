@@ -43,6 +43,28 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+    {{- if eq .Values.runtime.mode "substrate" }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ate-system
+          podSelector:
+            matchLabels:
+              app: ate-api-server
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ate-system
+          podSelector:
+            matchLabels:
+              app: atenet-router
+      ports:
+        - protocol: TCP
+          port: 8080
+    {{- else }}
     - to:
         - namespaceSelector:
             matchLabels:
@@ -61,6 +83,8 @@ spec:
         - protocol: TCP
           port: 9000
         {{- end }}
+    {{- end }}
+{{- if ne .Values.runtime.mode "substrate" }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -92,4 +116,5 @@ spec:
         - protocol: TCP
           port: 9000
         {{- end }}
+{{- end }}
 {{- end }}

@@ -17,7 +17,15 @@ python3 -B -m unittest discover -s ops/backup -p 'test_*.py'
 ```
 
 These exercise components with fake credentials and local test servers, not a
-cluster workflow. For the self-contained fake-model kind workflow, use
+cluster workflow. The
+[local team proof state](../internal/squadproof/README.md) has separate admission,
+scoped executor and receipt-gated queue tests under
+`go test -race ./internal/squadproof`. Its optional `squadproof` tag enables
+non-shipping local runtime fixtures using production's Sessions components;
+`go test -race -tags squadproof ./internal/squadproof` tests those explicitly.
+The production host and model limits are unchanged. Neither suite starts a
+cluster or supplies an automatic team coordinator.
+For the self-contained fake-model kind workflow, use
 [`make demo`](../ops/demo/README.md); it builds its own client inside Docker.
 
 For Helm lint, rendering and refusal tests, use Helm **3.20.0** and the
@@ -61,10 +69,15 @@ go mod verify
 go build ./...
 go vet ./...
 go test -race ./...
+go test -tags squadproof -list '^TestProofBuildBoundary$' ./internal/squadproof | grep -x TestProofBuildBoundary
+go test -race -tags squadproof ./internal/squadproof
+go vet -tags squadproof ./internal/squadproof ./cmd/squad-proof
+go build -tags squadproof -o .build/squad-proof ./cmd/squad-proof
 go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
-staticcheck ./...
+staticcheck -tags squadproof ./...
 go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
 govulncheck ./...
+govulncheck -tags squadproof ./internal/squadproof ./cmd/squad-proof
 ```
 
 Image validation additionally runs `bash ops/images/vulncheck.sh` after
@@ -88,14 +101,18 @@ refusal tests with synthetic fixtures; bare defaults intentionally refuse missin
 operator inputs. See the [chart README](../charts/aks-durable-agents/README.md#offline-verification).
 
 Tests use fake credentials and local TLS servers, including the **real sessions
-OpenAI adapter** at the [canonical upstream pin](entraauth.md#offline-verification-and-the-sessions-dependency). They require neither Azure access nor model keys. The [manual AKS workflow](../ops/aks/README.md) defaults to read-only dispatch validation and
-retains independent owned-resource expiry cleanup. Its optional real-model scenario
-is separately operator-gated, with simulated approval, parked-host restart, effective
-policy controls, fenced backup/strict replay and whole-cluster teardown. There is
-no scenario schedule: live execution and any AKS qualification claim remain blocked
-until the separate Continue/replay qualification and manual-run approvals pass.
+OpenAI adapter** at the [canonical upstream pin](entraauth.md#offline-verification-and-the-sessions-dependency). They require neither Azure access nor model keys. The [AKS workflow](../ops/aks/README.md) defaults to read-only manual dispatch and
+requests the operator-gated no-sandbox scenario daily at 05:43 UTC. It retains
+simulated approval, parked-host restart, effective policy controls, fenced
+backup/strict replay, whole-cluster teardown and independent expiry cleanup.
+Qualification and operator opt-ins remain required; `AKS_BUDGET_CONFIRMED` is an
+operator confirmation backed by budget alerts and the sweeper, not a live spending
+check or hard spending cap. No billing read grant, new IAM or paging is added.
 Offline tests use fake cloud commands and optional local Docker exercises, never
-Azure provisioning or inference. A separately approved CLI-identity smoke check must use an
+Azure provisioning or inference. `go test -race -run '^TestInterruptedDeclaredToolRecovery$' ./internal/host`
+checks ordinary controller-mediated recovery after an executor commits but its
+reply is lost: an exact durable declaration permits redrive under the original
+session/key; false or omitted declarations refuse without another tool call. A separately approved CLI-identity smoke check must use an
 explicit `AzureCLICredential`, no retries, and at most three calls; missing RBAC
 must be reported, not assigned.
 
