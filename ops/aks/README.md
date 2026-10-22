@@ -253,11 +253,31 @@ Orphan managed node RGs still require exact-scope operator recovery.
 
 ### Evidence and failure tracker
 
-Only closed-schema `proof.json`, eight-record `network-proof.json`, `timings.json`
-and fixed status/summary metadata are retained for seven days. The AKS collector
-ignores console input entirely and refuses unknown fields, malformed or incomplete
-proof, symlinks/nonregular files and oversized data. Private command logs, model
-text, kubeconfig/cache, values, journals and backup archives are never uploaded.
+Only closed-schema `proof.json`, eight-record `network-proof.json`, `timings.json`,
+failure-only `diagnostics.json` and fixed status/summary metadata are retained for
+seven days. The AKS collector ignores console input entirely and refuses unknown
+fields, malformed or incomplete proof, symlinks/nonregular files and oversized
+data. Private command logs, model text, kubeconfig/cache, values, journals and
+backup archives are never uploaded.
+
+Failure diagnostics contain exactly `version: 1` and fixed-enum `phase`,
+`operation`, `reason`, `cleanup` fields, never exception text or command output.
+Install operations distinguish profile create/rollout/verify/remove/node-check,
+namespace/volume create, chart install, policy check and fixture init create/wait/remove;
+other phases use the default `phase` operation. Reasons are `deadline-exhausted`,
+`command-timeout`, `command-failed`, `interrupted`, `invariant-failed`, `io-failed`
+or `unclassified-failure`. These categories do **not** identify an underlying
+pod/container root cause. The original failure context is captured before source
+fencing; even if fencing also fails, its exception still takes precedence while
+diagnostics retain the original context. `cleanup` is `succeeded`, `failed` or
+`not-run` for that in-process **source fence only**, not Azure teardown.
+
+Only failure/cancellation collection reads diagnostics; success ignores them and
+still requires all three success proofs. Workflow stage is independent of scenario
+phase. Missing, unsafe or malformed diagnostics produce `Diagnostics: unavailable`;
+all failure summaries say `Underlying cause: not determined`. Publication is best
+effort: invalid public directories, a hard kill or a diagnostic-write failure may
+leave no diagnostics and never justify a guessed workload fix.
 
 The separate bot-owned tracker is titled **AKS e2e regression**. Its managed body
 contains only allowlisted stage, workflow URL and commit SHA; existing kind bot

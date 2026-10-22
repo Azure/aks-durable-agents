@@ -130,6 +130,16 @@ def collect_aks(workspace, destination, summary, result, run_url, sha, stage):
               "stage": stage, "runURL": run_url, "commitSHA": sha}
     text = ("# AKS e2e summary\n\n" + f"- Result: {status['result']}\n"
             + f"- Stage: {stage}\n- Run: {run_url}\n- Commit: {sha}\n")
+    if result in ("failure", "cancelled"):
+        try:
+            diagnostics = proof.load_public(workspace, "diagnostics.json")
+        except (OSError, ValueError, RecursionError):
+            text += "- Diagnostics: unavailable\n"
+        else:
+            (dest / "diagnostics.json").write_text(json.dumps(diagnostics, sort_keys=True, allow_nan=False) + "\n")
+            text += (f"- Scenario phase: {diagnostics['phase']}\n- Operation: {diagnostics['operation']}\n"
+                     + f"- Reason: {diagnostics['reason']}\n- Source fencing: {diagnostics['cleanup']}\n")
+        text += "- Underlying cause: not determined\n"
     (dest / "status.json").write_text(json.dumps(status, sort_keys=True) + "\n")
     (dest / "summary.md").write_text(text)
     Path(summary).parent.mkdir(parents=True, exist_ok=True)

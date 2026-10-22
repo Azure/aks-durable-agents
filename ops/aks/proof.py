@@ -8,6 +8,12 @@ from pathlib import Path
 MAX_BYTES = 16 * 1024
 PHASES = frozenset(("preflight", "install", "network-dormant", "network-live", "park",
                     "restart", "approve", "continue", "backup", "replay", "cleanup"))
+OPERATIONS = frozenset(("phase", "profile-create", "profile-rollout", "profile-verify", "profile-remove",
+                        "profile-node-check", "namespace-create", "volume-create", "chart-install", "policy-check",
+                        "fixture-init-create", "fixture-init-wait", "fixture-init-remove"))
+REASONS = frozenset(("deadline-exhausted", "command-timeout", "command-failed", "interrupted",
+                     "invariant-failed", "io-failed", "unclassified-failure"))
+CLEANUP = frozenset(("succeeded", "failed", "not-run"))
 _FINAL = {
     "version": 1, "profile": "aks", "model": "real", "approval": "simulated", "entra": "not-run",
     "modelCalls": 1, "fakeModelCalls": 0, "published": 1, "receipts": 1, "artifacts": 1,
@@ -76,7 +82,18 @@ def validate_timings(value):
     return {"version": 1, "phases": dict(value["phases"]), "totalSeconds": value["totalSeconds"]}
 
 
-VALIDATORS = {"proof.json": validate, "network-proof.json": validate_network, "timings.json": validate_timings}
+def validate_diagnostics(value):
+    """Failure category only: never exception text or an underlying-cause claim."""
+    _closed(value, ("version", "phase", "operation", "reason", "cleanup"))
+    _literals(value, {"version": 1})
+    for key, choices in (("phase", PHASES), ("operation", OPERATIONS), ("reason", REASONS), ("cleanup", CLEANUP)):
+        if type(value[key]) is not str or value[key] not in choices:
+            raise ValueError("invalid AKS diagnostics")
+    return {key: value[key] for key in ("version", "phase", "operation", "reason", "cleanup")}
+
+
+VALIDATORS = {"proof.json": validate, "network-proof.json": validate_network, "timings.json": validate_timings,
+              "diagnostics.json": validate_diagnostics}
 
 
 def _object(pairs):
