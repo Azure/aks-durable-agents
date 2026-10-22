@@ -293,7 +293,9 @@ The pre-paid job validates both runs and map equality, anonymously pulls inputs,
 rechecks owned signatures/SBOMs and runs the selected immutable application
 harness's `actor-harness --check`. A legacy image without that entrypoint fails
 **before provisioning**. It builds/scans pinned runner and native tools and
-transfers their source/toolchain/map bundle to the scenario. Binary compilation,
+transfers their source/toolchain/map bundle and pinned Python dependencies to the
+scenario. PyYAML is installed into the prepared payload before provisioning and
+restored through `PYTHONPATH`; the scenario job makes no pip download. Binary compilation,
 anonymous pull and signature/SBOM verification finish before cluster creation;
 cluster nodes still have to pull the published images when workloads start. Publication
 still occurs only through the existing main Images success/signature gates.

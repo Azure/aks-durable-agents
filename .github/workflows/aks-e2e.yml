@@ -366,7 +366,7 @@ jobs:
               archive.extractall(root,filter='data')
           shutil.copytree(root/'tool-report',pathlib.Path(os.environ['RUNNER_TEMP'])/'aks-tool-report')
           with open(os.environ['GITHUB_ENV'],'a') as output:
-              for key,value in {'SUBSTRATE_SOURCE':root/'source','SUBSTRATE_TOOLS':root/'native-tools','SUBSTRATE_IMAGE_MAP':root/'verified/substrate-images.json','AKS_RPC_CLIENT':root/'runner-tools/demo-client','GOROOT':root/'go-toolchain','GOTOOLCHAIN':'local'}.items():
+              for key,value in {'SUBSTRATE_SOURCE':root/'source','SUBSTRATE_TOOLS':root/'native-tools','SUBSTRATE_IMAGE_MAP':root/'verified/substrate-images.json','AKS_RPC_CLIENT':root/'runner-tools/demo-client','GOROOT':root/'go-toolchain','GOTOOLCHAIN':'local','PYTHONPATH':str(root/'python-deps')+(os.pathsep+os.environ['PYTHONPATH'] if os.environ.get('PYTHONPATH') else '')}.items():
                   output.write(f'{key}={value}\n')
           with open(os.environ['GITHUB_PATH'],'a') as output:
               output.write(str(root/'runner-tools')+'\n'+str(root/'go-toolchain/bin')+'\n')

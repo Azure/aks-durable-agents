@@ -2,6 +2,7 @@
 import datetime
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -15,6 +16,7 @@ import lifecycle
 import substrate_inputs as inputs
 import test_lifecycle
 import tool_audit
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 original_path = sys.path[:]
@@ -63,6 +65,9 @@ class PreparationTests(unittest.TestCase):
             elif argv[:2] == ["docker", "run"]:
                 assert argv[argv.index("--entrypoint") + 1] == "/session-fixture" and argv[-2:] == ["actor-harness", "--check"] and "--network=none" in argv
                 raw = json.dumps({"version": 0} if old_actor else {"version": 1, "mode": "actor-v2", "harness": "release-notes", "protocol": "harnesswire", "port": 80, "resumability": "STATELESS_REPLAY", "descriptor": "release-v2-real-model-" + "a" * 64, "readinessPort": 8081, "readinessPath": "/readyz"}).encode()
+            elif argv[:3] == [sys.executable, "-m", "pip"]:
+                target = Path(argv[argv.index("--target") + 1])
+                shutil.copytree(Path(yaml.__file__).parent, target / "yaml")
             elif argv[:2] == ["git", "-C"]:
                 raw = (substrate_images.SUBSTRATE_COMMIT if argv[-1] == "HEAD" else "").encode()
             elif argv[:2] == ["go", "build"]:
@@ -92,7 +97,7 @@ class PreparationTests(unittest.TestCase):
         execute()
         with tarfile.open(output / "prepared.tar.gz") as archive:
             roots = {member.name.split("/")[0] for member in archive.getmembers()}
-            self.assertEqual(roots, {"source", "native-tools", "runner-tools", "go-toolchain", "tool-report", "verified"})
+            self.assertEqual(roots, {"source", "native-tools", "runner-tools", "go-toolchain", "tool-report", "verified", "python-deps"})
             self.assertIn("native-tools/kubectl-ate", archive.getnames())
             for member in archive.getmembers():
                 if member.isfile():
@@ -105,6 +110,23 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(sum(c[:2] == ["cosign", "verify"] for c in calls), 13)
         self.assertEqual(sum(c[:2] == ["docker", "pull"] for c in calls), 18)
         self.assertFalse(any(c[0] in ("az", "kubectl", "ate-setup", "kubectl-ate") for c in calls))
+
+    def test_actual_workflow_restore_provides_yaml_in_clean_python_without_downloads(self):
+        output, _, execute = self.exercise()
+        execute()
+        workflow = yaml.safe_load((ROOT / ".github/workflows/aks-e2e.yml").read_text())
+        step = next(s for s in workflow["jobs"]["scenario"]["steps"] if s.get("name", "").startswith("Restore only"))
+        script = step["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        runner = output.parent / "clean-scenario"
+        download = runner / "prepared-download"
+        download.mkdir(parents=True)
+        shutil.copyfile(output / "prepared.tar.gz", download / "prepared.tar.gz")
+        environment = dict(os.environ, RUNNER_TEMP=str(runner), GITHUB_ENV=str(runner / "environment"), GITHUB_PATH=str(runner / "paths"), PYTHONPATH="")
+        subprocess.run([sys.executable, "-S", "-c", script], env=environment, check=True)
+        restored = {key: value for key, _, value in (line.partition("=") for line in (runner / "environment").read_text().splitlines())}
+        self.assertIn("PYTHONPATH", restored)
+        result = subprocess.run([sys.executable, "-S", "-c", "import yaml; assert yaml.__version__ == '6.0.3'; assert yaml.safe_load('restored: true') == {'restored': True}"], env=dict(environment, **restored), capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_signature_failure_refuses_artifact_without_raw_diagnostics(self):
         output, calls, execute = self.exercise(bad_signature=True)

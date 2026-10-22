@@ -108,6 +108,8 @@ def prepare(output, source, publish_id, verify_id):
     tool_audit.write_report(decisions, Path(os.environ["RUNNER_TEMP"]) / "aks-tool-report")
     if tool_audit.integrity_failed(decisions):
         raise ValueError("runner tool integrity failed before provisioning")
+    python_deps = output / "python-deps"
+    command([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--only-binary=:all:", "--no-deps", "--no-compile", "--target", python_deps, "-r", ROOT / "charts/aks-durable-agents/tests/requirements.txt"])
     helm = Path(command(["which", "helm"]).decode().strip()).resolve()
     goroot = Path(command(["go", "env", "GOROOT"]).decode().strip()).resolve()
     with tarfile.open(output / "prepared.tar.gz", "w:gz") as archive:
@@ -116,6 +118,7 @@ def prepare(output, source, publish_id, verify_id):
         archive.add(runner_tools, arcname="runner-tools")
         archive.add(helm, arcname="runner-tools/helm")
         archive.add(goroot, arcname="go-toolchain")
+        archive.add(python_deps, arcname="python-deps")
         archive.add(Path(os.environ["RUNNER_TEMP"]) / "aks-tool-report", arcname="tool-report")
         for filename in ("substrate-images.json", "substrate-publication.json"):
             archive.add(output / "verified" / filename, arcname="verified/" + filename)
