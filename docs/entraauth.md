@@ -202,17 +202,19 @@ without a tenant, credentials, or any cloud calls:
 go test -race -count=1 -run TestGRPCAuthentication ./entraauth
 ```
 
-The `go.mod` requirement selects canonical upstream Sessions commit
-`f18a2cb1454d1eea0c9e9063646a5251653bd95e`, pseudo-version
-`v0.2.1-0.20261019224537-f18a2cb1454d`, with no fork replacement. It includes the
+The `go.mod` requirement selects canonical upstream Sessions **v0.3.0**
+(commit `bcbd4d9dcb352a10444119c2e6f75b4715dc68e0`), with no fork replacement.
+It includes the
 merged [authentication seam (#180)](https://github.com/agent-primitives/sessions/pull/180)
 (`NewInterceptors`, `CallerVerifier`, `Caller`); the Entra verifier contract is
 unchanged. Unary authentication is admission-only: a completed handler result is
 not overwritten solely because its context ended during execution. Streaming
 expiry enforcement remains in the upstream interceptor.
 
-This is still an unreleased development pin, not delivery of
-[per-RPC authorization (#190)](https://github.com/agent-primitives/sessions/pull/190)
-or approval attribution. When a compatible release includes the required seams,
-update the requirement and run `go mod tidy`, then rerun the host and chart
-checks. Do not select v0.2.0, which lacks the authentication seam.
+The release also supplies opt-in
+[per-RPC authorization (#190)](https://github.com/agent-primitives/sessions/pull/190),
+but this host does not enable it. The pin alone does not provide required-mode
+resource authorization or verified approval attribution; the [remaining host
+work](host.md#what-still-belongs-upstream) is unchanged. Do not select v0.2.0,
+which lacks the authentication seam. Follow the [journal upgrade warning](host.md#configuration-and-local-build)
+before opening retained state with this release.

@@ -34,8 +34,8 @@ Offline tests do not close live qualification items.
 - **Blocked — preferred isolation: single-host Substrate with gVisor.** This
   chart does not install Substrate; its fixture pod is not a sandbox. Preview 0
   keeps this path eligible if these prerequisites land in time:
-  - Release and qualify the [snapshot-fidelity change](https://github.com/agent-primitives/sessions/pull/181)
-    plus held-snapshot validation: exact recorded checkpoint, suspended state,
+  - Qualify the released [snapshot-fidelity change](https://github.com/agent-primitives/sessions/pull/181)
+    plus held-snapshot validation in v0.3.0: exact recorded checkpoint, suspended state,
     observed fidelity and newest-generation durable completion; no fallback to
     an older completed snapshot.
   - Qualify compatible released sessions, Substrate adapter, runtime and Blob
@@ -65,25 +65,25 @@ release and recovery checks are conditional on including Substrate.
 
 ## 2. No unreleased dependencies — blocked
 
-- **Blocked — released sessions with authn and per-RPC authorization.**
-  [The current module](../go.mod) selects canonical upstream commit `f18a2cb1454d`,
-  including the merged [authentication seam](https://github.com/agent-primitives/sessions/pull/180),
-  with no fork replacement. It is still an unreleased pseudo-version; the latest
-  release checked, [v0.2.0](https://github.com/agent-primitives/sessions/releases/tag/v0.2.0),
-  does not supply that seam. [Per-RPC authorization (#190)](https://github.com/agent-primitives/sessions/pull/190)
-  remains pending, as does approval attribution. Wait for a compatible release
-  that includes the required [authorization contract](https://github.com/agent-primitives/sessions/issues/127),
-  replace the pseudo-version pin, and rerun the host and chart checks.
-- **Blocked if Substrate is included — released adapter, Substrate and Blob.**
-  The sessions `integrations/substrate` adapter is a separate Go module with no
-  release tag yet; a root sessions release does not release that nested module.
-  Substrate [v0.5.0](https://github.com/agent-substrate/substrate/releases/tag/v0.5.0)
-  is released, but the [Azure Blob object-store plugin](https://github.com/agent-substrate/substrate/pull/2595)
-  is still an open PR. Select compatible released versions of all components,
-  including fidelity/held-snapshot fixes. Check actual selected modules with
-  `go list -m all` and `go mod graph`, pin images/assets, and qualify workload
-  identity, durable upload and recovery. A development adapter/server pin or
-  S3-compatible kind store does not meet Preview 0's released-Blob gate.
+- **In progress — released Sessions with authn and per-RPC authorization.**
+  [The current module](../go.mod) selects [v0.3.0](https://github.com/agent-primitives/sessions/releases/tag/v0.3.0),
+  including the [authentication seam](https://github.com/agent-primitives/sessions/pull/180)
+  and opt-in [per-RPC authorization (#190)](https://github.com/agent-primitives/sessions/pull/190),
+  with no fork replacement. This host does not enable resource authorization;
+  required-mode assembly and verified approval attribution remain unfinished.
+  Complete the required [authorization contract](https://github.com/agent-primitives/sessions/issues/127)
+  and qualify it here. The release pin alone does not close that work.
+- **Blocked if Substrate is included — released Blob and assembly qualification.**
+  Sessions' separate `integrations/substrate/v0.3.0` tag releases the adapter;
+  it requires Sessions v0.3.0 and Substrate [v0.5.0](https://github.com/agent-substrate/substrate/releases/tag/v0.5.0).
+  Those modules are selected, including fidelity/held-snapshot fixes. The
+  [Azure Blob object-store plugin](https://github.com/agent-substrate/substrate/pull/2595)
+  still needs a compatible release and qualification in this assembly. Check
+  actual selected modules with `go list -m all` and `go mod graph`, pin
+  images/assets, and qualify workload identity, durable upload and recovery.
+  Follow the [fresh-state Substrate reinstall warning](substrate.md#version-set);
+  do not reuse old runtime state. An S3-compatible kind store does not meet
+  Preview 0's released-Blob gate.
 
 ## 3. Usable by someone else — in progress
 

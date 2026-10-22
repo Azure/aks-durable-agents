@@ -98,11 +98,14 @@ fencing. The binary sets umask 077. Shutdown drains for ten seconds before
 canceling connections; completion still depends on handlers honoring cancellation.
 No Azure resource, RBAC, token acquisition or live inference is performed by tests.
 
-**Journal upgrade warning:** the pinned sessions dependency upgrades schema v4 to v5 on
-open, retaining event evidence and leaving authorization mode `off`. Stop old
-writers and back up the complete journal before first open. The older daemon
-cannot reopen v5: rollback requires restoring a compatible backup, not merely
-swapping the image back. RWO storage is not application writer fencing.
+**Journal upgrade warning:** Sessions v0.3.0 migrates older journals to schema v6
+on open, retaining event evidence and leaving authorization mode `off`. Stop all
+older writers and back up the complete journal (including its WAL, if present)
+before first open; upgrade every writer before restarting it. Older builds cannot
+reopen v6. There is no downgrade migration: rollback requires restoring a compatible
+backup, losing later writes, not merely swapping the image back. Use v0.3.0-aware
+readers for the new canonical record fields. RWO storage is not application writer
+fencing. See the [upstream compatibility notes](https://github.com/agent-primitives/sessions/blob/v0.3.0/CHANGELOG.md#compatibility).
 
 ## Bounded model policy and split-pod proof
 

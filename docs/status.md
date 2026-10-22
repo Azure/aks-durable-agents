@@ -45,15 +45,16 @@ and [external producer inputs](../ops/canvas/README.md#scope-and-prerequisites).
 
 ## Development dependencies
 
-This source depends on **unreleased development versions**:
+This source selects these **released module versions**:
 
-| Component | Selected development version |
+| Component | Selected release |
 | --- | --- |
-| Sessions root | `github.com/agent-primitives/sessions v0.2.1-0.20261019224537-f18a2cb1454d` |
-| Sessions Substrate adapter (separate module) | `github.com/agent-primitives/sessions/integrations/substrate v0.0.0-20261019224537-f18a2cb1454d` |
-| Substrate runtime/client | `github.com/agent-substrate/substrate v0.4.1-0.20261013053953-96dffb287919` |
+| Sessions root | `github.com/agent-primitives/sessions v0.3.0` |
+| Sessions Substrate adapter (separate module) | `github.com/agent-primitives/sessions/integrations/substrate v0.3.0` |
+| Substrate runtime/client | `github.com/agent-substrate/substrate v0.5.0` |
 
-All modules use canonical upstream sources, with no fork replacements. These are
-public development pins, not a released or qualified assembly. Sessions core and
-its separate Substrate adapter select the same commit. The runtime/client pin
-remains the adapter's compatible version; see [the version set](substrate.md#version-set).
+All modules use canonical upstream sources, with no fork replacements. Released
+dependencies do not make this a released or qualified assembly. Sessions core and
+its separate Substrate adapter have distinct release tags and commits; the adapter
+requires Sessions v0.3.0 and Substrate v0.5.0. See [the version set and fresh-state
+reinstall warning](substrate.md#version-set) and the [journal upgrade warning](host.md#configuration-and-local-build).
