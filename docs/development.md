@@ -17,7 +17,11 @@ python3 -B -m unittest discover -s ops/backup -p 'test_*.py'
 ```
 
 These exercise components with fake credentials and local test servers, not a
-cluster workflow. For the self-contained fake-model kind workflow, use
+cluster workflow. The unwired
+[local team proof state](../internal/squadproof/README.md) has separate admission,
+scoped executor and receipt-gated queue tests under
+`go test -race ./internal/squadproof`; it does not start a team or a cluster.
+For the self-contained fake-model kind workflow, use
 [`make demo`](../ops/demo/README.md); it builds its own client inside Docker.
 
 For Helm lint, rendering and refusal tests, use Helm **3.20.0** and the
