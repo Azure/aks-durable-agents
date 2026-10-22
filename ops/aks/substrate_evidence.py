@@ -26,7 +26,9 @@ class Evidence:
     """Own one new private directory and serial command evidence; never adopt paths."""
 
     def __init__(self, directory, run=lifecycle.command):
-        self.directory = Path(os.path.abspath(directory))
+        self.directory = Path(directory)
+        if not self.directory.is_absolute():
+            self.directory = Path.cwd() / self.directory
         self.run, self.fd = run, None
         self.cleanup_started, self.write_failed = False, False
         self.steps, self.secrets = [], set()
@@ -149,8 +151,14 @@ class Evidence:
             tool = Path(str(args[0])).name if args else "external"
             if tool not in OPERATIONS:
                 tool = "external"
-            operation = next((arg for arg in args[1:] if isinstance(arg, str)
-                              and arg in OPERATIONS.get(tool, set())), "other")
+            operation = "other"
+            arguments = iter(args[1:])
+            for arg in arguments:
+                if arg in ("--kubeconfig", "--context", "-C"):
+                    next(arguments, None)
+                elif isinstance(arg, str) and arg in OPERATIONS.get(tool, set()):
+                    operation = arg
+                    break
             self.steps.append({"sequence": sequence, "tool": tool, "operation": operation, "status": status})
             try:
                 self._write(f"{sequence:04d}.stderr.txt", self._scrub(b"".join(captured)))

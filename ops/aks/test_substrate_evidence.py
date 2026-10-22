@@ -60,6 +60,16 @@ class EvidenceTests(unittest.TestCase):
                 Evidence(path)
         self.assertFalse((self.root / "new").exists())
 
+    def test_symlink_followed_by_parent_component_is_not_normalized_away(self):
+        nested = self.root / "resolved" / "nested"
+        nested.mkdir(parents=True)
+        (self.root / "link").symlink_to(nested, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            evidence = Evidence(self.root / "link" / ".." / "evidence")
+            self.addCleanup(evidence.close)
+        self.assertFalse((self.root / "evidence").exists())
+        self.assertFalse((self.root / "resolved" / "evidence").exists())
+
     def test_relative_path_and_bound_fd_survive_chdir_and_directory_rename(self):
         original = Path.cwd()
         try:
@@ -122,6 +132,22 @@ class EvidenceTests(unittest.TestCase):
         self.assertNotIn("sensitive-binary-name", index)
         self.assertNotIn("private-argument", index)
         self.assertNotIn("private-context", index)
+
+    def test_operation_skips_caller_option_values_even_when_they_are_verbs(self):
+        def run(args, *, timeout, input=None, stderr_sink=None):
+            return b""
+        evidence = self.evidence(run=run)
+        commands = (
+            (["kubectl", "--kubeconfig", "/private/config", "--context", "delete", "get", "nodes"], "get"),
+            (["kubectl", "--kubeconfig", "/private/config", "--context", "get", "delete", "pod/probe"], "delete"),
+            (["kubectl-ate", "--kubeconfig", "/private/config", "--context", "resume", "create", "actor"], "create"),
+            (["git", "-C", "status", "rev-parse", "HEAD"], "rev-parse"),
+            (["git", "-C", "rev-parse", "status", "--porcelain"], "status"),
+        )
+        for command, expected in commands:
+            with self.subTest(command=command):
+                evidence.command(command, timeout=1)
+                self.assertEqual(evidence.steps[-1]["operation"], expected)
 
     def test_startup_error_does_not_store_exception_path_or_arguments(self):
         evidence = self.evidence()
