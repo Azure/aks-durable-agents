@@ -18,7 +18,7 @@ ROLLOUT_CONTROLLERS = frozenset((("DaemonSet", "nightly-profile"),
     ("Deployment", "kaimahi-aks-durable-agents-host"),
     ("Deployment", "kaimahi-aks-durable-agents-harness"), ("other", "other")))
 POD_REASONS = frozenset(("ImagePullBackOff", "ErrImagePull", "CrashLoopBackOff", "CreateContainerConfigError",
-                         "OOMKilled", "Unschedulable", "readiness probe failing", "other"))
+                         "ContainerCreating", "FailedMount", "OOMKilled", "Unschedulable", "readiness probe failing", "other"))
 _FINAL = {
     "version": 1, "profile": "aks", "model": "real", "approval": "simulated", "entra": "not-run",
     "modelCalls": 1, "fakeModelCalls": 0, "published": 1, "receipts": 1, "artifacts": 1,
@@ -105,7 +105,7 @@ def validate_rollout_status(value):
     if type(kind) is not str or type(name) is not str or (kind, name) not in ROLLOUT_CONTROLLERS:
         raise ValueError("invalid AKS rollout controller")
     reasons = value["podReasons"]
-    if type(reasons) is not list or not 1 <= len(reasons) <= 8:
+    if type(reasons) is not list or not 1 <= len(reasons) <= len(POD_REASONS):
         raise ValueError("invalid AKS rollout reasons")
     clean = []
     for reason in reasons:

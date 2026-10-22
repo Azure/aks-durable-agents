@@ -287,7 +287,7 @@ Controller pairs are only `DaemonSet/nightly-profile`,
 `Deployment/kaimahi-aks-durable-agents-host`,
 `Deployment/kaimahi-aks-durable-agents-harness`, or `other/other`. Sorted, unique
 reasons are limited to `ImagePullBackOff`, `ErrImagePull`, `CrashLoopBackOff`,
-`CreateContainerConfigError`, `OOMKilled`, `Unschedulable`,
+`CreateContainerConfigError`, `ContainerCreating`, `FailedMount`, `OOMKilled`, `Unschedulable`,
 `readiness probe failing`, and `other`. The readiness label is reserved: core/v1
 Pod status does not prove a probe-specific cause, so this producer never derives
 it from generic unready state or messages. Unknown/unsupported status is `other`.
