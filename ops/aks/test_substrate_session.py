@@ -48,7 +48,7 @@ class NativeBindingTests(unittest.TestCase):
         image = "registry.example/fixture@sha256:" + "a" * 64
         pool, template = s.application_bundle(bundle, image)
         self.assertEqual(pool["metadata"]["namespace"], s.APP)
-        self.assertEqual(template["containers"], [{"name": "harness", "image": image, "command": ["/session-fixture", "actor-harness"], "volumeMounts": [{"name": "data", "mountPath": "/durable"}]}])
+        self.assertEqual(template["containers"], [{"name": "harness", "image": image, "command": ["/session-fixture", "actor-harness"], "wakeupProbe": {"httpGet": {"path": "/readyz", "port": 8081}, "timeoutSeconds": 30}, "volumeMounts": [{"name": "data", "mountPath": "/durable"}]}])
         self.assertEqual(template["snapshotConfig"]["goldenSnapshotConfig"]["mode"], "GOLDEN_SNAPSHOT_MODE_DISABLED")
         self.assertNotIn("/data", str(template))
         with self.assertRaises(ValueError): s.application_bundle(bundle, "fixture:latest")

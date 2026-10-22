@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Azure/aks-durable-agents/internal/host"
@@ -77,6 +78,57 @@ func (n *nativeScenario) counts() [2]int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return [2]int{n.resumes, n.suspends}
+}
+
+func TestSubstratePlacementWriteFailureNeverInvokesHarness(t *testing.T) {
+	n := &nativeScenario{t: t}
+	control := grpc.NewServer()
+	atepb.RegisterControlServer(control, n)
+	t.Cleanup(control.Stop)
+	controlHTTP := httptest.NewUnstartedServer(control)
+	controlHTTP.EnableHTTP2 = true
+	controlHTTP.StartTLS()
+	t.Cleanup(controlHTTP.Close)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int64
+	router := grpc.NewServer(
+		grpc.UnaryInterceptor(func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, next grpc.UnaryHandler) (any, error) {
+			calls.Add(1)
+			return next(ctx, req)
+		}),
+		grpc.StreamInterceptor(func(srv any, stream grpc.ServerStream, _ *grpc.StreamServerInfo, next grpc.StreamHandler) error {
+			calls.Add(1)
+			return next(srv, stream)
+		}))
+	v1.RegisterHarnessServer(router, harnesswire.NewServer(fixture.ActorHarness()))
+	go router.Serve(listener)
+	t.Cleanup(router.Stop)
+	d := newDemo(t, func(d *demo) {
+		d.stopHarness()
+		ca, token := filepath.Join(d.data, "control-ca.pem"), filepath.Join(d.data, "control-token")
+		if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: controlHTTP.Certificate().Raw}), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(token, []byte("control-test"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		n.placement = filepath.Join(d.data, "missing-parent", "proof.json")
+		d.cfg.Harnesses, d.cfg.HarnessService, d.cfg.PeerNodeFile, d.cfg.NodeName = nil, "", "", ""
+		d.cfg.Substrate = &host.SubstrateConfig{Harness: "release-notes", ActorAtespace: "app", TemplateAtespace: "assets", Template: "release-notes", ControlAddr: strings.TrimPrefix(controlHTTP.URL, "https://"), RouterAddr: listener.Addr().String(), CAFile: ca, TokenFile: token, PlacementFile: n.placement}
+	})
+	_, err = d.rpc("park")
+	if err == nil || !strings.Contains(err.Error(), "placement proof") {
+		t.Fatalf("expected placement persistence failure: %v", err)
+	}
+	if n.counts()[0] != 1 || calls.Load() != 0 {
+		t.Fatalf("RUNNING write failure reached harness: resumes=%v harness=%d", n.counts(), calls.Load())
+	}
+	if got := d.evidence(); got["realModelCalls"] != float64(0) || got["publicationCount"] != float64(0) {
+		t.Fatalf("failed placement performed work: %v", got)
+	}
 }
 
 func TestSubstrateApprovalParkRestartContinueReplay(t *testing.T) {

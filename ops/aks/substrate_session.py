@@ -52,7 +52,7 @@ def application_bundle(bundle, image):
     pool["metadata"] = {"name": APP, "namespace": APP, "labels": {"workload": APP}}
     template = copy.deepcopy(bundle["actorTemplate"])
     template.update(metadata={"atespace": APP, "name": "release-notes"}, workerSelector={"matchLabels": {"workload": APP}},
-        containers=[{"name": "harness", "image": image, "command": ["/session-fixture", "actor-harness"], "volumeMounts": [{"name": "data", "mountPath": "/durable"}]}],
+        containers=[{"name": "harness", "image": image, "command": ["/session-fixture", "actor-harness"], "wakeupProbe": {"httpGet": {"path": "/readyz", "port": 8081}, "timeoutSeconds": 30}, "volumeMounts": [{"name": "data", "mountPath": "/durable"}]}],
         resources={"limits": [{"name": "cpu", "quantity": "1"}, {"name": "memory", "quantity": "1Gi"}]},
         snapshotConfig={"preferredFidelity": "SNAPSHOT_FIDELITY_VOLUMES", "storageLocation": "s3://ate-snapshots/sessions/", "goldenSnapshotConfig": {"mode": "GOLDEN_SNAPSHOT_MODE_DISABLED"}})
     return pool, template
@@ -192,7 +192,7 @@ class SubstrateScenario(nightly.Scenario):
     def network(self, phase):
         self.nodes_ready()
         self.check_policies()
-        jobs, actions = {}, []
+        actions = []
         try:
             peer = nightly.listener("actor-peer", {"nightly-probe": "peer"})
             actions.append(("peer", lambda: self.kube("delete", "pod/actor-peer", "--ignore-not-found", "--wait=true", "--timeout=30s", namespace=PROBES, cleanup=True)))

@@ -2,15 +2,21 @@ package sessionfixture
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agent-primitives/sessions/api"
+	v1 "github.com/agent-primitives/sessions/api/genpb"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func TestActorPlacementEvidenceReadsOnlyPrivateFixedFile(t *testing.T) {
@@ -59,9 +65,53 @@ func TestActorHarnessCapabilityCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	desc, _ := newHarnessScenario("v2").Describe(t.Context())
-	want := map[string]any{"version": float64(1), "mode": "actor-v2", "harness": "release-notes", "protocol": "harnesswire", "port": float64(80), "resumability": "STATELESS_REPLAY", "descriptor": desc.Version}
+	want := map[string]any{"version": float64(1), "mode": "actor-v2", "harness": "release-notes", "protocol": "harnesswire", "port": float64(80), "resumability": "STATELESS_REPLAY", "descriptor": desc.Version, "readinessPort": float64(8081), "readinessPath": "/readyz"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("capability mismatch: %v", got)
+	}
+}
+
+func TestActorHarnessReadinessImpliesBoundGRPCAndStopsWithContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	reader, writer := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- RunCLI(ctx, []string{"actor-harness", "--addr", "127.0.0.1:0"}, writer, io.Discard) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Error(err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("actor listeners did not stop")
+		}
+		reader.Close()
+		writer.Close()
+	})
+	var started map[string]string
+	if err := json.NewDecoder(reader).Decode(&started); err != nil {
+		t.Fatal(err)
+	}
+	if started["readinessAddr"] == "" {
+		t.Fatal("native wakeup readiness listener missing")
+	}
+	client := &http.Client{Timeout: time.Second}
+	response, err := client.Get("http://" + started["readinessAddr"] + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatal(response.StatusCode)
+	}
+	conn, err := grpc.NewClient(started["addr"], grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := v1.NewHarnessClient(conn).Describe(ctx, &v1.DescribeRequest{}); err != nil {
+		t.Fatalf("ready actor could not Describe: %v", err)
 	}
 }
 

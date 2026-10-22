@@ -31,9 +31,11 @@ class InputGateTests(unittest.TestCase):
         self.assertIn("--network=none", command)
 
     def test_selected_digest_must_own_actor_entrypoint_not_just_exist(self):
-        good = {"version": 1, "mode": "actor-v2", "harness": "release-notes", "protocol": "harnesswire", "port": 80, "resumability": "STATELESS_REPLAY", "descriptor": "release-v2-real-model-" + "a" * 64}
+        good = {"version": 1, "mode": "actor-v2", "harness": "release-notes", "protocol": "harnesswire", "port": 80, "resumability": "STATELESS_REPLAY", "descriptor": "release-v2-real-model-" + "a" * 64, "readinessPort": 8081, "readinessPath": "/readyz"}
         p.actor_capability(good)
-        for key, value in (("version", True), ("mode", "legacy"), ("port", 9000), ("resumability", "MEMORY"), ("descriptor", "old-image"), ("extra", "untrusted")):
+        legacy = {k: v for k, v in good.items() if not k.startswith("readiness")}
+        with self.assertRaises(ValueError): p.actor_capability(legacy)
+        for key, value in (("readinessPort", 9000), ("readinessPath", "/wrong"), ("version", True), ("mode", "legacy"), ("port", 9000), ("resumability", "MEMORY"), ("descriptor", "old-image"), ("extra", "untrusted")):
             changed = copy.deepcopy(good)
             changed[key] = value
             with self.subTest(key=key), self.assertRaises(ValueError): p.actor_capability(changed)

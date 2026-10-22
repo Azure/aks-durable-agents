@@ -32,7 +32,7 @@ def verified_run(run, expected):
 
 
 def actor_capability(value):
-    fixed = {"version": 1, "mode": "actor-v2", "harness": "release-notes", "protocol": "harnesswire", "port": 80, "resumability": "STATELESS_REPLAY"}
+    fixed = {"version": 1, "mode": "actor-v2", "harness": "release-notes", "protocol": "harnesswire", "port": 80, "resumability": "STATELESS_REPLAY", "readinessPort": 8081, "readinessPath": "/readyz"}
     if type(value) is not dict or value.keys() != {*fixed, "descriptor"} or any(type(value[k]) is not type(v) or value[k] != v for k, v in fixed.items()) or not isinstance(value["descriptor"], str) or not re.fullmatch(r"release-v2-real-model-[0-9a-f]{64}", value["descriptor"]):
         raise ValueError("published harness lacks the frozen actor entrypoint")
 

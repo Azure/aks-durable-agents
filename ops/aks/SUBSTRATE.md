@@ -314,6 +314,11 @@ projected KSA token for audience `api.ate-system.svc`, with the live serving-DNS
 ClusterTrustBundle. The private h2c router carries the host-initiated harnesswire
 stream to actor port80; model/tool requests return on that stream. No actor→host
 callback listener, host PVC or provider/executor credentials are needed.
+The native template gates each Resume on HTTP `/readyz` at actor port8081,
+served only after the harness listener is bound. The explicit 30-second probe
+bound matches the native default and stays inside the original work deadline;
+it is not a runtime retry or a larger run budget. The capability check requires
+this readiness contract before accepting an image.
 
 The chart's explicit `runtime.mode=substrate` renders host and **separate executor
 Pods**, with same-node RWO affinity for their Unix socket. Executor has no WI or

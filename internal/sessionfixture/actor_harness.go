@@ -3,9 +3,12 @@ package sessionfixture
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"time"
 
 	"github.com/agent-primitives/sessions/api"
 	v1 "github.com/agent-primitives/sessions/api/genpb"
@@ -30,18 +33,53 @@ func runActorHarness(ctx context.Context, addr string, check bool, out io.Writer
 		if err != nil {
 			return err
 		}
-		return json.NewEncoder(out).Encode(map[string]any{"version": 1, "mode": "actor-v2", "harness": d.ID, "protocol": "harnesswire", "port": 80, "resumability": "STATELESS_REPLAY", "descriptor": d.Version})
+		return json.NewEncoder(out).Encode(map[string]any{"version": 1, "mode": "actor-v2", "harness": d.ID, "protocol": "harnesswire", "port": 80, "resumability": "STATELESS_REPLAY", "descriptor": d.Version, "readinessPort": 8081, "readinessPath": "/readyz"})
 	}
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
+	readyAddr := "0.0.0.0:8081"
+	if addr != "0.0.0.0:80" {
+		host, _, _ := net.SplitHostPort(addr) // validated literal loopback above
+		readyAddr = net.JoinHostPort(host, "0")
+	}
+	readyListener, err := net.Listen("tcp", readyAddr)
+	if err != nil {
+		return err
+	}
+	defer readyListener.Close()
 	server := grpc.NewServer()
 	defer server.Stop()
 	v1.RegisterHarnessServer(server, harnesswire.NewServer(h))
-	if err := json.NewEncoder(out).Encode(map[string]any{"addr": listener.Addr().String(), "mode": "actor-v2", "harness": "release-notes", "resumability": "STATELESS_REPLAY"}); err != nil {
+	if err := json.NewEncoder(out).Encode(map[string]any{"addr": listener.Addr().String(), "readinessAddr": readyListener.Addr().String(), "mode": "actor-v2", "harness": "release-notes", "resumability": "STATELESS_REPLAY"}); err != nil {
 		return err
 	}
-	return serveGRPC(ctx, server, listener)
+	// Native wakeup polls this only after the harness listener is bound. A
+	// started process alone is not readiness for the first Describe after Resume.
+	serveCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	ready := &http.Server{ReadHeaderTimeout: time.Second, WriteTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/readyz" || r.URL.RawQuery != "" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})}
+	readyDone := make(chan error, 1)
+	go func() {
+		readyDone <- ready.Serve(readyListener)
+		stop()
+	}()
+	grpcErr := serveGRPC(serveCtx, server, listener)
+	closeErr := ready.Close()
+	readyErr := <-readyDone
+	if grpcErr != nil {
+		return grpcErr
+	}
+	if readyErr != nil && !errors.Is(readyErr, http.ErrServerClosed) {
+		return readyErr
+	}
+	return closeErr
 }

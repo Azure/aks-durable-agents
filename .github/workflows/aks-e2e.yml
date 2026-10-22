@@ -214,7 +214,7 @@ jobs:
   create:
     needs: [config, preflight, substrate-inputs]
     if: >-
-      ${{ always() && needs.config.outputs.scenario == 'true' && needs.preflight.result == 'success' &&
+      ${{ !cancelled() && needs.config.outputs.scenario == 'true' && needs.preflight.result == 'success' &&
           (needs.config.outputs.variant != 'substrate-gvisor' || needs.substrate-inputs.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 3

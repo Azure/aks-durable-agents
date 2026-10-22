@@ -10,7 +10,7 @@ for role in host session-fixture; do
   image="$prefix/$role:local"
   [[ $(docker image inspect --format '{{.Config.User}}' "$image") == 65532:65532 ]]
   container=$(docker run -d --network none --read-only --tmpfs /tmp:uid=65532,gid=65532,mode=0700 --entrypoint /session-fixture "$image" fake --addr 127.0.0.1:9001 --ledger /tmp/keepalive/fake-calls.jsonl)
-  docker exec "$container" /session-fixture actor-harness --check | python3 -c 'import json,re,sys; d=json.load(sys.stdin); assert d["mode"] == "actor-v2" and d["port"] == 80 and d["resumability"] == "STATELESS_REPLAY" and re.fullmatch("release-v2-real-model-[0-9a-f]{64}",d["descriptor"])'
+  docker exec "$container" /session-fixture actor-harness --check | python3 -c 'import json,re,sys; d=json.load(sys.stdin); assert d["mode"] == "actor-v2" and d["port"] == 80 and d["resumability"] == "STATELESS_REPLAY" and d["readinessPort"] == 8081 and d["readinessPath"] == "/readyz" and re.fullmatch("release-v2-real-model-[0-9a-f]{64}",d["descriptor"])'
   docker exec -d "$container" /session-fixture actor-harness
   ready=false
   for _ in {1..10}; do
@@ -18,6 +18,7 @@ for role in host session-fixture; do
     sleep 0.1
   done
   [[ "$ready" == true ]]
+  docker exec "$container" /session-fixture network-probe --address 127.0.0.1:8081 --expect allowed
   docker exec "$container" /session-fixture init --scenario v1 --data /tmp/v1
   docker exec "$container" /session-fixture evidence --scenario v1 --data /tmp/v1 | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["publicationCount"] == data["receiptCount"] == data["fakeModelCalls"] == 0'
   docker exec "$container" /session-fixture init --scenario v2 --data /tmp/v2

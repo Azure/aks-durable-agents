@@ -27,7 +27,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("substrate-inputs", jobs["create"]["needs"])
         self.assertIn("needs.preflight.result == 'success'", jobs["create"]["if"])
         self.assertIn("needs.substrate-inputs.result == 'success'", jobs["create"]["if"])
-        self.assertIn("always()", jobs["create"]["if"])
+        self.assertIn("!cancelled()", jobs["create"]["if"])
+        self.assertNotIn("always()", jobs["create"]["if"])
         source = next(s for s in prepared["steps"] if s.get("with", {}).get("repository") == "agent-substrate/substrate")
         self.assertEqual(source["with"]["ref"], "e8d40c33f96f4b7a4984bfea7334a36ab5b45b7b")
         runs = [s.get("run", "") for s in prepared["steps"]]

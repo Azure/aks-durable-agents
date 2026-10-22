@@ -62,7 +62,7 @@ class PreparationTests(unittest.TestCase):
                 raw = json.dumps({"SPDXID": "SPDXRef-DOCUMENT", "spdxVersion": "SPDX-2.3", "dataLicense": "CC0-1.0", "name": "image", "documentNamespace": "https://example.invalid/sbom", "creationInfo": {"creators": ["Tool: syft"], "created": "2026-10-22T00:00:00Z"}, "packages": [{"SPDXID": "SPDXRef-package", "name": "binary", "downloadLocation": "NOASSERTION"}]}).encode()
             elif argv[:2] == ["docker", "run"]:
                 assert argv[argv.index("--entrypoint") + 1] == "/session-fixture" and argv[-2:] == ["actor-harness", "--check"] and "--network=none" in argv
-                raw = json.dumps({"version": 0} if old_actor else {"version": 1, "mode": "actor-v2", "harness": "release-notes", "protocol": "harnesswire", "port": 80, "resumability": "STATELESS_REPLAY", "descriptor": "release-v2-real-model-" + "a" * 64}).encode()
+                raw = json.dumps({"version": 0} if old_actor else {"version": 1, "mode": "actor-v2", "harness": "release-notes", "protocol": "harnesswire", "port": 80, "resumability": "STATELESS_REPLAY", "descriptor": "release-v2-real-model-" + "a" * 64, "readinessPort": 8081, "readinessPath": "/readyz"}).encode()
             elif argv[:2] == ["git", "-C"]:
                 raw = (substrate_images.SUBSTRATE_COMMIT if argv[-1] == "HEAD" else "").encode()
             elif argv[:2] == ["go", "build"]:
