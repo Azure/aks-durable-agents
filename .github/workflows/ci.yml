@@ -30,14 +30,31 @@ jobs:
         run: go vet ./...
       - name: Race tests
         run: go test -race ./...
+      - name: Non-shipping proof fixtures
+        run: |
+          go test -tags squadproof -list '^TestProofBuildBoundary$' ./internal/squadproof | grep -x TestProofBuildBoundary
+          go test -race -tags squadproof ./internal/squadproof
+          go vet -tags squadproof ./internal/squadproof ./cmd/squad-proof
+          go build -tags squadproof -o "$RUNNER_TEMP/squad-proof" ./cmd/squad-proof
+          go list -deps ./cmd/host ./cmd/demo-host ./cmd/demo-client ./cmd/session-fixture > "$RUNNER_TEMP/shipped-deps"
+          if grep -qx github.com/Azure/aks-durable-agents/internal/squadproof "$RUNNER_TEMP/shipped-deps"; then
+            echo 'proof code is reachable from a shipped command' >&2
+            exit 1
+          fi
+          if go build -o "$RUNNER_TEMP/unexpected-proof" ./cmd/squad-proof 2> "$RUNNER_TEMP/proof-default.log"; then
+            echo 'proof command compiled without its explicit build tag' >&2
+            exit 1
+          fi
+          grep -q 'build constraints exclude all Go files' "$RUNNER_TEMP/proof-default.log"
       - name: Staticcheck
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
-          staticcheck ./...
+          staticcheck -tags squadproof ./...
       - name: Vulnerability check
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           govulncheck ./...
+          govulncheck -tags squadproof ./internal/squadproof ./cmd/squad-proof
 
   runner_tools:
     name: AKS runner tool report
