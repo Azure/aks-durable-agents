@@ -1,15 +1,16 @@
-# Read-only test-environment planning
+# Test-environment bootstrap
 
-`bootstrap.py` inventories an existing test tenant and subscription and reports
-missing or mismatched setup dependencies. It does not create an environment.
-The default command is a read-only plan; `check` uses the same observations.
-Neither command changes Azure, Entra or GitHub configuration.
+`bootstrap.py` inventories test-environment dependencies and can manage a fixed
+set of persistent Azure prerequisites. The default command is a read-only plan;
+`check` is also read-only. Explicit `apply` and `destroy` commands produce dry-run
+plans unless execution and an exact reviewed plan are both supplied. No command
+writes Entra or GitHub configuration.
 
 This is an operator tool. It uses existing Azure CLI and GitHub CLI sessions.
 It never signs in, changes the default subscription, installs CLI extensions,
 requests Kubernetes credentials, starts clusters, issues human tokens, calls a
-model, enables workflows or dispatches a scenario. There are no `apply` or
-`destroy` commands.
+model, enables workflows or dispatches a scenario. Azure writes require an
+operator's separate approval of the exact list; generating a plan is not approval.
 
 ## Run
 
@@ -47,9 +48,112 @@ names as single path segments, including spaces, slashes and Unicode, up to
 GitHub's 255-character limit; unrelated environment names do not change the
 expected `nightly-aks` dependency.
 
-## Results and limits
+## Azure apply and destroy
 
-Output is versioned JSON, not an executable apply plan. A missing dependency is
+The optional closed `setup` configuration enables the Azure resource component.
+It supplies `modelMode` (`create` or `reference`), the underlying `modelName`
+(independent of the deployment name), an explicit provider-registration allowlist,
+and a reviewed budget configuration. Existing configurations without `setup`
+continue to use the original read-only plan/check behavior.
+
+The budget profile is subscription-wide USD100 Monthly Cost, with actual
+50/80/100-percent and forecast100-percent email notifications. Supply its name,
+amount, currency, email and active first-of-month start/end dates spanning one
+year. USD is an operator assertion when the service cannot yet return currency;
+missing currency data is not proof. Dates and recipients are never refreshed on
+rerun. Apply requires an active period; an expired period does not prevent exact
+owned teardown. Read-only checks can report expiry as a blocker without making
+the configuration unreadable. At a month boundary, an approval plan can become
+stale; re-plan rather than relaxing the date checks. Budget alerts are delayed and do not stop spend.
+
+The fixed Azure resource set is:
+
+- Only explicitly approved missing registrations among ContainerService, Compute,
+  Network, Storage, ManagedIdentity, CognitiveServices and Consumption.
+- The budget, nightly cluster/identity resource groups, two user-assigned managed
+  identities and the CI GitHub federated credential.
+- Two narrow custom roles and exactly five scoped grants described in the
+  [nightly authorization contract](README.md). Role assignments use `principalId`,
+  not the client ID used by consumers. No CI subscription-wide Contributor,
+  role-assignment-write or arbitrary node-group-delete authority is added.
+- In model-create mode: a dedicated shared-model group, OpenAI S0 account with
+  local keys disabled and public network enabled, and the explicit configured
+  model/version/SKU/capacity deployment. The profile uses OpenAI format,
+  Microsoft.DefaultV2 and OnceNewDefaultVersionAvailable. Reference mode never
+  creates or resizes the account/deployment. An owned model-use grant may target
+  the explicitly approved referenced account without changing its properties.
+
+There is no cluster/node-group creation, runtime model credential, inference,
+Graph writer, GitHub writer, secret/key operation or implicit adoption. Unexpected
+federation/grants, incompatible configuration and soft-deleted model-name
+collisions block rather than being repaired, purged or restored automatically.
+
+Generate the Azure approval plan with private permissions:
+
+```sh
+umask 077
+python3 -B ops/aks/bootstrap.py apply \
+  --config "$HOME/.config/aks-test/environment.json" > "$HOME/.config/aks-test/apply-plan.json"
+```
+
+Review its exact targets, scopes, permissions, configuration/body digests,
+blockers and retained resources together with the private configuration. Only
+after the operator approves that list:
+
+```sh
+python3 -B ops/aks/bootstrap.py apply \
+  --config "$HOME/.config/aks-test/environment.json" \
+  --execute --plan "$HOME/.config/aks-test/apply-plan.json"
+```
+
+The tool recomputes the plan from configuration and fresh cloud state; the file
+cannot select arbitrary methods, URLs or bodies. It must be an owner-private
+regular file, not a symlink, within the input-size limit. A stale/tampered plan,
+failed read or ownership ambiguity stops before writes. The plan gate is explicit
+operator input, not a claim that every nested Azure CLI call has its own harness
+approval prompt. Do not invoke execution without the separate live-apply go.
+
+Writes are bounded by one overall deadline and a nonblocking local operator lock.
+Targets, ownership parents and authorization edges are re-read before changes
+and checked afterward. Only related topology affects the state fingerprint;
+unrelated subscription activity and spend telemetry do not stale a plan. The
+operation reuses unrelated collection observations in memory, never as an ownership
+receipt. It makes a full security read before CI federation and a final full read.
+Reads may poll asynchronous provisioning, but failed writes are not blindly retried.
+There is no distributed transaction or automatic broad rollback. After an
+interruption, rediscover cloud state and review a new remaining-action plan;
+never reset credentials or erase unknown resources to make a rerun pass.
+
+`destroy --config ...` also defaults to a dry run and requires its own reviewed
+plan plus `--execute`. Default teardown retains the shared model, budget and
+identity-group anchor, including an otherwise empty tagged anchor group.
+`destroy --include-shared` is a separate destructive plan for owned shared-model
+and budget removal. References are never deleted. Unknown children, external
+model grants, a live cluster, runtime model federation or managed-node-group
+leftovers block. Providers are never unregistered; only empty owned groups can
+be removed, and the anchor survives until its dependents are confirmed gone.
+Soft deletion is not a purge or a guarantee that a model name can be reused.
+
+Before any nonempty apply/delete plan can execute, the tool reads the repository's
+target mapping and scenario flag and checks active/pending runs of the e2e and
+cleanup workflows. Missing repository mappings may inherit organization values,
+so they are treated as potentially targeted: require an explicit repository-level
+scenario `false` unless a different target is established. An enabled/unknown
+scenario, active run or unreadable GitHub state blocks. Keep scenario dispatch disabled throughout teardown; leave bootstrap
+cleanup enabled while transient cleanup is still needed. Quiescence is rechecked
+before the first write, CI federation activation and each group deletion. This is not instant revocation
+of previously issued tokens or protection against another administrator racing
+the operation. No flags or workflows are changed by this command.
+
+## Read-only results and limits
+
+The original plan/check output is versioned JSON, not an executable apply plan.
+With `setup`, it also includes `azureSetup` and `coverage.azureSetup`, exercising
+the Azure component's ownership, budget, role and federation checks. Its original
+coverage limits below still apply outside that component. Azure dry-run plans
+exit `0` when unblocked even if they propose writes, `2` for plan blockers, and
+`1` for input/read/execution errors. Invalid CLI flag combinations exit `2`
+before remote calls. Successful execution does not imply full readiness. A missing dependency is
 an advisory create recommendation, never authorization to create it. Existing
 resources can be references without being owned. Plans report safe selected
 fields, not raw provider responses, application notes, human tokens or passwords.
@@ -124,13 +228,21 @@ Service-principal tags can include inherited application tags. Only a verified
 relationship to an owned application can establish the corresponding service
 principal's ownership. A tagged parent does not automatically own every child.
 Federated credentials, budgets, custom roles, assignments and users have no
-generic ownership tag field. They remain unowned/reference in this read-only
-foundation; exact cloud anchors and supported application-note registries must
-be defined and validated with the operations that manage them. Raw notes are
-never an arbitrary URL source or a substitute for validating a referenced object.
+generic ownership tag field. The Azure setup component uses fixed slots on the
+tagged identity resource group for its budget, role and grant IDs and CI-federation
+relationship; the owned model account anchors its exact deployment. Slots are
+reserved and read back before creating these untaggable objects. Short fixed
+values respect Azure's tag limits, and metadata Merge preserves unrelated tags.
+A slot alone is insufficient: the live type, fixed GUID, scope, definition and
+relationship must also match. Azure ownership's topology stamp excludes human
+configuration, budget contact/date fields and local profile paths. An absent reserved object is recoverable creation on apply and
+nothing to delete on destroy. Human-user/application-note registries remain
+outside this component. Raw notes are never an arbitrary URL source or a
+substitute for validating a referenced object.
 
-Existing unmarked resources remain references. This tool does not add tags,
-adopt old resources, delete unexpected children or repair grants. An ambiguous
+Existing unmarked resources remain references. Only newly created resources
+receive ownership tags; the tool never adopts old resources, deletes unexpected
+children or broadly repairs grants. An ambiguous
 create whose ownership marker was never persisted needs explicit operator
 recovery. Do not use a broad resource-group deletion to recover it. The nightly
 cluster and its temporary model credential remain owned by the existing
@@ -138,9 +250,9 @@ lifecycle/cleanup contract, not by this planner.
 
 ## Operator checkpoints
 
-The intended end-to-end setup has eight checkpoints. Only read-only discovery
-and advisory planning are available here; create/update/delete operations need
-separately implemented tooling and approval of their exact list.
+The intended end-to-end setup has eight checkpoints. Azure apply/destroy is
+limited to the fixed resource component above; the remaining human/repository
+and qualification work stays separate. All live writes need exact-list approval.
 
 1. Obtain the fresh tenant, subscription, billing linkage and initial admin
    authority. Choose explicit targets; do not reuse identifiers from an expired

@@ -108,6 +108,9 @@ class ReadOnly:
         elif service == "github":
             suffix = p.path[len(self.repo):] if p.path.startswith(self.repo) else None
             allowed = ("", "/actions/oidc/customization/sub", "/environments", "/actions/variables", "/actions/secrets", "/actions/organization-secrets")
+            workflow = re.fullmatch(r"/actions/workflows/(aks-e2e\.yml|aks-cleanup\.yml)/runs", suffix or "")
+            workflow_query = (bool(workflow) and set(q) == {"status", "page", "per_page"}
+                              and q.get("status") in ("queued", "in_progress", "waiting", "pending", "requested"))
             match = re.fullmatch(r"/environments/([^/]+)/(deployment-branch-policies|secrets|variables)", suffix or "")
             environment = False
             if match:
@@ -117,8 +120,8 @@ class ReadOnly:
                     environment = environment_segment(unquote(match[1], errors="strict")) == match[1]
                 except (InventoryError, UnicodeDecodeError):
                     environment = False
-            if (p.scheme or p.netloc or suffix is None or not (suffix in allowed or environment)
-                    or set(q) - {"page", "per_page"} or (q and (q.get("per_page") != "100" or not re.fullmatch(r"[1-9][0-9]{0,2}", q.get("page", ""))))):
+            if (p.scheme or p.netloc or suffix is None or not (suffix in allowed or environment or workflow_query)
+                    or set(q) - ({"page", "per_page", "status"} if workflow_query else {"page", "per_page"}) or (q and (q.get("per_page") != "100" or not re.fullmatch(r"[1-9][0-9]{0,2}", q.get("page", ""))))):
                 raise InventoryError("request: unpinned GitHub target")
         else:
             raise InventoryError("request: unknown service")
@@ -183,7 +186,7 @@ class ReadOnly:
                     return result
                 if not items or len(result) > total:
                     raise InventoryError("pagination: incomplete collection")
-                path = original._replace(query=urlencode({"per_page": 100, "page": page + 1})).geturl()
+                path = original._replace(query=urlencode({**original_query, "per_page": 100, "page": page + 1})).geturl()
                 continue
             link = data.get("nextLink" if service == "arm" else "@odata.nextLink")
             if link is None:
