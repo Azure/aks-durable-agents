@@ -34,7 +34,11 @@ verdict; it does not accept a passing-result flag. Every case repetition must be
 present in order. It checks dedicated session/execution uniqueness, record count,
 contiguous sequence, hash chain and independently retained terminal head.
 Session IDs are host-retained labels, not independently attested fields inside
-Sessions event records; execution IDs are checked against every event. The
+Sessions event records; execution IDs are checked against every event. Uniqueness
+is enforced only within one qualification record, not across records. Binding the
+journals to the exact subject/frozen binding and preventing cross-run execution
+reuse are the trusted runner's responsibility; a structurally valid journal alone
+does not establish those bindings. The
 narrow journal profile requires execution start, one input, one model call, one
 text output, optional usage and a completed end. Tool/approval/lifecycle/error
 records, incomplete executions or alternate payloads cannot pass.
@@ -42,8 +46,12 @@ records, incomplete executions or alternate payloads cannot pass.
 Text contains/notContains/RE2 checks are recomputed. Tool-not-called checks require
 the entire tool-free profile. Each judge assertion needs two separate retained
 score calls, bound to assertion, candidate-output digest and expected judge model.
-The recorded host model-call identity must also match the expected judge model;
-matching only the model name inside score text is insufficient.
+The recorded model-call label must also match the expected judge model;
+matching only the model name inside score text is insufficient. Sessions records
+the harness's `req.Model` label before the host substitutes its selected
+deployment. This label check is not proof of which deployment answered. The
+future runner must independently bind both candidate and judge calls to their
+host-selected deployments under the frozen binding.
 The current synthetic judge input is a closed version-1 JSON binding object,
 not a production judge prompt. Both scores at/above threshold pass; both below
 fail; disagreement, malformed scores or missing evidence make the run incomplete.
@@ -75,14 +83,20 @@ partial directory requiring operator investigation, not automatic adoption.
 Schema version 1 uses a separate SQLite database, private lineage anchor, writer
 lock and hash-addressed evidence directory. Existing Sessions/model/executor
 schemas are untouched. On Linux/POSIX, the store requires 0700 private directories
-and 0600 regular files (including a 0700 parent directory for creation), refuses
-symlinks and unsafe SQLite sidecars, and holds an
+and 0600 regular files, owned by the current effective UID (including a 0700,
+current-owner parent directory for creation). Shared ancestors need not have that
+owner or private mode. It refuses symlinks and unsafe SQLite sidecars, and holds an
 exclusive nonblocking file lock for its lifetime. It uses EXTRA synchronous DELETE
 journaling (including directory synchronization after journal removal) and connection-local settings survive connection replacement. Foreign
 lineage/future schema refuses before writable database PRAGMAs. WAL-format
 databases are rejected by their file header before SQLite opens them, because even
 read-only SQLite access can create WAL/SHM sidecars in a writable directory.
+Any existing WAL/SHM sidecar also refuses Open without modifying the recovery set.
 Admission cancellation retains its context error rather than reporting corruption.
+`ErrUnavailable` identifies closed storage and operational resource/I/O failures;
+`ErrIntegrity` identifies failed identity, safety, content and recovery checks.
+Errors expose no raw filesystem paths or SQL values. Unavailability does not prove
+that a commit failed or make a new run safe: use same-key read-back/reconciliation.
 There is no
 active-active writer or old-writer fencing guarantee across restored copies.
 Persisted field names and UTC time encodings are part of schema version 1;
@@ -100,7 +114,11 @@ Interruption explicitly records incomplete and advances the generation so a dela
 worker cannot finish it. Terminal records are immutable; exact completed retries
 read the saved result. Restart does not auto-Resume, allocate sessions, retry calls
 or infer that an uncertain attempt was safe. A failed completion transaction needs
-same-key read-back and reconciliation, not a new automatic run.
+same-key read-back and reconciliation, not a new automatic run. If completion
+retained its verifying intent before cancellation or an I/O failure, an explicit
+same-lease retry resumes only when the observations digest matches that intent.
+It rereads the evidence and checks expiry again; changed observations or a fenced
+generation conflict. Opening the store does not resume verification.
 
 Stop and fence all writers before backup or restore. Retain this store, its anchor,
 evidence, expected lineage, original Sessions journals and model-attempt ledgers

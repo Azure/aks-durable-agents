@@ -42,13 +42,13 @@ func TestQualificationWorkspaceJoin(t *testing.T) {
 		t.Run(workspace, func(t *testing.T) {
 			p := testPlan()
 			p.Subject.Workspace = workspace
-			ledger, e := dl.Initialize(filepath.Join(t.TempDir(), "e1", "records.db"), "host")
+			ledger, e := dl.Initialize(filepath.Join(privateTestDir(t), "e1", "records.db"), "host")
 			if e != nil {
 				t.Fatal(e)
 			}
 			defer ledger.Close()
 			d := strings.Repeat("a", 64)
-			subject := dl.Subject{Workspace: workspace, Kind: dl.SuiteKind, ID: "proposal", Generation: 1, Resource: p.Subject.Target, Source: "host", ExpiresAt: time.Now().Add(time.Hour), Suite: &dl.SuiteProposal{ProposalID: "proposal", TargetID: p.Subject.Target, ExpectedVersion: "existing-version", ExpectedRevision: 1, Intent: "activate", OperationKey: "activate", PredecessorDigest: d, SuiteDigest: strings.TrimPrefix(p.Subject.SuiteDigest, "sha256:"), Member: p.MemberID, Composition: "none", Platform: p.Platform, InventoryDigest: d, CasesDigest: d, BindingDigest: strings.TrimPrefix(p.Subject.BindingDigest, "sha256:"), QualificationID: "qualification", EvidenceDigest: d, SourceDigest: d}}
+			subject := dl.Subject{Workspace: workspace, Kind: dl.SuiteKind, ID: "proposal", Generation: 1, Resource: p.Subject.Target, Source: "host", ExpiresAt: time.Now().Add(time.Hour), Suite: &dl.SuiteProposal{ProposedBy: api.CallerIdentity{Issuer: "issuer", Subject: "proposer"}, ProposalID: "proposal", TargetID: p.Subject.Target, ExpectedVersion: "existing-version", ExpectedRevision: 1, Intent: "activate", OperationKey: "activate", PredecessorDigest: d, SuiteDigest: strings.TrimPrefix(p.Subject.SuiteDigest, "sha256:"), Member: p.MemberID, Composition: "none", Platform: p.Platform, InventoryDigest: d, CasesDigest: d, BindingDigest: strings.TrimPrefix(p.Subject.BindingDigest, "sha256:"), QualificationID: "qualification", EvidenceDigest: d, SourceDigest: d}}
 			ref, e := ledger.RegisterSubject(context.Background(), subject)
 			if e != nil {
 				t.Fatal(e)
