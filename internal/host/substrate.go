@@ -70,7 +70,7 @@ func openSubstrate(s SubstrateConfig, logger *slog.Logger) (*substrate.Backend, 
 		return nil, nil, errors.New("cannot configure Substrate control connection")
 	}
 	desc := api.Descriptor{ID: s.Harness, Capabilities: api.Capabilities{Resumability: api.ResumabilityStatelessReplay}}
-	backend := substrate.New(ateadapter.New(conn), s.ActorAtespace, substrate.ObjectRef{Atespace: s.TemplateAtespace, Name: s.Template}, desc, substrate.WithRouter(s.RouterAddr), substrate.WithLogger(logger))
+	backend := substrate.New(ateadapter.New(conn), s.ActorAtespace, substrate.ObjectRef{Atespace: s.TemplateAtespace, Name: s.Template}, desc, substrate.WithRouter(s.RouterAddr), substrate.WithLogger(logger), substrate.WithVolumesOnly())
 	return backend, conn, nil
 }
 
