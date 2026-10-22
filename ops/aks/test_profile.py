@@ -40,7 +40,7 @@ class ProfileTests(unittest.TestCase):
             self.assertFalse(spec[flag])
         self.assertEqual(spec["nodeSelector"], {"kubernetes.io/os": "linux", "kubernetes.io/arch": "amd64"})
         hostpaths = [v["hostPath"] for v in spec["volumes"] if "hostPath" in v]
-        self.assertEqual(hostpaths, [{"path": "/var/lib/kubelet/seccomp", "type": "Directory"}])
+        self.assertEqual(hostpaths, [{"path": "/var/lib/kubelet/seccomp", "type": "DirectoryOrCreate"}])
         c = spec["containers"][0]
         self.assertEqual(c["image"], self.p.ALPINE)
         self.assertEqual(c["securityContext"], {"runAsUser": 0, "runAsGroup": 0, "runAsNonRoot": False,
