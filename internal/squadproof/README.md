@@ -1,9 +1,12 @@
 # Local team proof state
 
-This package is unwired synthetic fixture code. It does not run a team, serve an
-API, call Sessions or publish an external effect. The production host does not
-import it. Its ledger is not a Sessions journal, a general memory store or a
-production authorization service.
+The default build contains unwired synthetic ledger, executor and queue code.
+The optional `squadproof` build tag adds local serving fixtures using real Sessions
+components; it does not add an automatic team coordinator. Production commands
+never import this package. The tagged runtime and command are excluded from
+normal builds and every production image/publication target. The production host
+and its model limits are unchanged. This ledger is not a Sessions journal, a
+general memory store or a production authorization service.
 
 `OpenLedger` creates a version-1 proof database only at a new file in an existing,
 owned, nonsymlink mode-0700 directory. Files must be private, regular and owned.
@@ -64,3 +67,63 @@ reservations, receipt/END/second-approval queue holds and a subprocess that exit
 immediately after its effect/result commit without closing the database or
 producing a Sessions receipt. They do not qualify a running host, coordinator,
 client, live identity flow, external publication, kind cluster or AKS deployment.
+
+## Non-shipping runtime fixtures
+
+The explicit tag enables a separate proof-only host built from the same pinned
+Sessions `sqlitelog`, remote harness backend, placement/registry, service and
+auth-off interceptors as production. It uses the real OpenAI adapter, a private
+TLS fake with certificate/destination pinning and synthetic credentials, and the
+existing Unix tool adapter with exact durable-dedup declarations. It does **not**
+call production `host.Run` or relax its required model-policy gate. The fake has a
+separate durable case-wide ceiling: only the first 16 attempts may complete.
+Invalid and refused attempts are counted and consume that budget too; reopening
+the host does not reset it. This is not a production spending or pricing
+qualification.
+
+The proof copies the production 25-second model and 30-second RPC bounds, handler
+waiting and bounded shutdown. It has no separate production health listener or
+configurable TLS/identity/provider surface. Every listener is literal loopback;
+all serving roles require explicit `--proof-only`. Use only fresh private case
+directories. Initialize the executor first and wait for its readiness record
+before starting the host: storage initialization has one owner. Harness processes
+need no mutable state. Stale sockets are refused, not silently replaced; verify
+that their owner is stopped before removing a retained socket. An interrupted
+initial host setup may leave an unmarked journal: retain it and start a fresh
+case rather than repairing or adopting it.
+
+```sh
+go test -tags squadproof -list '^TestProofBuildBoundary$' ./internal/squadproof
+go test -race -tags squadproof ./internal/squadproof
+go build -tags squadproof -o .build/squad-proof ./cmd/squad-proof
+```
+
+The three blocking serving commands are run separately. For a new mode-0700
+absolute `CASE_DIR`, start the executor first, then both harnesses and the host:
+
+```sh
+.build/squad-proof executor --proof-only --data "$CASE_DIR"
+.build/squad-proof harness --proof-only --role lead --addr 127.0.0.1:9000
+.build/squad-proof harness --proof-only --role member --addr 127.0.0.1:9001
+.build/squad-proof host --proof-only --data "$CASE_DIR"
+```
+
+Readiness is one JSON record on stdout. The host defaults to `127.0.0.1:8080`;
+`--addr 127.0.0.1:0` selects an ephemeral port reported in that record. Provider,
+credential, model, package, hosted-auth and external-network options are not
+exposed. This binary is not added to production or reference image builds.
+
+Tagged tests explicitly admit/bind sessions and drive the SDK. They prove
+stateless mediated lead/member execution, durable asynchronous dispatch before
+member allocation, independent model/executor entry counts, approval/denial and
+canonical controller replay with denying live callbacks and complete invocation
+coverage. An unfinished invocation or changed package cannot pass completed
+replay. The replay controller uses an isolated in-memory journal copy; it never
+seals or rewrites the live store.
+
+The serving fixtures expose no broker, queue scanner, scenario runner or offline
+replay CLI. Admission, approval and result-delivery control belongs to a trusted
+external driver. These fixtures do not prove automatic result delivery,
+process-crash recovery, broker reconciliation, live Squad/client interoperability,
+hosted authorization or AKS.
+Tools' epoch arguments remain scope checks, not execution-bound fencing.
