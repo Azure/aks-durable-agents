@@ -62,6 +62,26 @@ def fixture(root):
     return {"sourceCommit": COMMIT, "images": {ref: PIN for ref in refs}}
 
 
+class NodeScopeTests(unittest.TestCase):
+    def test_each_approved_node_has_a_single_value_or_term(self):
+        cases = [
+            (["node-a"], [{"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["node-a"]}]}]),
+            (["node-b", "node-a"], [
+                {"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["node-a"]}]},
+                {"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["node-b"]}]},
+            ]),
+            (["node-c", "node-a", "node-b"], [
+                {"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["node-a"]}]},
+                {"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["node-b"]}]},
+                {"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["node-c"]}]},
+            ]),
+        ]
+        for nodes, terms in cases:
+            with self.subTest(nodes=nodes):
+                self.assertEqual(substrate.node_scope(nodes), {
+                    "requiredDuringSchedulingIgnoredDuringExecution": {"nodeSelectorTerms": terms}})
+
+
 class RendererTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -79,9 +99,16 @@ class RendererTests(unittest.TestCase):
             self.assertNotIn(forbidden, text)
         self.assertEqual(bundle, self.render())
         byname = {d["metadata"]["name"]: d for d in bundle["manifests"]}
-        for name in ("atelet", "ate-api-server", "rustfs", "postgres"):
-            pod = byname[name]["spec"]["template"]["spec"]
-            self.assertEqual(pod["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]["nodeSelectorTerms"][0]["matchFields"][0], {"key": "metadata.name", "operator": "In", "values": ["node-a", "node-b"]})
+        scope = {"requiredDuringSchedulingIgnoredDuringExecution": {"nodeSelectorTerms": [
+            {"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["node-a"]}]},
+            {"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["node-b"]}]},
+        ]}}
+        for doc in bundle["manifests"]:
+            spec = doc.get("spec", {})
+            if doc["kind"] == "WorkerPool":
+                self.assertEqual(spec["template"]["nodeAffinity"], scope)
+            elif "template" in spec:
+                self.assertEqual(spec["template"]["spec"]["affinity"]["nodeAffinity"], scope)
         pg = byname["postgres"]
         self.assertEqual(pg["spec"]["replicas"], 1)
         self.assertEqual(pg["spec"]["volumeClaimTemplates"][0]["spec"]["storageClassName"], "managed-csi")

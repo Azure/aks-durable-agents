@@ -98,3 +98,42 @@ jobs:
         run: python3 -B -m unittest discover -s ops/canvas -p 'test_*.py'
       - name: Lint, template, golden and refusal tests
         run: python3 -B charts/aks-durable-agents/tests/test_chart.py
+
+  substrate_manifests:
+    name: Substrate manifest admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: agent-substrate/substrate
+          ref: e8d40c33f96f4b7a4984bfea7334a36ab5b45b7b # v0.5.0
+          path: .build/substrate-source
+          sparse-checkout: manifests/ate-install
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14.3'
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.20.0
+      - name: Install chart test dependencies
+        run: python3 -m pip install -r charts/aks-durable-agents/tests/requirements.txt
+      - name: Install checked kind and kubectl
+        run: |
+          tools="$RUNNER_TEMP/substrate-admission-tools"
+          mkdir -m 700 "$tools"
+          curl --fail --silent --show-error --location --connect-timeout 10 --max-time 120 https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64 -o "$tools/kind"
+          printf '%s  %s\n' aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d "$tools/kind" | sha256sum --check -
+          curl --fail --silent --show-error --location --connect-timeout 10 --max-time 120 https://dl.k8s.io/release/v1.37.0/bin/linux/amd64/kubectl -o "$tools/kubectl"
+          printf '%s  %s\n' 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f "$tools/kubectl" | sha256sum --check -
+          chmod 700 "$tools/kind" "$tools/kubectl"
+          echo "$tools" >> "$GITHUB_PATH"
+      - name: Validate every rendered workload against the kind API
+        run: |
+          python3 -B ops/aks/check_substrate_manifests.py \
+            --source .build/substrate-source \
+            --directory "$RUNNER_TEMP/substrate-admission"

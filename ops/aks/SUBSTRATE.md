@@ -108,6 +108,28 @@ Both tools must have the exact source `vcs.revision` and `vcs.modified=false`;
 but the Go build metadata is authoritative for their clean source revision.
 Do not use `-buildvcs=false`, locally patched tools or tools from Substrate main.
 
+### Check Kubernetes admission before a live attempt
+
+CI validates every rendered Deployment, DaemonSet, StatefulSet, Job and WorkerPool
+for one, two and three approved nodes using server-side dry-run. It reuses the
+local demo's owned kind runner and pinned Kubernetes 1.37.0 image, without running
+the model demo or installing Substrate workloads. WorkerPool scheduling fields
+are also checked as a core Pod, since CRD schema validation alone cannot check
+all Pod semantics. A deliberately invalid multi-value node field selector must
+be rejected. Each approved node has its own OR term with one `metadata.name` value.
+
+With Docker, kind >= 0.33.0, kubectl 1.37 and Helm available, run the same check:
+
+```sh
+python3 -B ops/aks/check_substrate_manifests.py --source "$SUBSTRATE_SOURCE" \
+  --directory "$(mktemp -d)"
+```
+
+Only namespaces and CRDs are created, in a fresh owned kind cluster that is
+removed on exit. Synthetic digests are admission-only inputs: no Substrate images are
+pulled and no AKS, runtime execution or image-publication qualification is claimed.
+A passing check does not authorize another live attempt.
+
 ### Obtain the published digest map
 
 The [existing image pipeline](../images/README.md#substrate-v050-inputs) builds the
