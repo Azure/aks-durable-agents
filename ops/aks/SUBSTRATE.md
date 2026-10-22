@@ -108,6 +108,23 @@ Both tools must have the exact source `vcs.revision` and `vcs.modified=false`;
 but the Go build metadata is authoritative for their clean source revision.
 Do not use `-buildvcs=false`, locally patched tools or tools from Substrate main.
 
+### Obtain the published digest map
+
+The [existing image pipeline](../images/README.md#substrate-v050-inputs) builds the
+pinned runtime, counter, Envoy dataplane and pause sources, then signs and records
+their digests. After a successful main publication and anonymous verification,
+download `verified-substrate-images` from **Verified image pins** and set
+`SUBSTRATE_IMAGES` to its `substrate-images.json`. Do not substitute the earlier
+unverified publication artifact, a tag or a synthetic test map. New GHCR packages
+may need an administrator to make them public before verification can succeed.
+
+The separate publication receipt records the workflow revision and Kubernetes
+pause source; the installer's map keeps `sourceCommit` at the Substrate v0.5.0
+revision above. Source-built pause 3.10.2 replaces the upstream pause digest in
+that map. PostgreSQL, RustFS, AWS CLI, router Envoy and the Python probe retain
+pinned upstream image inputs. The chart's host/harness pins are not changed.
+Publication does not authorize a live AKS attempt; obtain a fresh exact-target go.
+
 The image map is a JSON object with exactly `sourceCommit` and `images`.
 `sourceCommit` is the full v0.5.0 SHA above. `images` maps each **original source
 image reference** (including `ko://...`, third-party images and embedded dataplane
@@ -191,7 +208,6 @@ Offline tests use synthetic image maps and mocked external commands. A render
 against the exact upstream source can verify manifest adaptation, not image
 pullability, API/admission behavior, runtime isolation, restore fidelity or live
 teardown. A real run requires the operator's approval of the exact target and
-change list. The host now selects the [released Sessions/adapter version set](../../docs/substrate.md#version-set),
-which requires fresh Substrate state rather than an in-place runtime upgrade.
-Sessions host wiring remains a separate follow-up; module pins alone do not
-connect this install-only check to the host or nightly.
+change list. The host has separate [Sessions v0.3.0/Substrate v0.5.0 wiring](../../docs/substrate.md),
+which requires a fresh compatible state set rather than an in-place runtime upgrade.
+This install-only check does not connect that host to the runtime or nightly.

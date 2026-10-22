@@ -34,8 +34,8 @@ Offline tests do not close live qualification items.
 - **Blocked — preferred isolation: single-host Substrate with gVisor.** This
   chart does not install Substrate; its fixture pod is not a sandbox. Preview 0
   keeps this path eligible if these prerequisites land in time:
-  - Qualify the released [snapshot-fidelity change](https://github.com/agent-primitives/sessions/pull/181)
-    plus held-snapshot validation in v0.3.0: exact recorded checkpoint, suspended state,
+  - Release and qualify the [snapshot-fidelity change](https://github.com/agent-primitives/sessions/pull/181)
+    plus held-snapshot validation: exact recorded checkpoint, suspended state,
     observed fidelity and newest-generation durable completion; no fallback to
     an older completed snapshot.
   - Qualify compatible released sessions, Substrate adapter, runtime and Blob
@@ -65,25 +65,25 @@ release and recovery checks are conditional on including Substrate.
 
 ## 2. No unreleased dependencies — blocked
 
-- **In progress — released Sessions with authn and per-RPC authorization.**
-  [The current module](../go.mod) selects [v0.3.0](https://github.com/agent-primitives/sessions/releases/tag/v0.3.0),
+- **Released library selected — Sessions v0.3.0.**
+  [The current module](../go.mod) selects the canonical
+  [v0.3.0 release](https://github.com/agent-primitives/sessions/releases/tag/v0.3.0),
   including the [authentication seam](https://github.com/agent-primitives/sessions/pull/180)
-  and opt-in [per-RPC authorization (#190)](https://github.com/agent-primitives/sessions/pull/190),
-  with no fork replacement. This host does not enable resource authorization;
-  required-mode assembly and verified approval attribution remain unfinished.
-  Complete the required [authorization contract](https://github.com/agent-primitives/sessions/issues/127)
-  and qualify it here. The release pin alone does not close that work.
-- **Blocked if Substrate is included — released Blob and assembly qualification.**
-  Sessions' separate `integrations/substrate/v0.3.0` tag releases the adapter;
-  it requires Sessions v0.3.0 and Substrate [v0.5.0](https://github.com/agent-substrate/substrate/releases/tag/v0.5.0).
-  Those modules are selected, including fidelity/held-snapshot fixes. The
-  [Azure Blob object-store plugin](https://github.com/agent-substrate/substrate/pull/2595)
-  still needs a compatible release and qualification in this assembly. Check
-  actual selected modules with `go list -m all` and `go mod graph`, pin
-  images/assets, and qualify workload identity, durable upload and recovery.
-  Follow the [fresh-state Substrate reinstall warning](substrate.md#version-set);
-  do not reuse old runtime state. An S3-compatible kind store does not meet
-  Preview 0's released-Blob gate.
+  and [per-RPC authorization seam (#190)](https://github.com/agent-primitives/sessions/pull/190),
+  without fork replacements. The dependency-release prerequisite is met, not the
+  host's authorization/attribution or live qualification gates: this host does not
+  activate the new authorizer. Retain the [authorization requirements](https://github.com/agent-primitives/sessions/issues/127)
+  and the other checks in this document.
+- **Blocked if Substrate is included — released adapter, Substrate and Blob.**
+  The separately tagged Sessions `integrations/substrate` **v0.3.0** and compatible
+  Substrate [v0.5.0](https://github.com/agent-substrate/substrate/releases/tag/v0.5.0)
+  are selected, including the fidelity/held-snapshot adapter fixes. A root release
+  alone does not release a nested module. The [Azure Blob object-store plugin](https://github.com/agent-substrate/substrate/pull/2595)
+  is still an open PR. Select compatible released versions of all components,
+  not just the selected Go libraries. Check actual selected modules with
+  `go list -m all` and `go mod graph`, pin images/assets, and qualify workload
+  identity, durable upload and recovery. A development adapter/server pin or
+  S3-compatible kind store does not meet Preview 0's released-Blob gate.
 
 ## 3. Usable by someone else — in progress
 
