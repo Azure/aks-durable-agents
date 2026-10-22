@@ -15,6 +15,9 @@ import (
 	"github.com/agent-primitives/sessions/eventlog"
 )
 
+// Serial tests inject read failures without requiring an external tracer.
+var blobReadAll = io.ReadAll
+
 func (s *Store) blob(ref BlobRef) ([]byte, error) {
 	if !validDigest(ref.Digest) || ref.Size < 1 || ref.Size > maxBlobBytes {
 		return nil, ErrIntegrity
@@ -34,7 +37,7 @@ func (s *Store) blob(ref BlobRef) ([]byte, error) {
 	if st.Size() != ref.Size {
 		return nil, ErrIntegrity
 	}
-	b, err := io.ReadAll(io.LimitReader(f, maxBlobBytes+1))
+	b, err := blobReadAll(io.LimitReader(f, maxBlobBytes+1))
 	if err != nil {
 		return nil, fileError(err)
 	}

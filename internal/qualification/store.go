@@ -26,6 +26,12 @@ type Store struct {
 	dir, lineage string
 }
 
+// Serial tests override these seams; production uses the real identity and sync.
+var (
+	geteuid = os.Geteuid
+	syncDir = syncDirectory
+)
+
 func newID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -35,7 +41,7 @@ func newID() string {
 }
 func currentOwner(info os.FileInfo) bool {
 	st, ok := info.Sys().(*syscall.Stat_t)
-	return ok && st.Uid == uint32(os.Geteuid())
+	return ok && st.Uid == uint32(geteuid())
 }
 func privateDir(path string) error {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
@@ -78,7 +84,7 @@ func privateFile(path string, create bool) (*os.File, error) {
 	}
 	return f, nil
 }
-func syncDir(dir string) error {
+func syncDirectory(dir string) error {
 	f, err := os.Open(dir)
 	if err != nil {
 		return fileError(err)

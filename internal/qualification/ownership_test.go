@@ -8,23 +8,25 @@ import (
 )
 
 func TestPrivatePathsRequireCurrentOwner(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("cross-UID integration requires root; exercised in isolated root container")
-	}
 	for _, name := range []string{".", "evidence", "lock", "lineage", "records.db"} {
 		t.Run(name, func(t *testing.T) {
 			s, dir := testStore(t)
-			lineage := s.Lineage()
 			if err := s.Close(); err != nil {
 				t.Fatal(err)
 			}
+			original := geteuid
+			geteuid = func() int { return original() + 1 }
+			t.Cleanup(func() { geteuid = original })
 			path := filepath.Join(dir, name)
-			if err := os.Chown(path, 1, -1); err != nil {
-				t.Fatal(err)
-			}
-			reopened, err := Open(dir, lineage)
-			if reopened != nil {
-				reopened.Close()
+			var err error
+			if name == "." || name == "evidence" {
+				err = privateDir(path)
+			} else {
+				var file *os.File
+				file, err = privateFile(path, false)
+				if file != nil {
+					file.Close()
+				}
 			}
 			if !errors.Is(err, ErrIntegrity) {
 				t.Fatalf("accepted foreign-owned %s: %v", name, err)
@@ -33,15 +35,19 @@ func TestPrivatePathsRequireCurrentOwner(t *testing.T) {
 	}
 	t.Run("creation parent", func(t *testing.T) {
 		parent := privateTestDir(t)
-		if err := os.Chown(parent, 1, -1); err != nil {
-			t.Fatal(err)
-		}
-		s, err := Create(filepath.Join(parent, "store"))
+		original := geteuid
+		geteuid = func() int { return original() + 1 }
+		t.Cleanup(func() { geteuid = original })
+		dir := filepath.Join(parent, "store")
+		s, err := Create(dir)
 		if s != nil {
 			s.Close()
 		}
 		if !errors.Is(err, ErrIntegrity) {
 			t.Fatalf("accepted foreign-owned parent: %v", err)
+		}
+		if _, err = os.Lstat(dir); !os.IsNotExist(err) {
+			t.Fatalf("initialized state under refused parent: %v", err)
 		}
 	})
 }

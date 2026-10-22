@@ -48,7 +48,7 @@ func TestQualificationWorkspaceJoin(t *testing.T) {
 			}
 			defer ledger.Close()
 			d := strings.Repeat("a", 64)
-			subject := dl.Subject{Workspace: workspace, Kind: dl.SuiteKind, ID: "proposal", Generation: 1, Resource: p.Subject.Target, Source: "host", ExpiresAt: time.Now().Add(time.Hour), Suite: &dl.SuiteProposal{ProposedBy: api.CallerIdentity{Issuer: "issuer", Subject: "proposer"}, ProposalID: "proposal", TargetID: p.Subject.Target, ExpectedVersion: "existing-version", ExpectedRevision: 1, Intent: "activate", OperationKey: "activate", PredecessorDigest: d, SuiteDigest: strings.TrimPrefix(p.Subject.SuiteDigest, "sha256:"), Member: p.MemberID, Composition: "none", Platform: p.Platform, InventoryDigest: d, CasesDigest: d, BindingDigest: strings.TrimPrefix(p.Subject.BindingDigest, "sha256:"), QualificationID: "qualification", EvidenceDigest: d, SourceDigest: d}}
+			subject := dl.Subject{Workspace: workspace, Kind: dl.SuiteKind, ID: "proposal", Generation: 1, Resource: p.Subject.Target, Source: "host", ExpiresAt: time.Now().Add(time.Hour), Suite: &dl.SuiteProposal{ProposedBy: api.CallerIdentity{Issuer: "issuer", Subject: "00000000-0000-0000-0000-000000000001"}, ProposalID: "proposal", TargetID: p.Subject.Target, ExpectedVersion: "existing-version", ExpectedRevision: 1, Intent: "activate", OperationKey: "activate", PredecessorDigest: d, SuiteDigest: strings.TrimPrefix(p.Subject.SuiteDigest, "sha256:"), Member: p.MemberID, Composition: "none", Platform: p.Platform, InventoryDigest: d, CasesDigest: d, BindingDigest: strings.TrimPrefix(p.Subject.BindingDigest, "sha256:"), QualificationID: "qualification", EvidenceDigest: d, SourceDigest: d}}
 			ref, e := ledger.RegisterSubject(context.Background(), subject)
 			if e != nil {
 				t.Fatal(e)

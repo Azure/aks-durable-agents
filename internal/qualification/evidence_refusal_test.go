@@ -6,9 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -141,55 +140,31 @@ func TestOpenRefusesTamperedRecord(t *testing.T) {
 }
 
 func TestRetainExistingObjectSyncsDirectory(t *testing.T) {
-	const childDir = "QUALIFICATION_RETAIN_SYNC_DIR"
-	data := []byte("already renamed evidence")
-	if dir := os.Getenv(childDir); dir != "" {
-		s, err := Open(dir, os.Getenv("QUALIFICATION_RETAIN_SYNC_LINEAGE"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer s.Close()
-		// strace injects EIO only for fsync on the evidence directory. A
-		// verified object alone cannot prove its earlier rename was durable.
-		if _, err = s.retain(data); err == nil {
-			t.Fatal("existing-object retry claimed durability without a successful directory sync")
-		}
-		return
-	}
-	strace, err := exec.LookPath("strace")
-	if err != nil {
-		t.Skip("directory-fsync fault injection requires strace")
-	}
 	s, dir := testStore(t)
+	data := []byte("already renamed evidence")
 	ref, err := s.retain(data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lineage := s.Lineage()
-	if err = s.Close(); err != nil {
-		t.Fatal(err)
-	}
-	trace := filepath.Join(privateTestDir(t), "fsync.trace")
-	cmd := exec.Command(strace, "-f", "-qq", "-yy", "-e", "trace=fsync", "-e", "inject=fsync:error=EIO", "-P", filepath.Join(dir, "evidence"), "-o", trace, os.Args[0], "-test.run=^TestRetainExistingObjectSyncsDirectory$")
-	cmd.Env = append(os.Environ(), childDir+"="+dir, "QUALIFICATION_RETAIN_SYNC_LINEAGE="+lineage)
-	output, runErr := cmd.CombinedOutput()
-	if runErr != nil {
-		if strings.Contains(string(output), "ptrace") && strings.Contains(string(output), "Operation not permitted") {
-			t.Skipf("directory-fsync fault injection unavailable: %s", output)
+	original := syncDir
+	fault := true
+	calls := 0
+	syncDir = func(path string) error {
+		if path == filepath.Join(dir, "evidence") {
+			calls++
+			if fault {
+				return fileError(syscall.EIO)
+			}
 		}
-		t.Fatalf("existing-object directory-sync probe: %v\n%s", runErr, output)
+		return original(path)
 	}
-	calls, err := os.ReadFile(trace)
-	if err != nil || !strings.Contains(string(calls), "fsync(") || !strings.Contains(string(calls), filepath.Join(dir, "evidence")) || !strings.Contains(string(calls), "EIO") {
-		t.Fatalf("probe did not exercise evidence directory fsync: %s %v", calls, err)
+	t.Cleanup(func() { syncDir = original })
+	if _, err = s.retain(data); !errors.Is(err, ErrUnavailable) || calls != 1 {
+		t.Fatalf("existing-object retry did not report failed directory sync: calls=%d err=%v", calls, err)
 	}
-	s, err = Open(dir, lineage)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	fault = false
 	again, err := s.retain(data)
-	if err != nil || again != ref {
-		t.Fatalf("retry after directory-sync failure: %+v %v", again, err)
+	if err != nil || again != ref || calls != 2 {
+		t.Fatalf("retry after directory-sync failure: %+v calls=%d err=%v", again, calls, err)
 	}
 }
