@@ -126,6 +126,10 @@ func TestSubstrateApprovalParkRestartContinueReplay(t *testing.T) {
 	})
 	park := d.mustRPC("park")
 	uid := park["session"].(string)
+	checkpoint := d.mustRPC("checkpoint")
+	if !reflect.DeepEqual(checkpoint, map[string]any{"version": float64(1), "actor": uid, "uri": "s3://test/held", "memory": false}) {
+		t.Fatalf("journal checkpoint projection: %v", checkpoint)
+	}
 	baseline := d.evidence()
 	if baseline["realModelCalls"] != float64(1) || baseline["publicationCount"] != float64(0) || n.counts()[1] != 1 {
 		t.Fatalf("park must hand off to external snapshot before returning: %v native=%v", baseline, n.counts())

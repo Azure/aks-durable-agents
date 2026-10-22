@@ -4,12 +4,37 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/agent-primitives/sessions/api"
 )
+
+func TestActorPlacementEvidenceReadsOnlyPrivateFixedFile(t *testing.T) {
+	data := privateTempDir(t)
+	path := filepath.Join(data, "substrate-placement.json")
+	want := []byte(`{"version":1,"first":{"actor":"session"},"latest":{"actor":"session"}}`)
+	if err := os.WriteFile(path, want, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := RunCLI(t.Context(), []string{"placement-evidence", "--data", data}, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out.String()) != string(want) {
+		t.Fatal(out.String())
+	}
+	os.Chmod(path, 0644)
+	if err := RunCLI(t.Context(), []string{"placement-evidence", "--data", data}, io.Discard, io.Discard); err == nil {
+		t.Fatal("public placement file accepted")
+	}
+	if err := RunCLI(t.Context(), []string{"placement-evidence", "--data", data, "--file", "/elsewhere"}, io.Discard, io.Discard); err == nil {
+		t.Fatal("arbitrary file reader accepted")
+	}
+}
 
 func TestActorHarnessUsesFrozenStatelessScenario(t *testing.T) {
 	got, err := ActorHarness().Describe(t.Context())

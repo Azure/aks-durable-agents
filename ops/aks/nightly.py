@@ -292,7 +292,8 @@ def chart_images(root):
     return published_images(root)
 
 
-def verify_bindings(pins, rendered, publication, receipt, helper):
+def verify_bindings(pins, rendered, publication, receipt, helper, *, peer_role="harness"):
+    require(peer_role in ("harness", "executor"), "unsupported writer role")
     publication = update_pins.validate_manifest(publication)
     backup_helper.validate_receipt(receipt)
     require(publication["sourceCommit"] == receipt["sourceCommit"], "publication source mismatch")
@@ -300,7 +301,7 @@ def verify_bindings(pins, rendered, publication, receipt, helper):
     for role in ("host", "harness"):
         image = publication["images"][role]
         require(image["repository"] + "@" + image["digest"] == pins[role], "publication/chart mismatch")
-        deployments = [o for o in rendered if o.get("kind") == "Deployment" and o.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/component") == role]
+        deployments = [o for o in rendered if o.get("kind") == "Deployment" and o.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/component") == (peer_role if role == "harness" else role)]
         require(len(deployments) == 1, "ambiguous rendered workload")
         containers = deployments[0]["spec"]["template"]["spec"]["containers"]
         require(containers and all(c["image"] == pins[role] for c in containers), "rendered image differs from reviewed publication")

@@ -30,7 +30,7 @@ func RunCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
 }
 func runCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("commands: init, harness, actor-harness, fake, executor, evidence, verify-replay, verify-loop, storage-proof, network-probe, resolve-intent")
+		return errors.New("commands: init, harness, actor-harness, fake, executor, placement-evidence, evidence, verify-replay, verify-loop, storage-proof, network-probe, resolve-intent")
 	}
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	fs.SetOutput(errOut)
@@ -110,6 +110,19 @@ func runCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
 			return err
 		}
 		return serveGRPC(ctx, server, listener)
+	case "placement-evidence":
+		data := fs.String("data", "", "owned private host data directory")
+		if err := parse(); err != nil {
+			return err
+		}
+		raw, err := readOwnedFile(filepath.Join(*data, "substrate-placement.json"), 65536)
+		if err != nil {
+			return err
+		}
+		if !json.Valid(raw) {
+			return errors.New("invalid private placement JSON")
+		}
+		return json.NewEncoder(out).Encode(json.RawMessage(raw))
 	case "actor-harness":
 		addr := fs.String("addr", "0.0.0.0:80", "actor harness port80; literal loopback is allowed for offline tests")
 		check := fs.Bool("check", false, "print the frozen actor capability descriptor without starting a listener")
