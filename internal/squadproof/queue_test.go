@@ -232,6 +232,34 @@ func TestExecutionCannotReuseHistoricalEvidence(t *testing.T) {
 	}
 }
 
+func TestGeneratedResultPrefixReserved(t *testing.T) {
+	for _, kind := range []string{"user", "tick", "task"} {
+		t.Run(kind, func(t *testing.T) {
+			l, _ := openTestLedger(t)
+			child := seedMember(t, l)
+			target := "lead"
+			if kind == "task" {
+				target = child.ID
+			}
+			before, err := l.Counts(testContext)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = l.Enqueue(testContext, Input{ID: "result-child", Target: target, Kind: kind, Payload: []byte(`{"text":"collision"}`)}); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("host input took generated result identity: %v", err)
+			}
+			after, err := l.Counts(testContext)
+			if err != nil || before != after {
+				t.Fatalf("reserved identity mutated ledger: %v", err)
+			}
+			complete(t, l, child.ID)
+			if _, err = l.EnqueueResult(testContext, child.ID, []byte(`{"text":"complete"}`)); err != nil {
+				t.Fatalf("generated result blocked: %v", err)
+			}
+		})
+	}
+}
+
 func TestInputRetryConflict(t *testing.T) {
 	l, _ := openTestLedger(t)
 	seedLead(t, l)

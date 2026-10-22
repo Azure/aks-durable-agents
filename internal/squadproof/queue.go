@@ -5,12 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 )
 
 // Enqueue accepts host-originated user/tick/task input. Member results must use
 // EnqueueResult so a payload cannot invent terminal evidence or its own result key.
 func (l *Ledger) Enqueue(ctx context.Context, in Input) (Input, error) {
-	if in.Source != "" || in.TerminalHash != "" || (in.Kind != "user" && in.Kind != "tick" && in.Kind != "task") {
+	if strings.HasPrefix(in.ID, "result-") || in.Source != "" || in.TerminalHash != "" || (in.Kind != "user" && in.Kind != "tick" && in.Kind != "task") {
 		return Input{}, ErrInvalid
 	}
 	var got Input

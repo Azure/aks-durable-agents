@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -61,7 +62,13 @@ func OpenLedger(path string) (*Ledger, error) {
 	if !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || !ok || int(owner.Uid) != os.Getuid() {
 		return nil, ErrInvalid
 	}
-	// No persistent PRAGMA or schema write before an existing file's identity check.
+	// Even an identity SELECT can recover a hot journal. Validate a private copy
+	// first; only recognized, quiescent proof storage may recover in place.
+	if !created {
+		if err = inspectCopy(path); err != nil {
+			return nil, err
+		}
+	}
 	// Use DELETE journaling; this small single-case fixture needs no WAL adoption.
 	u := url.URL{Scheme: "file", Path: path, RawQuery: url.Values{"mode": {"rw"}, "_pragma": {"busy_timeout(5000)", "synchronous(FULL)", "foreign_keys(1)"}}.Encode()}
 	db, err := sql.Open("sqlite", u.String())
@@ -84,29 +91,88 @@ func OpenLedger(path string) (*Ledger, error) {
 		if err != nil {
 			return fail(err)
 		}
-	} else {
-		var app, version int
-		if db.QueryRow("PRAGMA application_id").Scan(&app) != nil || db.QueryRow("PRAGMA user_version").Scan(&version) != nil || app != applicationID || version != 1 {
-			return fail(ErrForeign)
-		}
-		for _, q := range []string{
-			`SELECT id,parent,session_uid,state,record FROM operations LIMIT 0`,
-			`SELECT ordinal,id,target,state,execution_id,record FROM inputs LIMIT 0`,
-			`SELECT uid,key,fingerprint,result FROM tool_results LIMIT 0`,
-			`SELECT uid,key,body FROM effects LIMIT 0`,
-			`SELECT root,key,value FROM context LIMIT 0`,
-			`SELECT ordinal,kind,operation FROM events LIMIT 0`,
-		} {
-			rows, err := db.Query(q)
-			if err != nil {
-				return fail(ErrForeign)
-			}
-			if err = rows.Close(); err != nil {
-				return fail(err)
-			}
-		}
+	} else if err = checkSchema(db); err != nil {
+		return fail(err)
 	}
 	return l, nil
+}
+
+func checkSchema(db *sql.DB) error {
+	var app, version int
+	var journal string
+	if db.QueryRow("PRAGMA application_id").Scan(&app) != nil || db.QueryRow("PRAGMA user_version").Scan(&version) != nil || db.QueryRow("PRAGMA journal_mode").Scan(&journal) != nil || app != applicationID || version != 1 || journal != "delete" {
+		return ErrForeign
+	}
+	for _, q := range []string{
+		`SELECT id,parent,session_uid,state,record FROM operations LIMIT 0`,
+		`SELECT ordinal,id,target,state,execution_id,record FROM inputs LIMIT 0`,
+		`SELECT uid,key,fingerprint,result FROM tool_results LIMIT 0`,
+		`SELECT uid,key,body FROM effects LIMIT 0`,
+		`SELECT root,key,value FROM context LIMIT 0`,
+		`SELECT ordinal,kind,operation FROM events LIMIT 0`,
+	} {
+		rows, err := db.Query(q)
+		if err != nil {
+			return ErrForeign
+		}
+		if err = rows.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func inspectCopy(path string) error {
+	// WAL storage is not part of this fixture's format. Never open its sidecars.
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Lstat(path + suffix); !errors.Is(err, os.ErrNotExist) {
+			return ErrForeign
+		}
+	}
+	dir, err := os.MkdirTemp(filepath.Dir(path), ".proof-inspect-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	copyPath := filepath.Join(dir, "proof.db")
+	for _, suffix := range []string{"", "-journal"} {
+		if err = copyPrivateFile(path+suffix, copyPath+suffix); err != nil {
+			if suffix == "-journal" && errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return ErrForeign
+		}
+	}
+	u := url.URL{Scheme: "file", Path: copyPath, RawQuery: "mode=rw"}
+	db, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		return ErrForeign
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	return checkSchema(db)
+}
+
+func copyPrivateFile(source, destination string) error {
+	in, err := os.OpenFile(source, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	st, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	owner, ok := st.Sys().(*syscall.Stat_t)
+	if !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || !ok || int(owner.Uid) != os.Getuid() {
+		return ErrInvalid
+	}
+	out, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(out, in)
+	return errors.Join(err, out.Close())
 }
 
 func (l *Ledger) Close() error { return l.db.Close() }

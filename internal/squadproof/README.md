@@ -8,8 +8,12 @@ production authorization service.
 `OpenLedger` creates a version-1 proof database only at a new file in an existing,
 owned, nonsymlink mode-0700 directory. Files must be private, regular and owned.
 A known proof database may be reopened; empty, foreign, unsupported-version or
-incomplete existing databases are refused, not migrated, repaired or replaced.
-Initialize from one owner. If initialization leaves an empty/incomplete file,
+incomplete existing databases are refused without repairing or replacing the
+original database or its sidecars. Preflight validates a private copy, allowing
+SQLite to recover that copy before the identity/schema check. Only recognized
+proof storage may recover its original hot rollback journal; WAL is unsupported.
+Initialize from one owner, and open quiescent retained storage; this is not an
+online snapshot protocol. If initialization leaves an empty/incomplete file,
 retain it as evidence and start a fresh private case directory, not an overwrite.
 SQLite transactions use immediate writer admission and full synchronous commits.
 No old fixture, model-budget or production journal is adopted.
@@ -26,6 +30,7 @@ approval-mediated tools; this executor does not authenticate approval decisions.
 
 User, scheduled-tick and member-result inputs share an ordered queue. A member
 result has one fixed key per child and requires recorded terminal evidence.
+Host-originated input IDs cannot use the reserved `result-` prefix.
 The future trusted journal scanner supplies evidence to `Observe`; the ledger
 checks correlation and ordering, but cannot verify the Sessions hash chain.
 Each confirmed execution is unique per target; its request, decision, receipt

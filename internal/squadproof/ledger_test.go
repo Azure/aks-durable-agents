@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -167,6 +168,93 @@ func TestForeignLedgerRefused(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHotJournalIdentityCheck(t *testing.T) {
+	for _, kind := range []string{"foreign", "proof"} {
+		t.Run(kind, func(t *testing.T) {
+			l, path := openTestLedger(t)
+			seedLead(t, l)
+			expected, err := l.Counts(testContext)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = l.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "foreign" {
+				db, err := sql.Open("sqlite", path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = db.Exec("PRAGMA application_id=42")
+				db.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			binary, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := exec.Command(binary, "-test.run=^TestHotJournalWriter$", "--", "hot-journal", path).CombinedOutput()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 74 {
+				t.Fatalf("writer did not exit with uncommitted spilled pages: %s %v", out, err)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			journal, err := os.ReadFile(path + "-journal")
+			if err != nil || len(journal) < 512 {
+				t.Fatalf("writer did not leave rollback journal: %v", err)
+			}
+			reopened, err := OpenLedger(path)
+			if kind == "foreign" {
+				if !errors.Is(err, ErrForeign) {
+					if reopened != nil {
+						reopened.Close()
+					}
+					t.Fatalf("foreign accepted: %v", err)
+				}
+				after, readErr := os.ReadFile(path)
+				retained, journalErr := os.ReadFile(path + "-journal")
+				if readErr != nil || journalErr != nil || !reflect.DeepEqual(before, after) || !reflect.DeepEqual(journal, retained) {
+					t.Fatalf("foreign hot journal/database modified: read=%v journal=%v", readErr, journalErr)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("recognized proof cannot recover: %v", err)
+				}
+				defer reopened.Close()
+				got, err := reopened.Counts(testContext)
+				if err != nil || got != expected {
+					t.Fatalf("uncommitted rows survived recovery: %+v %v", got, err)
+				}
+			}
+		})
+	}
+}
+
+func TestHotJournalWriter(t *testing.T) {
+	if len(os.Args) < 3 || os.Args[len(os.Args)-2] != "hot-journal" {
+		t.Skip("subprocess-only hot journal writer")
+	}
+	db, err := sql.Open("sqlite", os.Args[len(os.Args)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := db.Conn(testContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conn.ExecContext(testContext, `PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA cache_size=4; BEGIN IMMEDIATE;
+ WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<128)
+ INSERT INTO effects(uid,key,body) SELECT 'uncommitted',printf('%d',i),zeroblob(2048) FROM n`); err != nil {
+		t.Fatal(err)
+	}
+	os.Exit(74) // Leave the dirty pager and transaction open, without SQLite cleanup.
 }
 
 func TestEpochAdvanceHeldWithChild(t *testing.T) {
