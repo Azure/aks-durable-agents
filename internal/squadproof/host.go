@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -153,7 +154,9 @@ func proofJournal(ctx context.Context, l *Ledger, data string) (*sqlitelog.Store
 	if !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || !ok || int(owner.Uid) != os.Getuid() {
 		return nil, ErrInvalid
 	}
-	store, err := sqlitelog.Open(path)
+	// The public store accepts a URI, not an opaque filesystem path.
+	uri := url.URL{Scheme: "file", Path: path}
+	store, err := sqlitelog.Open(uri.String())
 	if err != nil {
 		return nil, err
 	}

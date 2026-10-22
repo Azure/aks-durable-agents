@@ -4,11 +4,72 @@ package squadproof
 
 import (
 	"bytes"
+	"database/sql"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestProofJournalTreatsPathAsLiteralFilesystemName(t *testing.T) {
+	for _, name := range []string{"case#1", "case?ignored=1", "case%231"} {
+		t.Run(name, func(t *testing.T) {
+			outer := t.TempDir()
+			data := filepath.Join(outer, name)
+			if err := os.Mkdir(data, 0700); err != nil {
+				t.Fatal(err)
+			}
+			victim := filepath.Join(outer, "case")
+			if name == "case%231" {
+				victimDir := filepath.Join(outer, "case#1")
+				if err := os.Mkdir(victimDir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				victim = filepath.Join(victimDir, "journal.db")
+			}
+			if err := os.WriteFile(victim, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			uri := url.URL{Scheme: "file", Path: victim}
+			db, err := sql.Open("sqlite", uri.String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, seedErr := db.Exec(`CREATE TABLE foreign_data(value TEXT); INSERT INTO foreign_data VALUES('keep outside unchanged')`)
+			closeErr := db.Close()
+			if seedErr != nil || closeErr != nil {
+				t.Fatalf("seed outside database: %v %v", seedErr, closeErr)
+			}
+			before, err := os.ReadFile(victim)
+			if err != nil {
+				t.Fatal(err)
+			}
+			l, err := OpenLedger(filepath.Join(data, "proof.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer l.Close()
+			store, openErr := proofJournal(t.Context(), l, data)
+			if store != nil {
+				if err := store.Close(); err != nil {
+					t.Error(err)
+				}
+			}
+			if openErr != nil {
+				t.Errorf("literal filesystem path refused: %v", openErr)
+			}
+			intended, err := os.Stat(filepath.Join(data, "journal.db"))
+			if err != nil || intended.Size() == 0 {
+				t.Errorf("intended journal was not initialized: %v", err)
+			}
+			after, err := os.ReadFile(victim)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Errorf("database outside validated case changed: %v", err)
+			}
+		})
+	}
+}
 
 func TestProofKnownJournalMarkerLifecycle(t *testing.T) {
 	l, path := openTestLedger(t)
