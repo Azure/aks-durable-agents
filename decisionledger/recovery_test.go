@@ -199,7 +199,7 @@ func TestReplacementConnectionsKeepDurability(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, p := range []struct{ query, want string }{{"PRAGMA foreign_keys", "1"}, {"PRAGMA synchronous", "2"}, {"PRAGMA journal_mode", "delete"}} {
+		for _, p := range []struct{ query, want string }{{"PRAGMA foreign_keys", "1"}, {"PRAGMA synchronous", "3"}, {"PRAGMA journal_mode", "delete"}} {
 			var got string
 			if err = c.QueryRowContext(context.Background(), p.query).Scan(&got); err != nil || strings.ToLower(got) != p.want {
 				t.Fatalf("%s=%s %v", p.query, got, err)

@@ -223,8 +223,10 @@ Never unlink/replace this lock file while writers may exist; include it with the
 stopped-writer recovery set. `Open` refuses a missing/unsafe lock file. Keeping
 the lock on another inode prevents a failed duplicate Open from closing a DB
 descriptor and dropping the process's SQLite POSIX locks. SQLite uses
-short immediate transactions, a single connection, DELETE journaling, FULL
-synchronization and foreign keys; connection-local settings are reapplied to
+short immediate transactions, a single connection, DELETE journaling, EXTRA
+synchronization (including the journal-unlink directory sync). Initialization also
+syncs the directory above a newly created private parent, then the parent after
+creating the DB/lock entries. Foreign keys are enabled; connection-local settings are reapplied to
 replacement connections. Subject CAS and immutable outcome insertion commit
 atomically. This lock does not fence a stale host on another storage backend;
 RWO is not an old-writer fence. No multi-host deployment is qualified.

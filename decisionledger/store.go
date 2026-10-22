@@ -78,10 +78,13 @@ func openStore(path, id, lineage string, create bool) (*Store, error) {
 		return nil, ErrInvalid
 	}
 	parent := filepath.Dir(path)
+	createdParent := false
 	if create {
-		if err := os.Mkdir(parent, 0700); err != nil && !os.IsExist(err) {
+		err := os.Mkdir(parent, 0700)
+		if err != nil && !os.IsExist(err) {
 			return nil, ErrUnavailable
 		}
+		createdParent = err == nil
 	}
 	for p := parent; ; p = filepath.Dir(p) {
 		st, err := os.Lstat(p)
@@ -98,6 +101,11 @@ func openStore(path, id, lineage string, create bool) (*Store, error) {
 		if p == filepath.Dir(p) {
 			break
 		}
+	}
+	// Persist a newly created directory's entry before creating its contents.
+	// Validate all ancestors first; never follow a symlink to perform this sync.
+	if createdParent && syncDirectory(filepath.Dir(parent)) != nil {
+		return nil, ErrUnavailable
 	}
 	for _, suffix := range []string{"-journal", "-wal", "-shm"} {
 		st, err := os.Lstat(path + suffix)
@@ -134,13 +142,7 @@ func openStore(path, id, lineage string, create bool) (*Store, error) {
 		if file.Sync() != nil || lock.Sync() != nil {
 			return failFile()
 		}
-		dir, err := os.Open(parent)
-		if err != nil {
-			return failFile()
-		}
-		err = dir.Sync()
-		dir.Close()
-		if err != nil {
+		if syncDirectory(parent) != nil {
 			return failFile()
 		}
 	}
@@ -150,7 +152,7 @@ func openStore(path, id, lineage string, create bool) (*Store, error) {
 	}
 	u := url.URL{Scheme: "file", Path: path}
 	q := url.Values{}
-	for _, p := range []string{"busy_timeout(5000)", "journal_mode(DELETE)", "synchronous(FULL)", "foreign_keys(1)"} {
+	for _, p := range []string{"busy_timeout(5000)", "journal_mode(DELETE)", "synchronous(EXTRA)", "foreign_keys(1)"} {
 		q.Add("_pragma", p)
 	}
 	u.RawQuery = q.Encode()
@@ -182,6 +184,19 @@ func openStore(path, id, lineage string, create bool) (*Store, error) {
 	}
 	return s, nil
 }
+func syncDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return ErrUnavailable
+	}
+	err = dir.Sync()
+	closeErr := dir.Close()
+	if err != nil || closeErr != nil {
+		return ErrUnavailable
+	}
+	return nil
+}
+
 func privateFile(path string, create, exclusive bool) (*os.File, error) {
 	flags := unix.O_RDWR | unix.O_NOFOLLOW | unix.O_CLOEXEC
 	if create {
