@@ -54,10 +54,13 @@ func (c fixtureCredential) GetToken(_ context.Context, o policy.TokenRequestOpti
 	return azcore.AccessToken{Token: fixtureModelToken, ExpiresOn: time.Now().Add(time.Hour)}, nil
 }
 
-type releaseFixture struct{ runs atomic.Int32 }
+type releaseFixture struct {
+	runs      atomic.Int32
+	mediation api.Mediation
+}
 
-func (*releaseFixture) Describe(context.Context) (api.Descriptor, error) {
-	return api.Descriptor{ID: "release-notes", Version: "session-fixture-v1", Models: []string{"fixture-model"}, Tools: []api.ToolSpec{{Name: "publish_release_notes", Mediation: api.MediationRequiresApproval}}, Capabilities: api.Capabilities{Resumability: api.ResumabilityStatelessReplay, ForkSafe: true, ReasoningReplay: true}}, nil
+func (h *releaseFixture) Describe(context.Context) (api.Descriptor, error) {
+	return api.Descriptor{ID: "release-notes", Version: "session-fixture-v1", Models: []string{"fixture-model"}, Tools: []api.ToolSpec{{Name: "publish_release_notes", Mediation: h.mediation}}, Capabilities: api.Capabilities{Resumability: api.ResumabilityStatelessReplay, ForkSafe: true, ReasoningReplay: true}}, nil
 }
 
 // The fixture's model draft is followed by a deterministic approval-gated publication.
@@ -85,7 +88,7 @@ func (h *releaseFixture) Run(ctx context.Context, s *api.Start, sink api.EventSi
 		return err
 	}
 	key := s.ExecutionID + "/publish_release_notes"
-	result, err := sink.ToolCall(ctx, api.ToolCall{ID: key, Tool: "publish_release_notes", Args: map[string]any{"draft": response.Message.Text(), "destination": "release-notes-demo"}, Mediation: api.MediationRequiresApproval, IdempotencyKey: key})
+	result, err := sink.ToolCall(ctx, api.ToolCall{ID: key, Tool: "publish_release_notes", Args: map[string]any{"draft": response.Message.Text(), "destination": "release-notes-demo"}, Mediation: h.mediation, IdempotencyKey: key})
 	if err != nil {
 		return err
 	}
@@ -105,6 +108,7 @@ type hostFixture struct {
 	effects         *sql.DB
 	mu              sync.Mutex
 	boundary        []byte
+	afterEffect     func()
 }
 
 func (f *hostFixture) capture(v any) {
@@ -116,7 +120,7 @@ func (f *hostFixture) capture(v any) {
 
 func newHostFixture(t *testing.T) *hostFixture {
 	t.Helper()
-	f := &hostFixture{harness: &releaseFixture{}}
+	f := &hostFixture{harness: &releaseFixture{mediation: api.MediationRequiresApproval}}
 	dir := t.TempDir()
 	provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.models.Add(1)
@@ -206,6 +210,9 @@ func newHostFixture(t *testing.T) *hostFixture {
 				if _, err := f.effects.Exec(`INSERT OR IGNORE INTO effects VALUES(?,?,?)`, req.UID, req.Key, req.Args["draft"]); err != nil {
 					t.Error(err)
 					return
+				}
+				if f.afterEffect != nil {
+					f.afterEffect()
 				}
 				_ = json.NewEncoder(conn).Encode(map[string]any{"version": 1, "call_id": req.CallID, "is_error": false, "output": map[string]any{"text": "published"}})
 			}()

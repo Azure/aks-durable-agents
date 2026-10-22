@@ -3,7 +3,11 @@ package host
 import (
 	"context"
 	"database/sql"
+	"os"
 	"reflect"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -152,6 +156,121 @@ func TestFixtureAssemblyIntegration(t *testing.T) {
 		t.Fatalf("extra replay effects: models=%d sockets=%d effects=%d", f.models.Load(), f.sockets.Load(), effects)
 	}
 	f.assertNoSecrets(t, records)
+}
+
+// Catches missing per-tool dedup wiring at the real host assembly boundary.
+// The executor commits before its reply; host loss must leave a trailing intent,
+// and only an exact durable declaration may redrive it under its original key.
+func TestInterruptedDeclaredToolRecovery(t *testing.T) {
+	for _, declaration := range []string{"true", "false", "omitted"} {
+		t.Run(declaration, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+			defer cancel()
+			f := newHostFixture(t)
+			f.harness.mediation = api.MediationControllerMediated
+			reached, release := make(chan struct{}), make(chan struct{})
+			var first atomic.Bool
+			var unblock sync.Once
+			t.Cleanup(func() { unblock.Do(func() { close(release) }) })
+			f.afterEffect = func() {
+				if first.CompareAndSwap(false, true) {
+					close(reached)
+					<-release
+				}
+			}
+			_, c, stop := f.start(t)
+			s, err := c.CreateSession(ctx, &v1.Session{Harness: "release-notes"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			uid := s.GetMetadata().GetUid()
+			done := make(chan error, 1)
+			go func() {
+				_, err := c.Exec(ctx, client.ExecOptions{Session: uid, Inputs: []string{"Publish this"}})
+				done <- err
+			}()
+			select {
+			case <-reached:
+			case <-ctx.Done():
+				t.Fatal("executor did not reach the committed-effect barrier")
+			}
+			stop()
+			unblock.Do(func() { close(release) })
+			if err := <-done; err == nil {
+				t.Fatal("interrupted Exec unexpectedly completed")
+			}
+			config, err := os.ReadFile(f.config.ToolExecutors)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if declaration == "omitted" {
+				config = []byte(strings.Replace(string(config), `,"durable_dedup":true`, "", 1))
+			} else {
+				config = []byte(strings.Replace(string(config), `"durable_dedup":true`, `"durable_dedup":`+declaration, 1))
+			}
+			if err := os.WriteFile(f.config.ToolExecutors, config, 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, c, _ = f.start(t)
+			before, err := c.Replay(ctx, uid, 0, 0)
+			if err != nil || len(before) == 0 {
+				t.Fatalf("read interrupted execution: %v", err)
+			}
+			var intent *v1.LogRecord
+			for _, r := range before {
+				switch r.GetEvent().GetKind() {
+				case v1.EventKind_EVENT_TOOL_CALL:
+					intent = r
+				case v1.EventKind_EVENT_TOOL_RESULT, v1.EventKind_EVENT_END:
+					t.Fatal("interruption recorded a tool receipt or END")
+				}
+			}
+			if intent == nil {
+				t.Fatal("interruption has no tool intent")
+			}
+			head := before[len(before)-1].GetSeq()
+			_, err = c.Sessions().Resume(ctx, &v1.ResumeRequest{Session: uid, ExpectedLastSeq: &head})
+			if declaration == "true" {
+				if err != nil {
+					t.Fatalf("declared tool recovery: %v", err)
+				}
+			} else if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), controller.ErrUnansweredToolCall.Error()) {
+				t.Fatalf("undeclared tool must refuse ambiguous redrive: %v", err)
+			}
+			after, err := c.Replay(ctx, uid, 0, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempts := int32(1)
+			if declaration == "true" {
+				attempts = 2
+				ends, receipts := 0, 0
+				for _, r := range after {
+					if r.GetEvent().GetExecutionId() != intent.GetEvent().GetExecutionId() {
+						continue
+					}
+					if r.GetEvent().GetKind() == v1.EventKind_EVENT_END {
+						ends++
+					}
+					if r.GetEvent().GetKind() == v1.EventKind_EVENT_TOOL_RESULT && r.GetEvent().GetResult().GetId() == intent.GetEvent().GetTool().GetId() {
+						receipts++
+					}
+				}
+				if ends != 1 || receipts != 1 {
+					t.Fatalf("recovered invocation ends=%d receipts=%d", ends, receipts)
+				}
+			} else if !reflect.DeepEqual(before, after) {
+				t.Fatal("refused recovery changed the journal")
+			}
+			var effects, matching int
+			if err := f.effects.QueryRow(`SELECT count(*), count(CASE WHEN uid=? AND key=? THEN 1 END) FROM effects`, uid, intent.GetEvent().GetTool().GetIdempotencyKey()).Scan(&effects, &matching); err != nil {
+				t.Fatal(err)
+			}
+			if f.models.Load() != 1 || f.sockets.Load() != attempts || effects != 1 || matching != 1 {
+				t.Fatalf("recovery models=%d executor attempts=%d effects=%d matching session/key=%d", f.models.Load(), f.sockets.Load(), effects, matching)
+			}
+		})
+	}
 }
 
 // Required binds newly created sessions to the admitted caller. Independent

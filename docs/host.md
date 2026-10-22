@@ -62,9 +62,14 @@ What the host enforces:
   Caller JWTs are not forwarded to the model, harness or tool executor.
 - Static harness/tool routes use public placement packages and an independently
   implemented version-1 Unix executor protocol. Explicit `durable_dedup: true`
-  is required to dispatch; the executor still owns resource authorization and
-  durable deduplication. Protocol/transport errors are bounded and sanitized;
-  there are no automatic retries. A timeout/error never proves no effect occurred.
+  is required to dispatch and declares that exact harness/tool route safe for
+  Sessions to redrive on an explicit Resume when a controller-mediated call has
+  no recorded result. False, omitted and unknown declarations do not permit
+  redrive. The executor must durably deduplicate by session UID plus idempotency
+  key; the declaration does not implement deduplication or guarantee exactly-once
+  external effects. This uses the existing configuration and journal formats.
+  Protocol/transport errors are bounded and sanitized; the socket adapter does
+  not retry. A timeout/error never proves no effect occurred.
 
 ## Read disclosure and rollout
 
