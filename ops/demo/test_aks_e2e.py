@@ -150,6 +150,77 @@ class AksCollectorTests(unittest.TestCase):
             self.assert_diagnostics_unavailable()
         self.ws = original
 
+    def test_rollout_status_requires_matching_diagnostics_and_is_reserialized_on_failure(self):
+        path = self.ws / "rollout-status.json"
+        for operation, kind, name, counts in (
+                ("profile-rollout", "DaemonSet", "nightly-profile", (0, 2)),
+                ("deployment-rollout", "Deployment", "kaimahi-aks-durable-agents-host", (None, None)),
+                ("deployment-rollout", "Deployment", "kaimahi-aks-durable-agents-harness", (None, None)),
+                ("profile-rollout", "other", "other", (None, None))):
+            report = {"version": 1, "controllerKind": kind, "controllerName": name,
+                      "podReasons": ["ImagePullBackOff", "other"], "readyNodes": counts[0], "desiredNodes": counts[1]}
+            for result in ("failure", "cancelled"):
+                (self.ws / "diagnostics.json").write_text(json.dumps(dict(DIAGNOSTICS, operation=operation)))
+                path.write_text(json.dumps(report, indent=4))
+                run = self.collect(result=result)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertEqual((self.dest / path.name).read_text(), json.dumps(report, sort_keys=True) + "\n")
+                self.assertIn(f"Controller: {kind}/{name}", self.summary.read_text())
+                self.assertIn("Pod reasons: ImagePullBackOff, other", self.summary.read_text())
+                self.assertIn("Ready/desired nodes: 0/2" if kind == "DaemonSet" else "Ready/desired nodes: unknown/unknown",
+                              self.summary.read_text())
+                self.assertNotIn(SECRET, self.output())
+                self.reset_destination()
+
+    def test_rollout_missing_unsafe_and_mismatched_status_never_copied(self):
+        path = self.ws / "rollout-status.json"
+        report = {"version": 1, "controllerKind": "DaemonSet", "controllerName": "nightly-profile",
+                  "podReasons": ["other"], "readyNodes": None, "desiredNodes": None}
+        (self.ws / "diagnostics.json").write_text(json.dumps(dict(DIAGNOSTICS, operation="profile-rollout")))
+        for raw in (None, SECRET, json.dumps(dict(report, message=SECRET)),
+                    json.dumps(report)[:-1] + ',"version":1}', b" " * (16 * 1024 + 1)):
+            if raw is not None:
+                path.write_bytes(raw if isinstance(raw, bytes) else raw.encode())
+            self.assertEqual(self.collect(result="failure").returncode, 0)
+            self.assertFalse((self.dest / path.name).exists())
+            self.assertIn("- Rollout status: unavailable\n", self.summary.read_text())
+            self.assertNotIn(SECRET, self.output())
+            self.reset_destination()
+        path.unlink()
+        for kind in ("fifo", "symlink"):
+            os.mkfifo(path) if kind == "fifo" else path.symlink_to(self.ws / "proof.json")
+            self.assertEqual(self.collect(result="cancelled").returncode, 0)
+            self.assertFalse((self.dest / path.name).exists())
+            self.assertIn("Rollout status: unavailable", self.summary.read_text())
+            self.reset_destination()
+            path.unlink()
+        path.write_text(json.dumps(report))
+        for operation in ("deployment-rollout", "fixture-init-wait", None):
+            diagnostic = self.ws / "diagnostics.json"
+            if operation is None:
+                diagnostic.unlink()
+            else:
+                diagnostic.write_text(json.dumps(dict(DIAGNOSTICS, operation=operation)))
+            self.assertEqual(self.collect(result="failure").returncode, 0)
+            self.assertFalse((self.dest / path.name).exists())
+            self.assertEqual("Rollout status: unavailable" in self.summary.read_text(), operation == "deployment-rollout")
+            self.reset_destination()
+
+    def test_success_does_not_read_rollout_extra_and_requires_all_three_proofs(self):
+        path = self.ws / "rollout-status.json"
+        os.mkfifo(path)
+        for missing in (None, "proof.json", "network-proof.json", "timings.json"):
+            if missing:
+                saved = (self.ws / missing).read_bytes()
+                (self.ws / missing).unlink()
+            run = self.collect()
+            self.assertEqual(run.returncode, int(missing is not None), run.stderr)
+            self.assertFalse((self.dest / path.name).exists())
+            self.assertNotIn("Rollout", self.summary.read_text())
+            self.reset_destination()
+            if missing:
+                (self.ws / missing).write_bytes(saved)
+
     def test_only_validated_public_json_and_fixed_metadata_are_copied(self):
         run = self.collect(extra=("--stage", "finalize"))
         self.assertEqual(run.returncode, 0, run.stderr)

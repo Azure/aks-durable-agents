@@ -254,8 +254,9 @@ Orphan managed node RGs still require exact-scope operator recovery.
 ### Evidence and failure tracker
 
 Only closed-schema `proof.json`, eight-record `network-proof.json`, `timings.json`,
-failure-only `diagnostics.json` and fixed status/summary metadata are retained for
-seven days. The AKS collector ignores console input entirely and refuses unknown
+failure-only `diagnostics.json` and optional `rollout-status.json`, and fixed
+status/summary metadata are retained for seven days. The AKS collector ignores
+console input entirely and refuses unknown
 fields, malformed or incomplete proof, symlinks/nonregular files and oversized
 data. Private command logs, model text, kubeconfig/cache, values, journals and
 backup archives are never uploaded.
@@ -264,7 +265,8 @@ Failure diagnostics contain exactly `version: 1` and fixed-enum `phase`,
 `operation`, `reason`, `cleanup` fields, never exception text or command output.
 Install operations distinguish profile create/rollout/verify/remove/node-check,
 namespace/volume create, chart install, policy check and fixture init create/wait/remove;
-other phases use the default `phase` operation. Reasons are `deadline-exhausted`,
+workload Deployment rollouts use `deployment-rollout`; other steps use the default
+`phase` operation. Reasons are `deadline-exhausted`,
 `command-timeout`, `command-failed`, `interrupted`, `invariant-failed`, `io-failed`
 or `unclassified-failure`. These categories do **not** identify an underlying
 pod/container root cause. The original failure context is captured before source
@@ -278,6 +280,37 @@ phase. Missing, unsafe or malformed diagnostics produce `Diagnostics: unavailabl
 all failure summaries say `Underlying cause: not determined`. Publication is best
 effort: invalid public directories, a hard kill or a diagnostic-write failure may
 leave no diagnostics and never justify a guessed workload fix.
+
+Optional rollout status has exactly six fields: `version: 1`,
+`controllerKind`, `controllerName`, `podReasons`, `readyNodes`, `desiredNodes`.
+Controller pairs are only `DaemonSet/nightly-profile`,
+`Deployment/kaimahi-aks-durable-agents-host`,
+`Deployment/kaimahi-aks-durable-agents-harness`, or `other/other`. Sorted, unique
+reasons are limited to `ImagePullBackOff`, `ErrImagePull`, `CrashLoopBackOff`,
+`CreateContainerConfigError`, `OOMKilled`, `Unschedulable`,
+`readiness probe failing`, and `other`. The readiness label is reserved: core/v1
+Pod status does not prove a probe-specific cause, so this producer never derives
+it from generic unready state or messages. Unknown/unsupported status is `other`.
+DS counts are integers 0..2147483647 or `null` (unknown, not invented zero);
+Deployment/other counts are always `null`.
+
+Only a failed rollout categorized `command-failed` permits optional read-only
+capture: at most two GETs for a DS or three for a Deployment, sharing at most five
+seconds of the **existing work deadline**, never the teardown reserve. Per-command
+limits/request timeouts and checks before/after reads, parsing and projection
+discard the entire capture on error, expiry or interruption. JSON parsing is not
+hard-preempted at five seconds; an over-budget result is discarded. Source
+selectors and verified controller ownership constrain attribution. Deployment
+reasons aggregate live Pods from **all owned ReplicaSet revisions**, including
+old revisions; deleting Pods are ignored. No Pod/node/container names, UIDs,
+namespaces, labels, messages, events or logs are published. Fixtures are sanitized
+API-shape examples, not historic live captures.
+
+Failure/cancellation collection requires matching validated rollout diagnostics
+before loading this optional file; missing/unsafe status says
+`Rollout status: unavailable` only for a known rollout operation. Success ignores
+it and still needs all three proofs. These categories are not a functional fix or
+a root-cause determination, and source-fence status is not cloud teardown proof.
 
 The separate bot-owned tracker is titled **AKS e2e regression**. Its managed body
 contains only allowlisted stage, workflow URL and commit SHA; existing kind bot

@@ -356,7 +356,7 @@ class DiagnosticTests(unittest.TestCase):
         }
         self.argv = ["--workdir", str(self.work), "--public-dir", str(self.public), "--client", str(Path(sys.executable).resolve())]
 
-    def external(self, operation, error=None, fail_when=None):
+    def external(self, operation, error=None, fail_when=None, capture=None):
         # The real Scenario, install/profile, and command builders run. Only the
         # external executor is fake; no cloud, Kubernetes, Helm or model call.
         n = self.n
@@ -365,7 +365,7 @@ class DiagnosticTests(unittest.TestCase):
                      "spec": {"podSelector": {}}} for i in range(3)]
         def labels(role):
             return {"app.kubernetes.io/name": "aks-durable-agents", "app.kubernetes.io/instance": "kaimahi", "app.kubernetes.io/component": role}
-        rendered = policies + [{"kind": "Deployment", "metadata": {"name": role, "labels": {"app.kubernetes.io/component": role}},
+        rendered = policies + [{"kind": "Deployment", "metadata": {"name": "kaimahi-aks-durable-agents-" + role, "labels": {"app.kubernetes.io/component": role}},
             "spec": {"replicas": 0, "selector": {"matchLabels": labels(role)}, "template": {"metadata": {"labels": labels(role)},
                 "spec": {"containers": [{"image": image}], "serviceAccountName": "host"}}}} for role, image in pins.items()]
         nodes = [{"metadata": {"name": name, "labels": {"kubernetes.io/os": "linux", "kubernetes.io/arch": "amd64"}},
@@ -382,7 +382,18 @@ class DiagnosticTests(unittest.TestCase):
                         return "\n---\n".join(json.dumps(obj) for obj in rendered).encode()
                     return b""
                 command = args[7:]
-                if ((operation == "profile-rollout" and command[:1] == ["rollout"])
+                if command[:1] == ["get"] and any(arg.startswith("--request-timeout=") for arg in command):
+                    value = capture(command, kwargs) if callable(capture) else (capture or {}).get(command[1], {})
+                    if isinstance(value, BaseException):
+                        raise value
+                    return value if isinstance(value, bytes) else json.dumps(value).encode()
+                if command[:2] == ["get", "pod/nightly-credential"]:
+                    return json.dumps({"spec": {"containers": [{"env": [
+                        {"name": "AZURE_CLIENT_ID", "value": "55555555-5555-5555-5555-555555555555"},
+                        {"name": "AZURE_FEDERATED_TOKEN_FILE", "value": "PRIVATE-token"}]}]}}).encode()
+                if ((operation in ("host", "harness") and command[:3] == [
+                        "rollout", "status", "deployment/kaimahi-aks-durable-agents-" + operation])
+                        or (operation == "profile-rollout" and command[:1] == ["rollout"])
                         or (operation == "fixture-init-wait" and command[:1] == ["wait"] and "pod/nightly-prepare" in command)):
                     raise error if error is not None else ValueError(DiagnosticTests.SECRET)
                 if command[:2] == ["get", "namespace"]:
@@ -405,6 +416,330 @@ class DiagnosticTests(unittest.TestCase):
         with patch.dict(os.environ, self.env, clear=True), patch.object(self.n, "Executor", external), contextlib.redirect_stderr(stderr):
             result = self.n.main(self.argv)
         return result, stderr.getvalue()
+
+    def rollout_shape(self, kind="DaemonSet", role="harness"):
+        # Sanitized, hand-authored apps/v1 and core/v1 shapes, NOT historic W499 captures.
+        labels = {"nightly-profile": "installer"} if kind == "DaemonSet" else {
+            "app.kubernetes.io/name": "aks-durable-agents", "app.kubernetes.io/instance": "kaimahi",
+            "app.kubernetes.io/component": role}
+        name = "nightly-profile" if kind == "DaemonSet" else "kaimahi-aks-durable-agents-" + role
+        def owner(kind, name, uid):
+            return {"apiVersion": "apps/v1", "kind": kind, "name": name, "uid": uid, "controller": True}
+        controller = {"apiVersion": "apps/v1", "kind": kind,
+            "metadata": {"name": name, "uid": self.SECRET + "-controller"},
+            "spec": {"selector": {"matchLabels": labels}},
+            "status": {"numberReady": 0, "desiredNumberScheduled": 2}}
+        responses = {kind.lower() + "/" + name: controller}
+        pod_owner = owner(kind, name, controller["metadata"]["uid"])
+        pod_labels = dict(labels)
+        if kind == "Deployment":
+            controller["status"] = {"replicas": 2, "updatedReplicas": 1, "readyReplicas": 0, "availableReplicas": 0,
+                "conditions": [{"type": "Progressing", "status": "False", "reason": "ProgressDeadlineExceeded",
+                                "message": self.SECRET}]}
+            replicas = []
+            for revision in ("old", "new"):
+                rs_name, uid = self.SECRET + "-rs-" + revision, self.SECRET + "-rsuid-" + revision
+                rs_labels = dict(labels, **{"pod-template-hash": self.SECRET + revision})
+                replicas.append({"apiVersion": "apps/v1", "kind": "ReplicaSet",
+                    "metadata": {"name": rs_name, "uid": uid, "labels": rs_labels, "ownerReferences": [pod_owner]},
+                    "spec": {"selector": {"matchLabels": rs_labels}}})
+            responses["replicasets"] = {"apiVersion": "apps/v1", "kind": "ReplicaSetList", "items": replicas}
+            pod_owner = owner("ReplicaSet", replicas[0]["metadata"]["name"], replicas[0]["metadata"]["uid"])
+            pod_labels["pod-template-hash"] = self.SECRET + "old"
+        item = {"apiVersion": "v1", "kind": "Pod",
+            "metadata": {"name": self.SECRET + "-pod", "uid": self.SECRET + "-poduid", "labels": pod_labels,
+                         "namespace": self.SECRET, "ownerReferences": [pod_owner]},
+            "spec": {"nodeName": self.SECRET + "-node"},
+            "status": {"phase": "Pending", "containerStatuses": [{"name": self.SECRET,
+                "ready": False, "state": {"waiting": {"reason": "ImagePullBackOff", "message": self.SECRET}},
+                "lastState": {}}]}}
+        responses["pods"] = {"apiVersion": "v1", "kind": "PodList", "items": [item]}
+        return responses, name
+
+    def rollout_api(self, operation="profile-rollout", capture=None, error=None):
+        external, calls = self.external(operation, error=error, capture=capture)
+        api = self.n.Scenario(self.work, Path(sys.executable).resolve(), ROOT / "charts/aks-durable-agents",
+                              self.env, executor=external())
+        api.preflight()
+        calls.clear()
+        return api, calls
+
+    def capture_calls(self, calls):
+        return [(args, kw) for args, kw in calls if any(str(arg).startswith("--request-timeout=") for arg in args)]
+
+    def test_real_rollout_producers_main_to_collector_and_no_private_canaries(self):
+        collector = self.n.local_module("rollout_collector", ROOT / "ops/demo/e2e.py")
+        for operation, kind, role in (("profile-rollout", "DaemonSet", "harness"),
+                                      ("harness", "Deployment", "harness"), ("host", "Deployment", "host")):
+            responses, name = self.rollout_shape(kind, role)
+            if kind == "Deployment" and role == "host":
+                responses["replicasets"].update(apiVersion="v1", kind="List")
+            duplicate = copy.deepcopy(responses["pods"]["items"][0])
+            duplicate["metadata"].update(name=self.SECRET + "-second-pod", uid=self.SECRET + "-second-uid")
+            duplicate["spec"]["nodeName"] = self.SECRET + "-second-node"
+            responses["pods"]["items"].append(duplicate)
+            external, calls = self.external(operation, error=self.n.SafeFailure("command-failed", self.SECRET), capture=responses)
+            with patch.object(self.n.Scenario, "network", return_value=[]):
+                result, stderr = self.invoke(external)
+            self.assertEqual(result, 1)
+            report = {"version": 1, "controllerKind": kind, "controllerName": name,
+                      "podReasons": ["ImagePullBackOff"], "readyNodes": 0 if kind == "DaemonSet" else None,
+                      "desiredNodes": 2 if kind == "DaemonSet" else None}
+            self.assertEqual(json.loads((self.public / "rollout-status.json").read_text()), report)
+            diagnostics = json.loads((self.public / "diagnostics.json").read_text())
+            self.assertEqual(diagnostics["operation"], "profile-rollout" if kind == "DaemonSet" else "deployment-rollout")
+            self.assertEqual(diagnostics["reason"], "command-failed")
+            dest = self.root / ("rollout-" + operation)
+            summary = self.root / "summary.md"
+            self.assertEqual(collector.collect_aks(self.public, dest, summary, "failure",
+                "https://github.com/Azure/aks-durable-agents/actions/runs/123", "a" * 40, "teardown"), 0)
+            self.assertEqual(json.loads((dest / "rollout-status.json").read_text()), report)
+            public = stderr + summary.read_text() + "".join(p.read_text() for p in self.public.iterdir())
+            public += "".join(p.read_text() for p in dest.iterdir())
+            self.assertNotIn(self.SECRET, public)
+            self.assertNotIn(str(self.work), public)
+            gets = self.capture_calls(calls)
+            self.assertEqual(len(gets), 2 if kind == "DaemonSet" else 3)
+            for args, kw in gets:
+                self.assertFalse(kw["cleanup"])
+                self.assertTrue(0 < kw["limit"] <= 5)
+                self.assertEqual(args[6], "nightly-profile" if kind == "DaemonSet" else "agents")
+                if args[8] in ("pods", "replicasets"):
+                    selector = args[args.index("-l") + 1]
+                    self.assertNotIn(self.SECRET, selector)
+                    self.assertNotIn("pod-template-hash", selector)
+            rollout = next(args for args, _ in calls if args[7:10] == ["rollout", "status", kind.lower() + "/" + name])
+            self.assertEqual(rollout[10:], ["--timeout=180s"])
+            self.clear_work()
+
+    def test_reason_projection_current_init_last_terminated_and_no_readiness_invention(self):
+        cases = [
+            ({field: [{"state": {"waiting": {"reason": reason}}}]}, [reason])
+            for field in ("containerStatuses", "initContainerStatuses")
+            for reason in ("ImagePullBackOff", "ErrImagePull", "CrashLoopBackOff", "CreateContainerConfigError")]
+        cases += [
+            ({"initContainerStatuses": [{"state": {"terminated": {"reason": "OOMKilled", "message": self.SECRET}}}]}, ["OOMKilled"]),
+            ({"containerStatuses": [{"state": {"waiting": {"reason": "CrashLoopBackOff"}},
+                                     "lastState": {"terminated": {"reason": "OOMKilled"}}}]}, ["CrashLoopBackOff", "OOMKilled"]),
+            ({"conditions": [{"type": "PodScheduled", "status": "False", "reason": "Unschedulable", "message": self.SECRET}]}, ["Unschedulable"]),
+            ({"conditions": [{"type": "Ready", "status": "False", "reason": "ContainersNotReady"}],
+              "containerStatuses": [{"ready": False, "state": {"running": {}}}]}, ["other"]),
+            ({"containerStatuses": [{"state": {"waiting": {"reason": self.SECRET, "message": "readiness probe failing"}}}]}, ["other"]),
+            ({"containerStatuses": [{"state": {"terminated": {"reason": "Error"}}}]}, ["other"]),
+            ({}, ["other"]), ({"containerStatuses": "unknown-shape"}, ["other"])]
+        for status, wanted in cases:
+            with self.subTest(status=status):
+                responses, name = self.rollout_shape()
+                responses["pods"]["items"][0]["status"] = status
+                api, _ = self.rollout_api(capture=responses, error=self.n.SafeFailure("command-failed"))
+                with self.assertRaises(self.n.SafeFailure):
+                    api.rollout("DaemonSet", name, namespace="nightly-profile")
+                self.assertEqual(api.rollout_status["podReasons"], wanted)
+                self.assertNotIn("readiness probe failing", api.rollout_status["podReasons"])
+                self.clear_work()
+
+    def test_capture_ownership_selector_counts_and_unknown_controller_are_conservative(self):
+        mutations = [
+            ("selector", lambda r: r["daemonset/nightly-profile"]["spec"]["selector"].update(matchExpressions=[{}])),
+            ("controller", lambda r: r["daemonset/nightly-profile"].update(kind=self.SECRET)),
+            ("controller-name", lambda r: r["daemonset/nightly-profile"]["metadata"].update(name=self.SECRET)),
+            ("uid", lambda r: r["daemonset/nightly-profile"]["metadata"].pop("uid")),
+            ("owner", lambda r: r["pods"]["items"][0]["metadata"]["ownerReferences"][0].update(controller=False)),
+            ("api", lambda r: r["pods"]["items"][0]["metadata"]["ownerReferences"][0].update(apiVersion="v1")),
+            ("foreign", lambda r: r["pods"]["items"][0]["metadata"]["ownerReferences"][0].update(uid="foreign")),
+            ("labels", lambda r: r["pods"]["items"][0]["metadata"]["labels"].clear()),
+            ("deleting", lambda r: r["pods"]["items"][0]["metadata"].update(deletionTimestamp="now"))]
+        for label, mutate in mutations:
+            responses, name = self.rollout_shape()
+            mutate(responses)
+            api, _ = self.rollout_api(capture=responses, error=self.n.SafeFailure("command-failed"))
+            with self.assertRaises(self.n.SafeFailure):
+                api.rollout("DaemonSet", name, namespace="nightly-profile")
+            self.assertEqual(api.rollout_status["podReasons"], ["other"], label)
+            if label in ("controller", "controller-name"):
+                self.assertEqual((api.rollout_status["controllerKind"], api.rollout_status["controllerName"]), ("other", "other"))
+                self.assertIsNone(api.rollout_status["readyNodes"])
+            self.clear_work()
+        for value in (None, True, -1, 2147483648, self.SECRET):
+            responses, name = self.rollout_shape()
+            responses["daemonset/" + name]["status"] = {"numberReady": value}
+            api, _ = self.rollout_api(capture=responses, error=self.n.SafeFailure("command-failed"))
+            with self.assertRaises(self.n.SafeFailure):
+                api.rollout("DaemonSet", name, namespace="nightly-profile")
+            self.assertIsNone(api.rollout_status["readyNodes"])
+            self.assertIsNone(api.rollout_status["desiredNodes"])
+            self.clear_work()
+        api, calls = self.rollout_api(error=self.n.SafeFailure("command-failed"))
+        with self.assertRaises(self.n.SafeFailure):
+            api.rollout("DaemonSet", self.SECRET)
+        self.assertEqual(api.rollout_status, {"version": 1, "controllerKind": "other", "controllerName": "other",
+            "podReasons": ["other"], "readyNodes": None, "desiredNodes": None})
+        self.assertEqual(self.capture_calls(calls), [])
+
+    def test_deployment_all_owned_revisions_but_not_foreign_rs_or_pods(self):
+        responses, name = self.rollout_shape("Deployment")
+        pods = responses["pods"]["items"]
+        newer = copy.deepcopy(pods[0])
+        rs = responses["replicasets"]["items"][1]
+        newer["metadata"]["ownerReferences"][0].update(name=rs["metadata"]["name"], uid=rs["metadata"]["uid"])
+        newer["metadata"]["labels"]["pod-template-hash"] = self.SECRET + "new"
+        newer["status"]["containerStatuses"][0]["state"]["waiting"]["reason"] = "CrashLoopBackOff"
+        pods.append(newer)
+        foreign = copy.deepcopy(newer)
+        foreign["metadata"]["ownerReferences"][0]["uid"] = "not-owned"
+        foreign["status"]["containerStatuses"][0]["state"]["waiting"]["reason"] = "ErrImagePull"
+        pods.append(foreign)
+        api, _ = self.rollout_api("harness", responses, self.n.SafeFailure("command-failed"))
+        with self.assertRaises(self.n.SafeFailure):
+            api.rollout("Deployment", name)
+        self.assertEqual(api.rollout_status["podReasons"], ["CrashLoopBackOff", "ImagePullBackOff"])
+        self.clear_work()
+        responses, name = self.rollout_shape("Deployment")
+        responses["replicasets"]["items"][0]["metadata"]["ownerReferences"][0]["uid"] = "not-deployment"
+        api, _ = self.rollout_api("harness", responses, self.n.SafeFailure("command-failed"))
+        with self.assertRaises(self.n.SafeFailure):
+            api.rollout("Deployment", name)
+        self.assertEqual(api.rollout_status["podReasons"], ["other"])
+        self.clear_work()
+        for api_version, list_kind, item_version, wanted in (
+                ("v1", "List", "apps/v1", ["ImagePullBackOff"]),
+                ("apps/v1", "List", "apps/v1", ["other"]),
+                ("v1", "ReplicaSetList", "apps/v1", ["other"]),
+                ("apps/v1", "ReplicaSetList", "apps/v2", ["other"])):
+            responses, name = self.rollout_shape("Deployment")
+            responses["replicasets"].update(apiVersion=api_version, kind=list_kind)
+            responses["replicasets"]["items"][0]["apiVersion"] = item_version
+            api, _ = self.rollout_api("harness", responses, self.n.SafeFailure("command-failed"))
+            with self.assertRaises(self.n.SafeFailure):
+                api.rollout("Deployment", name)
+            self.assertEqual(api.rollout_status["podReasons"], wanted, (api_version, list_kind, item_version))
+            self.clear_work()
+
+    def test_only_original_command_failed_gets_capture_and_success_restores_operation(self):
+        for error in (self.n.SafeFailure("command-timeout"), self.n.SafeFailure("interrupted"),
+                      self.n.SafeFailure("deadline-exhausted"), self.n.SafeFailure("unknown"), KeyboardInterrupt(), OSError()):
+            api, calls = self.rollout_api(error=error)
+            with self.assertRaises(type(error)) as raised:
+                api.rollout("DaemonSet", "nightly-profile", namespace="nightly-profile")
+            self.assertIs(raised.exception, error)
+            self.assertEqual(self.capture_calls(calls), [])
+            self.assertEqual(api.rollout_status["podReasons"], ["other"])
+            self.clear_work()
+        api, calls = self.rollout_api(operation=None)
+        api.operation = "phase"
+        api.rollout("Deployment", "kaimahi-aks-durable-agents-harness")
+        self.assertEqual(api.operation, "phase")
+        self.assertIsNone(api.rollout_status)
+        self.assertEqual(self.capture_calls(calls), [])
+
+    def test_capture_failures_and_interrupts_discard_partial_counts_keep_primary_and_fence(self):
+        for kind, operation, fail_at in (("DaemonSet", "profile-rollout", 1), ("DaemonSet", "profile-rollout", 2),
+                                         ("Deployment", "harness", 1), ("Deployment", "harness", 2), ("Deployment", "harness", 3)):
+            for secondary in (KeyboardInterrupt(self.SECRET), self.n.SafeFailure("interrupted"),
+                              self.n.SafeFailure("command-timeout"), OSError(self.SECRET), b"{bad-json",
+                              b" " * (16 * 1024 * 1024 + 1)):
+                responses, name = self.rollout_shape(kind)
+                seen = []
+                def capture(command, kwargs):
+                    seen.append(command)
+                    return secondary if len(seen) == fail_at else responses[command[1]]
+                primary = self.n.SafeFailure("command-failed", self.SECRET)
+                api, calls = self.rollout_api(operation, capture, primary)
+                api.owned = True
+                api.preflight = lambda: api.rollout(kind, name, namespace="nightly-profile" if kind == "DaemonSet" else None)
+                with self.assertRaises(self.n.SafeFailure) as raised:
+                    self.n.run_scenario(api)
+                self.assertIs(raised.exception, primary)
+                self.assertEqual(raised.exception.reason, "command-failed")
+                self.assertEqual(len(seen), fail_at)
+                self.assertEqual(api.rollout_status, {"version": 1, "controllerKind": kind,
+                    "controllerName": name, "podReasons": ["other"], "readyNodes": None, "desiredNodes": None})
+                self.assertEqual(sum("scale" in args for args, _ in calls), 2)
+                self.assertEqual(api.diagnostics["reason"], "command-failed")
+                self.clear_work()
+
+    def test_capture_budget_checked_before_and_after_reads_parse_and_projection(self):
+        responses, name = self.rollout_shape("Deployment")
+        clock = [100.0]
+        def capture(command, kwargs):
+            clock[0] += 1
+            return responses[command[1]]
+        api, calls = self.rollout_api("harness", capture, self.n.SafeFailure("command-failed"))
+        api.deadlines.remaining = lambda cleanup=False: 20
+        with patch.object(self.n.time, "monotonic", lambda: clock[0]), self.assertRaises(self.n.SafeFailure):
+            api.rollout("Deployment", name)
+        self.assertEqual([kw["limit"] for _, kw in self.capture_calls(calls)], [5, 4, 3])
+        self.assertEqual(api.rollout_status["podReasons"], ["ImagePullBackOff"])
+        self.clear_work()
+        for expire in ("initial-work", "after-get", "after-parse", "after-project", "work-after-get"):
+            responses, name = self.rollout_shape()
+            primary = self.n.SafeFailure("command-failed")
+            clock = [100.0]
+            def capture(command, kwargs):
+                if expire == "after-get":
+                    clock[0] += 6
+                if expire == "work-after-get":
+                    api.deadlines.remaining = lambda cleanup=False: (_ for _ in ()).throw(self.n.SafeFailure("deadline-exhausted"))
+                return responses[command[1]]
+            api, calls = self.rollout_api(capture=capture, error=primary)
+            api.deadlines.remaining = lambda cleanup=False: .25
+            if expire == "initial-work":
+                api.deadlines.remaining = lambda cleanup=False: (_ for _ in ()).throw(self.n.SafeFailure("deadline-exhausted"))
+            parse = self.n.strict_json
+            def slow_parse(raw):
+                value = parse(raw)
+                if expire == "after-parse":
+                    clock[0] += 6
+                return value
+            validate = self.n.rollout_schema.validate_rollout_status
+            def slow_validate(value):
+                value = validate(value)
+                if expire == "after-project":
+                    clock[0] += 6
+                return value
+            with patch.object(self.n.time, "monotonic", lambda: clock[0]), patch.object(self.n, "strict_json", slow_parse), patch.object(self.n.rollout_schema, "validate_rollout_status", slow_validate):
+                with self.assertRaises(self.n.SafeFailure) as raised:
+                    api.rollout("DaemonSet", name, namespace="nightly-profile")
+            self.assertIs(raised.exception, primary)
+            gets = self.capture_calls(calls)
+            self.assertEqual(len(gets), 0 if expire == "initial-work" else 2 if expire == "after-project" else 1)
+            for args, kw in gets:
+                self.assertTrue(0 < kw["limit"] <= .25)
+                self.assertLessEqual(float(next(x for x in args if x.startswith("--request-timeout=")).split("=")[1][:-1]), .25)
+                self.assertFalse(kw["cleanup"])
+            self.assertEqual(api.rollout_status["podReasons"], ["other"])
+            self.assertIsNone(api.rollout_status["readyNodes"])
+            self.clear_work()
+
+    def test_rollout_capture_primary_snapshot_survives_cleanup_failure_and_separate_writes(self):
+        responses, _ = self.rollout_shape("Deployment")
+        external, calls = self.external("harness", error=self.n.SafeFailure("command-failed"), capture=responses)
+        run = external.run
+        def fail_cleanup(executor, args, **kwargs):
+            if "scale" in args and kwargs.get("cleanup"):
+                calls.append((args, kwargs))
+                raise self.n.SafeFailure("interrupted")
+            return run(executor, args, **kwargs)
+        external.run = fail_cleanup
+        with patch.object(self.n.Scenario, "network", return_value=[]):
+            self.assertEqual(self.invoke(external)[0], 1)
+        self.assertEqual(sum("scale" in args and kw.get("cleanup", False) for args, kw in calls), 2)
+        self.assertEqual(json.loads((self.public / "diagnostics.json").read_text())["reason"], "command-failed")
+        self.assertEqual(json.loads((self.public / "diagnostics.json").read_text())["cleanup"], "failed")
+        self.assertEqual(json.loads((self.public / "rollout-status.json").read_text())["podReasons"], ["ImagePullBackOff"])
+        self.clear_work()
+        for broken in ("diagnostics.json", "rollout-status.json"):
+            external, _ = self.external("profile-rollout", error=self.n.SafeFailure("command-failed"), capture=self.rollout_shape()[0])
+            original = self.n.write_json
+            def write(path, value):
+                if path.name == broken:
+                    raise OSError(self.SECRET)
+                return original(path, value)
+            with patch.object(self.n, "write_json", write):
+                self.assertEqual(self.invoke(external)[0], 1)
+            other = "rollout-status.json" if broken == "diagnostics.json" else "diagnostics.json"
+            self.assertTrue((self.public / other).exists())
+            self.clear_work()
 
     def test_real_main_install_profile_failure_to_real_collector(self):
         collector = self.n.local_module("diagnostic_collector", ROOT / "ops/demo/e2e.py")

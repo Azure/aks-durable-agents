@@ -35,7 +35,7 @@ class ProofTests(unittest.TestCase):
                       "approve", "continue", "backup", "replay", "cleanup"),
             "operation": ("phase", "profile-create", "profile-rollout", "profile-verify", "profile-remove",
                           "profile-node-check", "namespace-create", "volume-create", "chart-install", "policy-check",
-                          "fixture-init-create", "fixture-init-wait", "fixture-init-remove"),
+                          "fixture-init-create", "fixture-init-wait", "fixture-init-remove", "deployment-rollout"),
             "reason": ("deadline-exhausted", "command-timeout", "command-failed", "interrupted",
                        "invariant-failed", "io-failed", "unclassified-failure"),
             "cleanup": ("succeeded", "failed", "not-run"),
@@ -103,6 +103,74 @@ class ProofTests(unittest.TestCase):
             for unsafe in (link, link / "nested"):
                 with self.subTest(unsafe=unsafe), self.assertRaises(OSError):
                     proof.load_public(unsafe, path.name)
+
+    def test_rollout_status_closed_controller_reason_and_count_matrix(self):
+        good = {"version": 1, "controllerKind": "DaemonSet", "controllerName": "nightly-profile",
+                "podReasons": ["ImagePullBackOff", "other"], "readyNodes": 0, "desiredNodes": 2}
+        self.assertEqual(proof.validate_rollout_status(good), good)
+        for kind, name in (("Deployment", "kaimahi-aks-durable-agents-host"),
+                           ("Deployment", "kaimahi-aks-durable-agents-harness"), ("other", "other")):
+            candidate = dict(good, controllerKind=kind, controllerName=name, readyNodes=None, desiredNodes=None)
+            self.assertEqual(proof.validate_rollout_status(candidate), candidate)
+            with self.assertRaises(ValueError):
+                proof.validate_rollout_status(dict(candidate, readyNodes=0))
+        for reason in ("ImagePullBackOff", "ErrImagePull", "CrashLoopBackOff", "CreateContainerConfigError",
+                       "OOMKilled", "Unschedulable", "readiness probe failing", "other"):
+            proof.validate_rollout_status(dict(good, podReasons=[reason]))
+        for count in (None, 0, 2, 2147483647):
+            proof.validate_rollout_status(dict(good, readyNodes=count, desiredNodes=count))
+        invalid = [(key, value) for key in ("readyNodes", "desiredNodes")
+                   for value in (True, False, -1, 2147483648, 2**128, 1.0, "2", [], {})]
+        invalid += [("version", value) for value in (True, 1.0, 2, "1")]
+        invalid += [("controllerKind", value) for value in ("Pod", "Deployment", "other", [], None)]
+        invalid += [("controllerName", value) for value in ("SECRET-CANARY", "other", [], None)]
+        invalid += [("podReasons", value) for value in ([], ["SECRET-CANARY"], ["other", "other"],
+                     ["other", "OOMKilled"], ["ReadinessProbeFailed"], "OOMKilled", [None], [[]])]
+        for key, value in invalid:
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                proof.validate_rollout_status(dict(good, **{key: value}))
+        for key in good:
+            missing = dict(good)
+            del missing[key]
+            with self.subTest(missing=key), self.assertRaises(ValueError):
+                proof.validate_rollout_status(missing)
+        with self.assertRaises(ValueError):
+            proof.validate_rollout_status(dict(good, message="SECRET-CANARY"))
+
+    def test_rollout_reader_uses_existing_descriptor_and_strict_json_guards(self):
+        good = {"version": 1, "controllerKind": "DaemonSet", "controllerName": "nightly-profile",
+                "podReasons": ["other"], "readyNodes": None, "desiredNodes": None}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / "rollout-status.json"
+            path.write_text(json.dumps(good, indent=4))
+            self.assertEqual(proof.load_public(root, path.name), good)
+            for raw in ("not-json", b"\xff", "[" * 1500 + "]" * 1500,
+                        json.dumps(good)[:-1] + ',"version":1}',
+                        json.dumps(dict(good, message="SECRET-CANARY")),
+                        json.dumps(good).replace('"readyNodes": null', '"readyNodes": NaN'),
+                        b" " * (proof.MAX_BYTES + 1)):
+                path.write_bytes(raw if isinstance(raw, bytes) else raw.encode())
+                with self.subTest(raw=str(raw)[:40]), self.assertRaises((ValueError, RecursionError)):
+                    proof.load_public(root, path.name)
+            path.unlink()
+            with self.assertRaises(OSError):
+                proof.load_public(root, path.name)
+            for kind in ("fifo", "symlink", "directory"):
+                if kind == "fifo":
+                    os.mkfifo(path)
+                elif kind == "symlink":
+                    path.symlink_to(root / "missing")
+                else:
+                    path.mkdir()
+                with self.subTest(kind=kind), self.assertRaises((OSError, ValueError)):
+                    proof.load_public(root, path.name)
+                path.rmdir() if kind == "directory" else path.unlink()
+            path.write_text(json.dumps(good))
+            link = root / "link"
+            link.symlink_to(root, target_is_directory=True)
+            with self.assertRaises(OSError):
+                proof.load_public(link, path.name)
 
     def test_complete_final_proof_is_accepted(self):
         self.assertEqual(proof.validate(copy.deepcopy(GOOD)), GOOD)
