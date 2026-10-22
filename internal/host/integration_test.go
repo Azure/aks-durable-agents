@@ -154,8 +154,8 @@ func TestFixtureAssemblyIntegration(t *testing.T) {
 	f.assertNoSecrets(t, records)
 }
 
-// Required is Entra admission plus an independent approval allowlist, not per-RPC
-// ownership enforcement. Preseed an owner explicitly: upstream creation is unbound.
+// Required binds newly created sessions to the admitted caller. Independent
+// approval authority allows decisions and reads, never another owner's recovery.
 func TestRequiredEntraAdmissionAndIndependentApproval(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -187,9 +187,14 @@ func TestRequiredEntraAdmissionAndIndependentApproval(t *testing.T) {
 	if err != nil || len(listed) != 0 || f.models.Load() != 0 || f.sockets.Load() != 0 {
 		t.Fatalf("rejected admission reached session/effects: %v %v", listed, err)
 	}
-	const uid = "owned-proposal"
-	if err := app.store.CreateOwnedSession(sqlitelog.SessionMeta{UID: uid, Harness: "release-notes"}, api.CallerIdentity{Issuer: fixtureIssuer, Subject: ownerOID}, false); err != nil {
+	created, err := c.CreateSession(owner, &v1.Session{Harness: "release-notes"})
+	if err != nil {
 		t.Fatal(err)
+	}
+	uid := created.GetMetadata().GetUid()
+	info, err := app.store.SessionInfo(uid)
+	if err != nil || info.Owner != (api.CallerIdentity{Issuer: fixtureIssuer, Subject: ownerOID}) {
+		t.Errorf("CreateSession did not capture verified owner: %+v %v", info.Owner, err)
 	}
 	turn, err := c.Exec(owner, client.ExecOptions{Session: uid, Inputs: []string{"Publish this"}})
 	if err != nil {
@@ -213,7 +218,19 @@ func TestRequiredEntraAdmissionAndIndependentApproval(t *testing.T) {
 	if f.sockets.Load() != 0 {
 		t.Fatal("allowlisted approval executed before resume")
 	}
-	if _, err := c.Resume(approver, uid, false); err != nil {
+	before, err = app.store.Session(uid).Read(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := f.harness.runs.Load()
+	if resumed, err := c.Resume(approver, uid, false); status.Code(err) != codes.PermissionDenied || resumed != nil {
+		t.Fatalf("approver cannot resume another owner's session: %v", err)
+	}
+	after, err = app.store.Session(uid).Read(1)
+	if err != nil || !reflect.DeepEqual(before, after) || f.harness.runs.Load() != runs || f.models.Load() != 1 || f.sockets.Load() != 0 {
+		t.Fatal("denied approver recovery changed journal or invoked runtime/effects")
+	}
+	if _, err := c.Resume(owner, uid, false); err != nil {
 		t.Fatal(err)
 	}
 	records, err := c.Replay(approver, uid, 0, 0)

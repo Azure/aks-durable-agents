@@ -2,18 +2,18 @@
 
 [Back to overview](../README.md) · [Caller authentication](entraauth.md) · [Keyless transport](modeltransport.md)
 
-**Experimental proof only.** This host does not enable Sessions' opt-in per-RPC
-resource authorization. It does not fork those handlers or invent a replacement
-ownership/policy activation contract. By default both listeners must be **literal
-loopback IPs**, even with authentication enabled. The explicit auth-off private
-TLS exception below changes only the Sessions listener, never health or required
-mode.
+**Experimental proof only.** In required mode this host installs Sessions'
+`WithAuthorization` for per-RPC owner checks and approver read/approval access.
+This is host-RPC isolation, not journal-wide enforcement or governed activation.
+By default both listeners must be **literal loopback IPs**, even with
+authentication enabled. The explicit auth-off private TLS exception below changes
+only the Sessions listener, never health or required mode.
 Remote harness addresses are loopback-only unless the explicit split-pod Service
 override described below is configured. The optional [Substrate backend](substrate.md)
 uses a separately installed private runtime and one stateless-replay harness; it
 does not change listener or authorization limits. Do not expose
 this host through ingress, port forwarding to untrusted users, or a public proxy.
-All authenticated callers otherwise share access to session reads and effects.
+Required-mode permissions and remaining journal limits are described below.
 
 What the host enforces:
 
@@ -23,15 +23,25 @@ What the host enforces:
   Unary verification is admission-only; stream context expiry is cooperative.
   Rejections and failed signing-key refreshes are logged by fixed reason code,
   rate-limited, never with token, claim or provider text ([details](entraauth.md#trust-and-failure-contract)).
-- In required mode, `Approve` additionally invokes an `api.Authorizer` using
-  `authn.Caller(ctx)` and an exact issuer/subject approver allowlist OR optional
-  verified approver app roles. An owner is **not implicitly an approver**; an
-  allowlisted or role-authorized non-owner can approve. With neither source,
-  every approval is denied, including denial decisions. Configured member/group
-  checks always apply; configured approver roles require a usable `roles` claim
-  even for listed subjects ([configuration and OR example](entraauth.md#optional-caller-and-approver-checks)). This check occurs
-  before session lookup, disclosure or journal mutation. Request `IdentityRef`
-  remains untrusted provenance; this host does not claim verified audit attribution.
+- In required mode, `WithAuthorization` captures `authn.Caller(ctx)` as the
+  immutable owner on Create and implicit Exec creation, not request `IdentityRef`.
+  Ordinary session operations require that owner. An exact listed issuer/subject
+  OR a verified approver app role grants `GetSession`, `Replay` and `Approve` on
+  any valid owned session. Ownership **does not grant approval**. With neither
+  approval source, all decisions are denied, including denial decisions.
+  Approvers gain no other cross-owner operation: no Exec, Resume, Suspend,
+  Delete, Cancel or Fork. Listing stays natively owner-only, including for
+  approvers; there is no cross-owner inbox or notifier. Supply session UIDs to
+  approvers out of band.
+  Configured admission checks always apply; configured approver roles require a
+  usable `roles` claim even for listed subjects when approving or reading another
+  owner's session ([source rules](entraauth.md#optional-caller-and-approver-checks)).
+  Ordinary owner operations do not require approver roles. Missing, inaccessible
+  and ownerless sessions return generic `PermissionDenied` before request-tuple
+  validation or payload disclosure. A concurrent deletion may instead return
+  `Aborted` before the owner lookup. Authorized malformed approval tuples may
+  return `InvalidArgument`. Required-mode Fork is refused with
+  `FailedPrecondition` even for owners; authorized Cancel remains `Unimplemented`.
   Startup refuses an approver whose issuer is not exactly `identity.issuer`, whose
   `oid` subject is not a lowercase GUID, or whose `sub` subject has ASCII
   whitespace or control characters: it could never match. **Upgrade note:** such
@@ -39,10 +49,11 @@ What the host enforces:
   at startup. Fix the entry's `issuer` or `subject` (lowercase GUID for `oid`) to
   match the approver's token; do not switch `subjectClaim` to `sub`, which changes
   ownership keys.
-- `-auth-mode=off` disables authentication and the approval gate for trusted-network
+- `-auth-mode=off` leaves existing behavior unchanged: anyone who can reach the
+  host may read, act on sessions and approve. It is for trusted-network
   development only, with an explicit startup warning. Private pod access requires
-  the separate opt-in below; it does not authenticate callers. Required mode also
-  warns that owner isolation and durable policy activation are absent.
+  the separate opt-in below; it does not authenticate callers. Off-mode Fork
+  behavior is unchanged.
 - Health and gRPC reflection are registered only on `-health-addr`; that listener
   has no Sessions service. It is plaintext loopback operator access, not a public
   health endpoint. There is no dynamic harness registry or self-RPC bypass.
@@ -54,6 +65,29 @@ What the host enforces:
   is required to dispatch; the executor still owns resource authorization and
   durable deduplication. Protocol/transport errors are bounded and sanitized;
   there are no automatic retries. A timeout/error never proves no effect occurred.
+
+## Read disclosure and rollout
+
+**Approvers can read full sessions, including prompts, outputs and tool arguments.**
+`Replay` exposes committed journal records, not just an approval summary.
+`GetSession` returns a `Session`: resource metadata and timestamps, model/harness,
+execution/compute/deletion states, lineage, last sequence, pending approval tuple,
+labels, annotations, origin and provenance `IdentityRef`. The stored authorization
+owner is **not serialized** in that response. `Approve` returns the same `Session`
+plus the decision record, not the full journal. It only records a decision; it
+never implicitly calls Resume or grants execution rights to the approver.
+
+**Start required mode on a new private journal.** Existing ownerless sessions are
+denied to everyone, including approvers. There is no automatic owner binding or
+migration. Stop and fence old writers and retain their journal and evidence
+separately; do not switch an existing auth-off journal to required mode in place.
+Unchanged required-mode restarts retain the new journal and its owners.
+
+Deployment requires a published, verified and pinned image containing this host
+change. A current image digest alone does not establish the new behavior. Follow
+[publish then pin](../ops/images/README.md#publish-then-pin) before rollout. The
+schema-v6 upgrade warning below still applies to retained older journals; schema
+migration does not create authorization owners.
 
 ## Configuration and local build
 
@@ -272,18 +306,21 @@ port-forward setup and the policy-first zero-replica installation gate.
 
 ## What still belongs upstream
 
-Before governed activation, sessions #127 needs:
+The required-mode policy isolates this host's RPCs only. The journal's durable
+authorization marker remains `off`; an unenforced writer can bypass these checks.
+Keep the journal private and exclusive to this enforced host. Do not share it
+with auth-off hosts, direct writers or older binaries. Backups contain the same
+sensitive journal data and require the same private access controls.
 
-- **c1:** verified-caller per-action checks before disclosure/effects; atomic owned
-  Create and Exec auto-create; storage-authorized listing before pagination;
-  read/replay/delete/cancel/exec/suspend/resume/fork checks, including exec on
-  effect-driving Resume and suspend on stateful Fork.
-- **c2:** owned fork-child reservation/publication and server-derived decision
-  attribution; durable authorization-policy version/startup compatibility checks,
-  rejecting incompatible/off writers and unbound legacy sessions without an
-  explicitly reviewed binding migration. The host must consume this contract,
-  not write its own authorization marker.
-- **Operations/TLS:** qualified end-to-end client server-identity validation,
-  credential lifecycle, registry/operator separation, deployment/network controls,
-  and a reviewed stop/backup/fence/activate procedure. TLS plus admission is not
-  a substitute for either c1 or c2. No live deployment is qualified here.
+Governed activation still needs upstream contracts for durable policy/startup
+compatibility and rejection of unenforced writers, owned Fork, verified approval
+attribution and caller-bound approval retries. Request `IdentityRef` is untrusted
+provenance, not an authorization owner; enforced approval clears supplied actor
+identity and does not record verified caller attribution. No operator role,
+listing extension, Fork implementation or activation protocol is added here.
+
+Keep literal-loopback required-mode listeners, verified TLS, NetworkPolicy and
+writer fencing. Qualified client server-identity validation, credential lifecycle,
+registry/operator separation and a reviewed stop/backup/fence/activate procedure
+remain necessary. No live deployment or public-host exposure is qualified here.
+See [Sessions authorization tracking](https://github.com/agent-primitives/sessions/issues/127).

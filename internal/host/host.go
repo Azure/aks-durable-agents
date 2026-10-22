@@ -169,8 +169,12 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 	if err = session.ReserveStaticHarnessNames(a.store, registry); err != nil {
 		return nil, err
 	}
-	svc := session.NewService(a.store, registry, session.WithLogger(logger))
-	a.sessions, a.health, err = newServers(c.Mode, verifier, approval, svc, transport)
+	sessionOptions := []session.Option{session.WithLogger(logger)}
+	if c.Mode == authn.Required {
+		sessionOptions = append(sessionOptions, session.WithAuthorization(approval))
+	}
+	svc := session.NewService(a.store, registry, sessionOptions...)
+	a.sessions, a.health, err = newServers(c.Mode, verifier, svc, transport)
 	if err != nil {
 		return nil, err
 	}
@@ -255,12 +259,12 @@ func Run(ctx context.Context, c Config, logger *slog.Logger) error {
 	}
 	defer a.Close()
 	if c.Mode == authn.Off {
-		logger.Warn("authentication off: trusted-network local development only")
+		logger.Warn("authentication off: anyone who can reach the host can act on and approve sessions; trusted-network development only")
 		if c.TrustedNetworkSessions {
 			logger.Warn("private TLS Sessions listener: identity not exercised; network isolation must be enforced")
 		}
 	}
-	logger.Warn("experimental proof only: sessions resource authorization/attribution missing; shared authority, no owner isolation or journal policy activation", "auth_mode", string(c.Mode))
+	logger.Warn("experimental proof only: host-RPC authorization in required mode, not journal-wide enforcement or verified approval attribution; no public exposure", "auth_mode", string(c.Mode))
 	logger.Info("host listening", "sessions", lis.Addr().String(), "health", ops.Addr().String())
 	results := make(chan error, 2)
 	go func() { results <- a.sessions.Serve(lis) }()

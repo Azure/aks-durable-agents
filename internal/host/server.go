@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/agent-primitives/sessions/api"
 	v1 "github.com/agent-primitives/sessions/api/genpb"
 	"github.com/agent-primitives/sessions/authn"
 	"google.golang.org/grpc"
@@ -33,16 +32,12 @@ func rpcStreamDeadline(srv any, stream grpc.ServerStream, info *grpc.StreamServe
 	return handler(srv, &rpcDeadlineStream{ServerStream: stream, ctx: bounded})
 }
 
-func newServers(mode authn.Mode, verifier authn.CallerVerifier, policy api.Authorizer, svc v1.SessionsServer, transport grpc.ServerOption) (*grpc.Server, *grpc.Server, error) {
+func newServers(mode authn.Mode, verifier authn.CallerVerifier, svc v1.SessionsServer, transport grpc.ServerOption) (*grpc.Server, *grpc.Server, error) {
 	unary, stream, err := authn.NewInterceptors(mode, verifier)
 	if err != nil {
 		return nil, nil, err
 	}
-	interceptors := []grpc.UnaryServerInterceptor{rpcUnaryDeadline, unary}
-	if mode == authn.Required {
-		interceptors = append(interceptors, approvalGate(policy))
-	}
-	opts := []grpc.ServerOption{grpc.ChainUnaryInterceptor(interceptors...), grpc.ChainStreamInterceptor(rpcStreamDeadline, stream), grpc.WaitForHandlers(true)}
+	opts := []grpc.ServerOption{grpc.ChainUnaryInterceptor(rpcUnaryDeadline, unary), grpc.ChainStreamInterceptor(rpcStreamDeadline, stream), grpc.WaitForHandlers(true)}
 	if transport != nil {
 		opts = append(opts, transport)
 	}

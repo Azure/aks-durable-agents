@@ -22,9 +22,12 @@ Offline tests do not close live qualification items.
   before qualifying the assembled path.
 - **Blocked — signed-in approver from a test tenant.** The
   [Entra verifier and tenant prerequisites](entraauth.md) and the host's explicit
-  approver allowlist exist. Live tenant validation, per-RPC resource authorization
-  and server-derived approval attribution are still required. Authentication alone
-  is not ownership or approval authority; see [remaining authorization work](host.md#what-still-belongs-upstream)
+  approver sources exist. Required mode now enforces owner/approver permissions
+  through `WithAuthorization`; live tenant qualification, journal-wide activation
+  and server-derived approval attribution remain open. Rollout needs a new private
+  journal and a published, verified and pinned image containing this change;
+  ownerless sessions are denied without migration. Authentication alone is not
+  ownership or approval authority; see [remaining authorization work](host.md#what-still-belongs-upstream)
   and [sessions authorization tracking](https://github.com/agent-primitives/sessions/issues/127).
 - **In progress — backup/restore qualified on AKS.** The
   [stopped-writer recipe and local kind rehearsal](../ops/backup/README.md) exist;
@@ -71,8 +74,9 @@ release and recovery checks are conditional on including Substrate.
   including the [authentication seam](https://github.com/agent-primitives/sessions/pull/180)
   and [per-RPC authorization seam (#190)](https://github.com/agent-primitives/sessions/pull/190),
   without fork replacements. The dependency-release prerequisite is met, not the
-  host's authorization/attribution or live qualification gates: this host does not
-  activate the new authorizer. Retain the [authorization requirements](https://github.com/agent-primitives/sessions/issues/127)
+  host's journal-wide activation/attribution or live qualification gates. The host
+  installs the authorizer only in required mode; its journal marker stays `off`
+  and unenforced writers can bypass it. Retain the [authorization requirements](https://github.com/agent-primitives/sessions/issues/127)
   and the other checks in this document.
 - **Blocked if Substrate is included — released adapter, Substrate and Blob.**
   The separately tagged Sessions `integrations/substrate` **v0.3.0** and compatible
@@ -127,9 +131,11 @@ release and recovery checks are conditional on including Substrate.
   Dependabot and CodeQL results before claiming this gate complete.
 - **Blocked — security review of the auth path.** Offline negative tests and
   [documented trust boundaries](entraauth.md#trust-and-failure-contract) exist,
-  but they are not acceptance of the final auth path. Complete the per-RPC
-  authorization/attribution assembly, then review caller verification, approval
-  authority, TLS, credential lifetime and failure behavior end to end. No final
+  but they are not acceptance of the final auth path. Review the required-mode
+  host-RPC policy, full approver read disclosure and new-journal rollout; complete
+  durable activation, verified approval attribution and caller-bound retry work.
+  Review caller verification, approval authority, TLS, credential lifetime and
+  failure behavior end to end. No final
   security sign-off is claimed.
 
 ## Experimental source and release administration
