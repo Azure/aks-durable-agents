@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only test-environment plan/check; never full deployment qualification."""
+"""Test-environment inventory and dry-run-default Azure setup; never qualification."""
 import argparse
 import json
 import re
@@ -50,7 +50,8 @@ def load_config(path):
         content = Path(path).read_text(encoding="utf-8")
         require(len(content) <= 65536)
         c = json.loads(content, object_pairs_hook=unique_object)
-        require(isinstance(c, dict) and set(c) == {"version", "environmentID", *SCHEMA})
+        require(isinstance(c, dict) and set(c) in ({"version", "environmentID", *SCHEMA},
+                                                   {"version", "environmentID", "setup", *SCHEMA}))
         require(type(c["version"]) is int and c["version"] == 1 and valid_guid(c["environmentID"]))
         for section, keys in SCHEMA.items():
             require(isinstance(c[section], dict) and set(c[section]) == set(keys))
@@ -80,6 +81,9 @@ def load_config(path):
         require(isinstance(h["canvasRedirects"], list) and 1 <= len(h["canvasRedirects"]) <= 10)
         require(all(redirect_valid(v) for v in h["canvasRedirects"]))
         require(len(set(h["canvasRedirects"])) == len(h["canvasRedirects"]))
+        if "setup" in c:
+            from bootstrap_setup import setup_configuration
+            setup_configuration(c)
         return c
     except (OSError, ValueError, TypeError, KeyError, RuntimeError):
         raise ValueError("configuration: invalid or unreadable") from None
@@ -266,14 +270,38 @@ def assess(config, inventory, command="plan"):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("plan", "check"), nargs="?", default="plan")
+    parser.add_argument("command", choices=("plan", "check", "apply", "destroy"), nargs="?", default="plan")
     parser.add_argument("--config", required=True, help="private non-secret v1 JSON configuration")
+    parser.add_argument("--execute", action="store_true", help="execute an exact freshly matching reviewed plan")
+    parser.add_argument("--plan", help="owner-private reviewed dry-run JSON plan (required with --execute)")
+    parser.add_argument("--include-shared", action="store_true", help="destroy owned shared model and budget too")
     args = parser.parse_args(argv)
+    if ((args.execute or args.plan) and args.command not in ("apply", "destroy")
+            or bool(args.plan) != args.execute or args.include_shared and args.command != "destroy"):
+        parser.error("incompatible execution or shared-resource flags")
     try:
         config = load_config(args.config)
-        result = assess(config, collect(config), args.command)
+        if args.command in ("apply", "destroy"):
+            from bootstrap_setup import execute, plan_setup, read_plan
+            require("setup" in config)
+            if args.execute:
+                approved = read_plan(args.plan)
+                require(approved.get("command") == args.command and approved.get("includeShared") == args.include_shared)
+                result = execute(config, approved)
+            else:
+                result = plan_setup(config, args.command, args.include_shared)
+            status = 2 if result.get("blockers") else 0
+        else:
+            result = assess(config, collect(config), args.command)
+            status = 0 if result["coverage"]["testedScope"] == "consistent" else 2
+            if "setup" in config:
+                from bootstrap_setup import plan_setup
+                result["azureSetup"] = plan_setup(config, "apply")
+                result["coverage"]["azureSetup"] = "consistent" if not (result["azureSetup"]["actions"] or result["azureSetup"]["blockers"]) else "inconsistent"
+                if result["coverage"]["azureSetup"] != "consistent":
+                    status = 2
         print(json.dumps(result, sort_keys=True))
-        return 0 if result["coverage"]["testedScope"] == "consistent" else 2
+        return status
     except (ValueError, InventoryError, TypeError, KeyError, AttributeError) as exc:
         # InventoryError contains only our fixed phase/reason strings, never CLI output.
         reason = str(exc) if isinstance(exc, InventoryError) else "configuration-or-inventory-invalid"
