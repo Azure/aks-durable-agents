@@ -45,7 +45,7 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 		// socketexec consumes only static names, not remote endpoint values.
 		harnesses = map[string]string{c.Substrate.Harness: ""}
 	}
-	tools, err := socketexec.Load(c.ToolExecutors, harnesses)
+	tools, err := socketexec.LoadBindings(c.ToolExecutors, harnesses)
 	if err != nil {
 		return nil, err
 	}
@@ -151,8 +151,8 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 		if c.Substrate == nil && nativeHarnessName.MatchString(name) {
 			opts = append(opts, placement.WithDescriptorID(name))
 		}
-		if tool := tools[name]; tool != nil {
-			opts = append(opts, placement.WithToolExecutor(tool))
+		if tool, ok := tools[name]; ok {
+			opts = append(opts, placement.WithToolExecutor(tool.Execute), placement.WithDurableDedup(tool.DurableDedup))
 		}
 		placers[name] = placement.New(backend, modelFn, opts...)
 		names = append(names, name)

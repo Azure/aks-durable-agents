@@ -39,11 +39,31 @@ type binding struct {
 	dedup    bool
 }
 
-// Load reads v1 tools.json and returns exact, per-harness tool dispatchers. It
-// validates the entire configuration without probing or connecting to sockets.
-// Only names in the static harness map are eligible; its endpoint values are unused.
+// Binding keeps an executor and its exact durable-dedup declarations together.
+// The executor, not this declaration, must durably deduplicate session/key retries.
+type Binding struct {
+	Execute      controller.ToolFunc
+	DurableDedup func(tool string) bool
+}
+
+// Load returns only the dispatchers from LoadBindings for executor-only callers.
 func Load(path string, harnesses map[string]string) (map[string]controller.ToolFunc, error) {
-	result := make(map[string]controller.ToolFunc)
+	bindings, err := LoadBindings(path, harnesses)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]controller.ToolFunc, len(bindings))
+	for name, binding := range bindings {
+		result[name] = binding.Execute
+	}
+	return result, nil
+}
+
+// LoadBindings reads v1 tools.json and returns exact, per-harness dispatchers and
+// dedup declarations. It validates the entire configuration without connecting to
+// sockets. Only static harness names are eligible; endpoint values are unused.
+func LoadBindings(path string, harnesses map[string]string) (map[string]Binding, error) {
+	result := make(map[string]Binding)
 	if path == "" {
 		return result, nil
 	}
@@ -106,7 +126,12 @@ func Load(path string, harnesses map[string]string) (map[string]controller.ToolF
 		declarations = append(declarations, route)
 	}
 	for harness, tools := range routes {
-		result[harness] = toolFunc(harness, tools)
+		result[harness] = Binding{
+			Execute: toolFunc(harness, tools),
+			DurableDedup: func(tool string) bool {
+				return tools[tool].dedup
+			},
+		}
 	}
 	for _, route := range declarations {
 		var dedup any = "unknown"

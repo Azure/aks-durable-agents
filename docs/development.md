@@ -96,7 +96,10 @@ Qualification and operator opt-ins remain required; `AKS_BUDGET_CONFIRMED` is an
 operator confirmation backed by budget alerts and the sweeper, not a live spending
 check or hard spending cap. No billing read grant, new IAM or paging is added.
 Offline tests use fake cloud commands and optional local Docker exercises, never
-Azure provisioning or inference. A separately approved CLI-identity smoke check must use an
+Azure provisioning or inference. `go test -race -run '^TestInterruptedDeclaredToolRecovery$' ./internal/host`
+checks ordinary controller-mediated recovery after an executor commits but its
+reply is lost: an exact durable declaration permits redrive under the original
+session/key; false or omitted declarations refuse without another tool call. A separately approved CLI-identity smoke check must use an
 explicit `AzureCLICredential`, no retries, and at most three calls; missing RBAC
 must be reported, not assigned.
 
