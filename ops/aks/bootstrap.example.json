@@ -28,6 +28,19 @@
     "sku": "GlobalStandard",
     "capacity": 1
   },
+  "setup": {
+    "modelMode": "create",
+    "modelName": "example-chat-model",
+    "registerProviders": ["Microsoft.ContainerService", "Microsoft.Compute", "Microsoft.Network", "Microsoft.Storage", "Microsoft.ManagedIdentity", "Microsoft.CognitiveServices", "Microsoft.Consumption"],
+    "budget": {
+      "name": "test-environment-guard",
+      "amount": 100,
+      "currency": "USD",
+      "email": "operator@example.invalid",
+      "startDate": "2026-10-01",
+      "endDate": "2027-10-01"
+    }
+  },
   "human": {
     "domain": "example.onmicrosoft.com",
     "apiName": "test-api",
