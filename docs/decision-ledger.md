@@ -45,8 +45,9 @@ must take `ProposedBy` from the verified proposal-creation request, never approv
 request metadata, agent provenance or the later approver. Proposal creation and
 approval must use the same verified issuer/oid namespace, not mixed issuer forms
 or caller-selected identity mappings. Registration requires a canonical lowercase
-GUID `oid`, rejecting pairwise `sub` values and alternate GUID spellings. The
-proposer is required and cannot be replaced for the same subject generation. Changing source/evidence
+GUID `oid`, rejecting non-GUID `sub` values and alternate GUID spellings. The
+registration adapter must use OID-only `VerifyHuman`: form checks alone cannot
+distinguish a GUID-shaped `sub` from an `oid`. The proposer is required and cannot be replaced for the same subject generation. Changing source/evidence
 requires a new subject reference. There can be only one open generation of a workspace/kind/subject ID;
 supersede it before registering a newer generation. A decided subject cannot be
 superseded. Re-registering identical retained content reads its existing identity.
@@ -221,8 +222,8 @@ the lock on another inode prevents a failed duplicate Open from closing a DB
 descriptor and dropping the process's SQLite POSIX locks. SQLite uses
 short immediate transactions, a single connection, DELETE journaling, EXTRA
 synchronization (including the journal-unlink directory sync). Initialization also
-syncs the directory above a newly created private parent, then the parent after
-creating the DB/lock entries. Foreign keys are enabled; connection-local settings are reapplied to
+syncs the directory above the private parent (also on initialization retries),
+then the parent after creating the DB/lock entries. Foreign keys are enabled; connection-local settings are reapplied to
 replacement connections. Subject CAS and immutable outcome insertion commit
 atomically. This lock does not fence a stale host on another storage backend;
 RWO is not an old-writer fence. No multi-host deployment is qualified.

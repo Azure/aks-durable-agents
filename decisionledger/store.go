@@ -78,13 +78,11 @@ func openStore(path, id, lineage string, create bool) (*Store, error) {
 		return nil, ErrInvalid
 	}
 	parent := filepath.Dir(path)
-	createdParent := false
 	if create {
 		err := os.Mkdir(parent, 0700)
 		if err != nil && !os.IsExist(err) {
 			return nil, ErrUnavailable
 		}
-		createdParent = err == nil
 	}
 	for p := parent; ; p = filepath.Dir(p) {
 		st, err := os.Lstat(p)
@@ -102,9 +100,9 @@ func openStore(path, id, lineage string, create bool) (*Store, error) {
 			break
 		}
 	}
-	// Persist a newly created directory's entry before creating its contents.
-	// Validate all ancestors first; never follow a symlink to perform this sync.
-	if createdParent && syncDirectory(filepath.Dir(parent)) != nil {
+	// Persist the parent entry even if a previous or concurrent initializer
+	// created it. Validate ancestors first; never sync through a symlink.
+	if create && syncDirectory(filepath.Dir(parent)) != nil {
 		return nil, ErrUnavailable
 	}
 	for _, suffix := range []string{"-journal", "-wal", "-shm"} {
