@@ -273,7 +273,7 @@ class SubstrateScenario(nightly.Scenario):
             assignment = actor.get("status", {}).get("workerAssignment", {})
             require(actor.get("metadata", {}).get("uid") == self.first["actorUID"] and actor.get("status", {}).get("state") == "ACTOR_STATE_RUNNING")
             require(assignment.get("workerPodUid") == latest["podUID"] and assignment.get("nodeName") == latest["node"] and assignment.get("sandboxRuntime", {}).get("sandboxClass") == "gvisor")
-            self.native_evidence.write_json("native-proof.json", {"status": "nativePassed", "placement": {"first": self.first, "latest": latest}, "checkpoint": self.checkpoint})
+            self.native_evidence.write_json("native-proof.json", {"status": "nativePassed", "harnessImage": self.pins["harness"], "placement": {"first": self.first, "latest": latest}, "checkpoint": self.checkpoint})
             self.native_passed = True
         return result
 

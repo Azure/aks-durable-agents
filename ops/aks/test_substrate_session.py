@@ -100,6 +100,7 @@ class NativeBindingTests(unittest.TestCase):
         running["status"] = {"state": "ACTOR_STATE_RUNNING", "workerAssignment": {"workerPodUid": P["podUID"], "nodeName": P["node"], "sandboxRuntime": {"sandboxClass": "gvisor"}}}
         api.actor = Mock(side_effect=[ACTOR, running])
         api.native_evidence = Mock()
+        api.pins = {"harness": "registry.example/fixture@sha256:" + "a" * 64}
         api.native_passed = False
         with patch.object(s.nightly.Scenario, "rpc", return_value={"completed": True}):
             self.assertEqual(api.rpc("continue"), {"completed": True})
