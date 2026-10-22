@@ -71,7 +71,11 @@ The fixed Azure resource set is:
 - Only explicitly approved missing registrations among ContainerService, Compute,
   Network, Storage, ManagedIdentity, CognitiveServices and Consumption.
 - The budget, nightly cluster/identity resource groups, two user-assigned managed
-  identities and the CI GitHub federated credential.
+  identities and the CI GitHub federated credential. Before planning its creation
+  and immediately before writing it, the existing `nightly-aks` environment must
+  have a verified main-only custom branch policy. A missing, unrestricted or
+  unreadable policy blocks federation; the environment subject alone does not
+  restrict branches. This tool never creates or repairs that GitHub policy.
 - Two narrow custom roles and exactly five scoped grants described in the
   [nightly authorization contract](README.md). Role assignments use `principalId`,
   not the client ID used by consumers. No CI subscription-wide Contributor,
@@ -120,6 +124,9 @@ unrelated subscription activity and spend telemetry do not stale a plan. The
 operation reuses unrelated collection observations in memory, never as an ownership
 receipt. It makes a full security read before CI federation and a final full read.
 Reads may poll asynchronous provisioning, but failed writes are not blindly retried.
+After an accepted DELETE, a stale successful state or missing provisioning state
+is polled until absence within the same deadline; failed or unknown states stop.
+The DELETE request itself is never repeated.
 There is no distributed transaction or automatic broad rollback. After an
 interruption, rediscover cloud state and review a new remaining-action plan;
 never reset credentials or erase unknown resources to make a rerun pass.
@@ -240,7 +247,9 @@ nothing to delete on destroy. Human-user/application-note registries remain
 outside this component. Raw notes are never an arbitrary URL source or a
 substitute for validating a referenced object.
 
-Existing unmarked resources remain references. Only newly created resources
+Existing unmarked resources remain references. Retained grants report the actual
+live ID matched by principal, role and scope, not a proposed deterministic ID.
+Only newly created resources
 receive ownership tags; the tool never adopts old resources, deletes unexpected
 children or broadly repairs grants. An ambiguous
 create whose ownership marker was never persisted needs explicit operator

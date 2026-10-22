@@ -16,6 +16,7 @@ from bootstrap_inventory import (
     GUID,
     InventoryError,
     ReadOnly,
+    environment_segment,
     ownership,
     unique_object,
     valid_guid,
@@ -274,6 +275,24 @@ def quiescence(config, reader):
     return {'targeted': targeted, 'scenarioDisabled': True, 'activeRuns': 0}
 
 
+def verify_federation_policy(config, reader):
+    """An environment subject is safe only with its independently verified branch gate."""
+    repo = '/repos/' + config['github']['repository']
+    environments = reader.paginated('github', repo + '/environments?per_page=100&page=1', 'environments')
+    matches = [env for env in environments if isinstance(env.get('name'), str)
+               and env['name'].casefold() == 'nightly-aks']
+    require(len(matches) == 1, 'setup: main-only nightly environment required')
+    environment = matches[0]
+    require(environment.get('deployment_branch_policy') == {'protected_branches': False, 'custom_branch_policies': True}
+            and isinstance(environment.get('protection_rules'), list)
+            and all(isinstance(rule, dict) and rule.get('type') == 'branch_policy' for rule in environment['protection_rules']),
+            'setup: main-only nightly environment required')
+    path = repo + '/environments/' + environment_segment(environment['name']) + '/deployment-branch-policies'
+    policies = reader.paginated('github', path + '?per_page=100&page=1', 'branch_policies')
+    require(len(policies) == 1 and policies[0].get('name') == 'main' and policies[0].get('type') == 'branch',
+            'setup: main-only nightly environment required')
+
+
 def object_for(spec, state, specs):
     item = find(state, spec['id'])
     if item is None and spec['kind'] == 'grant':
@@ -508,10 +527,10 @@ def build_plan(config, state, operation, include_shared=False):
             if status == 'absent':
                 continue
             keep = status != 'owned' or (spec['shared'] and not include_shared)
-            if spec['key'] == 'anchor' and not include_shared and slot('budget') in tags:
+            if spec['key'] == 'anchor' and not include_shared:
                 keep = True
             if keep:
-                retained.append({'id': spec['id'], 'reason': 'reference' if status != 'owned' else 'shared-default'})
+                retained.append({'id': objects[spec['key']]['id'], 'reason': 'reference' if status != 'owned' else 'shared-default'})
                 deleting.discard(spec['id'].lower())
             else:
                 actions.append(action(spec, 'delete'))
@@ -556,6 +575,8 @@ def plan_setup(config, operation, include_shared=False, reader=None):
     reader = reader or SetupReader(config)
     state = collect_setup(config, reader)
     plan = build_plan(config, state, operation, include_shared)
+    if operation == 'apply' and any(action['key'] == 'ciFic' for action in plan['actions']):
+        verify_federation_policy(config, reader)
     if plan['actions']:
         state['quiescence'] = quiescence(config, reader)
         plan = build_plan(config, state, operation, include_shared)
@@ -675,6 +696,8 @@ def execute(config, approved_plan, transport=None):
             if spec.get('kind') == 'grant':
                 approved_body['properties']['principalId'] = spec['body']['properties']['principalId']
             require(digest(approved_body) == expected['bodyDigest'], 'setup: request body differs from approval')
+            if verb == 'create' and expected['key'] == 'ciFic':
+                verify_federation_policy(config, transport)
             transport.mutate(config, spec, verb, body)
             # Poll reads only; never repeat an ambiguous mutation or roll it back.
             while True:
@@ -696,7 +719,8 @@ def execute(config, approved_plan, transport=None):
                 # Failed/unknown states cannot be treated as absence or retried writes.
                 item = find(after, spec['id'])
                 if item:
-                    require(item.get('properties', {}).get('provisioningState', 'Succeeded') in ('Creating', 'Updating', 'Deleting', 'Accepted'),
+                    allowed_states = ('Creating', 'Updating', 'Deleting', 'Accepted') + (('Succeeded',) if verb == 'delete' else ())
+                    require(item.get('properties', {}).get('provisioningState', 'Succeeded') in allowed_states,
                             'setup: readback mismatch; re-plan required')
                 time.sleep(min(1, max(0, transport.deadline - time.monotonic())))
             observed_digest = state_digest(config, after)

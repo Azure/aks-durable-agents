@@ -44,6 +44,9 @@ class Cloud:
         self.repo = {'full_name': 'example/agents', 'id': 12345, 'owner': {'id': 67890}}
         self.oidc = {'use_default': True, 'use_immutable_subject': True}
         self.deleted_accounts = []
+        self.environments: list[dict] = [{'id': 1, 'name': 'nightly-aks', 'protection_rules': [],
+                              'deployment_branch_policy': {'protected_branches': False, 'custom_branch_policies': True}}]
+        self.branch_policies = [{'id': 1, 'name': 'main', 'type': 'branch'}]
 
     def __call__(self, args, **kwargs):
         self.calls.append((args, kwargs))
@@ -87,6 +90,10 @@ class Cloud:
             data = self.repo
         elif path.endswith('/actions/oidc/customization/sub'):
             data = self.oidc
+        elif path == '/repos/example/agents/environments':
+            data = {'environments': self.environments, 'total_count': len(self.environments)}
+        elif path.endswith('/deployment-branch-policies'):
+            data = {'branch_policies': self.branch_policies, 'total_count': len(self.branch_policies)}
         elif path.endswith('/actions/variables'):
             data = {'variables': [{'name': k, 'value': v} for k, v in self.variables.items()], 'total_count': len(self.variables)}
         elif '/actions/workflows/' in path:
@@ -206,7 +213,12 @@ class SetupContracts(unittest.TestCase):
         self.cloud.writes.clear()
         self.assertEqual(self.plan()['actions'], [])
         self.assertEqual(self.plan()['blockers'], [])
-        self.assertEqual(self.plan('destroy', True)['actions'], [])
+        plan = self.plan('destroy', True)
+        self.assertEqual(plan['actions'], [])
+        actual_grants = {item['id'] for item in self.cloud.objects.values() if '/roleAssignments/' in item['id']}
+        self.assertEqual(actual_grants, {item['id'] for item in plan['retained'] if '/roleAssignments/' in item['id']})
+        result = setup.execute(self.config, plan)
+        self.assertEqual(actual_grants, {item['id'] for item in result['retained'] if '/roleAssignments/' in item['id']})
         self.assertEqual(self.cloud.writes, [])
 
     def test_stale_and_tampered_approval_has_no_writes(self):
@@ -508,6 +520,130 @@ class SetupContracts(unittest.TestCase):
         with mock.patch('subprocess.run', side_effect=changing_wire):
             self.apply()
         self.assertGreater(len(self.cloud.writes), 0)
+
+
+    def test_ci_federation_requires_existing_main_only_policy(self):
+        good_env = copy.deepcopy(self.cloud.environments)
+        good_rules = copy.deepcopy(self.cloud.branch_policies)
+        invalid = [([], good_rules),
+                   ([dict(good_env[0], deployment_branch_policy=None)], good_rules),
+                   (good_env, []), (good_env, [{'id': 2, 'name': '*', 'type': 'branch'}]),
+                   (good_env, [{'id': 2, 'name': 'main', 'type': 'tag'}]),
+                   (good_env, good_rules + [{'id': 2, 'name': 'feature', 'type': 'branch'}])]
+        for environments, policies in invalid:
+            with self.subTest(environments=environments, policies=policies):
+                self.cloud.environments, self.cloud.branch_policies = environments, policies
+                with self.assertRaisesRegex(setup.SetupError, 'main-only'):
+                    self.plan()
+                self.assertEqual(self.cloud.writes, [])
+        self.cloud.environments, self.cloud.branch_policies = good_env, good_rules
+        self.cloud.environments[0]['name'] = 'Nightly-AKS'
+        self.assertEqual(self.plan()['blockers'], [])
+
+    def test_ci_federation_rechecks_policy_immediately_before_write(self):
+        plan = self.plan()
+        def change_policy(count, cloud):
+            if count == 15:
+                cloud.branch_policies[0]['name'] = 'feature'
+        self.cloud.after_write = change_policy
+        with self.assertRaisesRegex(setup.SetupError, 'main-only'):
+            setup.execute(self.config, plan)
+        self.assertFalse(any('/federatedIdentityCredentials/' in path for _, path, _ in self.cloud.writes))
+
+    def test_ci_federation_policy_read_denial_has_no_writes(self):
+        def denied(args, **kwargs):
+            if args[0] == 'gh' and '/environments?' in ' '.join(args):
+                return subprocess.CompletedProcess(args, 1, '', 'PRIVATE DENIAL')
+            return self.cloud(args, **kwargs)
+        with mock.patch('subprocess.run', side_effect=denied), self.assertRaisesRegex(setup.SetupError, 'read failed'):
+            self.plan()
+        self.assertEqual(self.cloud.writes, [])
+
+    def test_reference_budget_retains_anchor_without_budget_slot(self):
+        spec = next(s for s in resources.resource_specs(self.config, {}) if s['key'] == 'budget')
+        self.cloud.objects[spec['id']] = dict(copy.deepcopy(spec['body']), id=spec['id'], name='test-guard')
+        self.apply()
+        anchor = next(s for s in resources.resource_specs(self.config, {}) if s['key'] == 'anchor')['id']
+        self.assertNotIn(resources.slot('budget'), self.cloud.objects[anchor]['tags'])
+        plan = self.plan('destroy')
+        self.assertEqual(plan['blockers'], [])
+        self.assertIn(anchor, {item['id'] for item in plan['retained']})
+        self.assertNotIn(anchor, {item['id'] for item in plan['actions']})
+        setup.execute(self.config, plan)
+        self.assertIn(anchor, self.cloud.objects)
+        self.assertIn(spec['id'], self.cloud.objects)
+
+    def test_async_delete_polls_stale_success_until_absent(self):
+        def delete_case(provisioning):
+            self.apply()
+            target = next(s for s in resources.resource_specs(self.config, {}) if s['key'] == 'ciFic')['id']
+            stale = copy.deepcopy(self.cloud.objects[target])
+            if provisioning:
+                stale['properties']['provisioningState'] = provisioning
+            else:
+                stale['properties'].pop('provisioningState', None)
+            reads = [0]
+            pending = [False]
+            def accepted(_count, cloud):
+                if cloud.writes[-1][:2] == ('DELETE', target):
+                    cloud.objects[target] = stale
+                    pending[0] = True
+            def delayed(args, **kwargs):
+                response = self.cloud(args, **kwargs)
+                if pending[0] and args[:2] == ['az', 'rest'] and args[args.index('--method') + 1] == 'GET' and urlsplit(args[args.index('--url') + 1]).path == target.rsplit('/', 1)[0]:
+                    reads[0] += 1
+                    if reads[0] == 2:
+                        self.cloud.objects.pop(target)
+                return response
+            self.cloud.after_write = accepted
+            start = len(self.cloud.writes)
+            with mock.patch('subprocess.run', side_effect=delayed), mock.patch.object(setup.time, 'sleep'):
+                setup.execute(self.config, self.plan('destroy', True))
+            self.assertGreaterEqual(reads[0], 3)
+            self.assertEqual(sum(method == 'DELETE' and path == target for method, path, _ in self.cloud.writes[start:]), 1)
+            self.assertEqual(self.cloud.objects, {})
+            self.cloud.after_write = None
+
+        for provisioning in ('Succeeded', None):
+            with self.subTest(provisioning=provisioning):
+                delete_case(provisioning)
+    def test_async_delete_failed_or_unknown_state_stops_without_retry(self):
+        for provisioning in ('Failed', 'Unexpected', None):
+            with self.subTest(provisioning=provisioning):
+                self.apply()
+                target = next(s for s in resources.resource_specs(self.config, {}) if s['key'] == 'ciFic')['id']
+                stale = copy.deepcopy(self.cloud.objects[target])
+                stale['properties']['provisioningState'] = provisioning
+                def restore(_count, cloud, target=target, stale=stale):
+                    if cloud.writes[-1][:2] == ('DELETE', target):
+                        cloud.objects[target] = stale
+                self.cloud.after_write = restore
+                start = len(self.cloud.writes)
+                with self.assertRaisesRegex(setup.SetupError, 'readback mismatch'):
+                    setup.execute(self.config, self.plan('destroy', True))
+                self.assertEqual(sum(method == 'DELETE' and path == target for method, path, _ in self.cloud.writes[start:]), 1)
+                self.cloud.objects[target]['properties'].pop('provisioningState')
+                self.cloud.after_write = None
+
+    def test_async_delete_deadline_never_reissues_delete(self):
+        self.apply()
+        plan = self.plan('destroy', True)
+        target = next(s for s in resources.resource_specs(self.config, {}) if s['key'] == 'ciFic')['id']
+        stale = copy.deepcopy(self.cloud.objects[target])
+        def restore(_count, cloud):
+            if cloud.writes[-1][:2] == ('DELETE', target):
+                cloud.objects[target] = stale
+        self.cloud.after_write = restore
+        ticks = [1000.0]
+        def ticking(args, **kwargs):
+            ticks[0] += 1
+            return self.cloud(args, **kwargs)
+        start = len(self.cloud.writes)
+        with mock.patch('subprocess.run', side_effect=ticking), mock.patch.object(setup.time, 'monotonic', side_effect=lambda: ticks[0]), mock.patch.object(setup.time, 'sleep'):
+            transport = setup.SetupTransport(self.config, deadline=1200)
+            with self.assertRaisesRegex(setup.SetupError, 'deadline'):
+                setup.execute(self.config, plan, transport)
+        self.assertEqual(sum(method == 'DELETE' and path == target for method, path, _ in self.cloud.writes[start:]), 1)
 
 
 if __name__ == '__main__':
