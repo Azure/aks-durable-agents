@@ -14,7 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/Azure/aks-durable-agents/decisionrecord"
+	"github.com/Azure/aks-durable-agents/internal/decisionrecord"
 	"github.com/Azure/aks-durable-agents/entraauth"
 	"github.com/agent-primitives/sessions/api"
 )

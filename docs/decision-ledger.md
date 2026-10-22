@@ -12,7 +12,7 @@ was continued or executed. Offline tests do not qualify signed-in hosting.
 
 ## Authority and API
 
-[`decisionrecord`](../decisionrecord/types.go) owns the shared record, request,
+[`internal/decisionrecord`](../internal/decisionrecord/types.go) owns the shared record, request,
 subject-reference and authorization types imported by both the ledger and
 version history. The ledger retains aliases for its existing exported names.
 This small package contains data/constants only: constructing a value proves no
@@ -185,18 +185,14 @@ Current scoped policy and entitlement are checked separately; a recorded role
 string does not itself grant current authority. Whole request/authority envelope
 limits still apply in addition to the producer's record bound.
 
-The opt-in `decision_projection_conformance` test issues decisions through the
-real service with synthetic request verification/policy and consumes their
-same shared typed record through the real target-version Begin/Reserve/Commit/reopen
-path. It is build-tagged while the consumer package is developed separately;
-run it in a combined source checkout containing both packages:
+Producer-to-consumer conformance belongs in the target-version package, which
+lands after this ledger. Its test must use the real service with synthetic
+request verification/policy and retain the same shared typed record through
+Begin/Reserve/Commit/reopen. It must have no build tag so ordinary
+`go test -race ./...` compiles and runs it in the consumer change; this ledger
+contains no test that requires unmerged consumer helpers.
 
-```sh
-go test -race -tags=decision_projection_conformance ./internal/targetversions \
-  -run '^TestDecisionProjectionConformance$' -count=1
-```
-
-This checks representation and immutable persistence, not the absent owning
+That test checks representation and immutable persistence, not the absent owning
 adapter, live Entra, qualification, runtime fencing or effect consumption.
 
 ## Storage, compatibility and privacy
