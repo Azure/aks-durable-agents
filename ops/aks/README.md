@@ -18,6 +18,11 @@ branch run additionally requires an operator-approved temporary allowance for
 that exact branch in `nightly-aks`. Do not allow PR/fork refs or arbitrary branches.
 Remove the temporary allowance after qualification; keep `main` cleanup enabled.
 
+For a separate **install-only Substrate v0.5.0** recipe and native gVisor actor
+check, see [Substrate on disposable AKS](SUBSTRATE.md). It uses an already-owned
+disposable target, does not change the Sessions adapter, and is not wired into
+this real-model workflow.
+
 ## Operator configuration
 
 Create the GitHub environment `nightly-aks` with a custom deployment branch rule
