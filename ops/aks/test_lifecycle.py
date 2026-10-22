@@ -244,7 +244,7 @@ class LifecycleTests(unittest.TestCase):
             stat = Path(f"/proc/{pid}/stat")
             try:
                 state = stat.read_text().split()[2]
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 state = None  # A reaped child is stopped, even if /proc vanished just now.
             self.assertIn(state, (None, "Z"), "descendant is still running")
 
@@ -266,6 +266,15 @@ class LifecycleTests(unittest.TestCase):
                 self.test_timeout_kills_descendant_process_group()
             except FileNotFoundError:
                 self.fail("a reaped descendant must satisfy the process-group cleanup assertion")
+
+    def test_descendant_reaped_after_proc_file_open_reports_esrch(self):
+        original_read = Path.read_text
+        def read(path, *args, **kwargs):
+            if str(path).startswith("/proc/") and path.name == "stat":
+                raise ProcessLookupError(str(path))
+            return original_read(path, *args, **kwargs)
+        with mock.patch.object(Path, "read_text", read):
+            self.test_timeout_kills_descendant_process_group()
 
     def test_running_descendant_still_fails_cleanup_assertion(self):
         original_read = Path.read_text
@@ -409,6 +418,97 @@ class LifecycleTests(unittest.TestCase):
                 if process.poll() is None:
                     process.kill()
                     process.wait(timeout=3)
+
+
+class StderrHookTests(unittest.TestCase):
+    def test_success_empty_and_nonzero_stderr_are_delivered_once(self):
+        assert lifecycle is not None
+        for program, expected, fails in (
+                ("import sys; sys.stdout.write('result'); sys.stderr.write('diagnostic')", b"diagnostic", False),
+                ("print('result', end='')", b"", False),
+                ("import sys; sys.stderr.write('failed'); sys.exit(7)", b"failed", True)):
+            with self.subTest(program=program):
+                captured = []
+                if fails:
+                    with self.assertRaises(cleanup.CloudError):
+                        lifecycle.command([sys.executable, "-c", program], timeout=3, stderr_sink=captured.append)
+                else:
+                    self.assertEqual(lifecycle.command([sys.executable, "-c", program], timeout=3,
+                                                       stderr_sink=captured.append), b"result")
+                self.assertEqual(captured, [expected])
+
+    def test_timeout_collects_flushed_stderr_and_kills_descendants(self):
+        assert lifecycle is not None
+        with tempfile.TemporaryDirectory() as work:
+            pidfile = Path(work) / "child.pid"
+            program = ("import subprocess,sys,time; p=subprocess.Popen(['sleep','60']); "
+                       f"open({str(pidfile)!r},'w').write(str(p.pid)); "
+                       "sys.stderr.write('before timeout'); sys.stderr.flush(); time.sleep(60)")
+            captured = []
+            with self.assertRaises(cleanup.CloudError):
+                lifecycle.command([sys.executable, "-c", program], timeout=0.3, stderr_sink=captured.append)
+            self.assertEqual(captured, [b"before timeout"])
+            stat = Path(f"/proc/{int(pidfile.read_text())}/stat")
+            try:
+                state = stat.read_text().split()[2]
+            except (FileNotFoundError, ProcessLookupError):
+                state = None
+            self.assertIn(state, (None, "Z"))
+
+    def test_startup_and_invalid_deadline_deliver_empty_stderr(self):
+        assert lifecycle is not None
+        for args, timeout in ((["/nonexistent/evidence-tool"], 1), ([sys.executable], 0)):
+            captured = []
+            with self.subTest(args=args), self.assertRaises(cleanup.CloudError):
+                lifecycle.command(args, timeout=timeout, stderr_sink=captured.append)
+            self.assertEqual(captured, [b""])
+
+    def test_sink_failure_never_masks_result_or_command_failure(self):
+        assert lifecycle is not None
+        def broken(_):
+            raise RuntimeError("sink failed")
+        self.assertEqual(lifecycle.command([sys.executable, "-c", "print('ok',end='')"], timeout=3,
+                                           stderr_sink=broken), b"ok")
+        for program in ("raise SystemExit(2)", "import time; time.sleep(60)"):
+            with self.subTest(program=program), self.assertRaises(cleanup.CloudError):
+                lifecycle.command([sys.executable, "-c", program], timeout=0.1, stderr_sink=broken)
+
+    def test_stdout_cap_still_rejects_and_delivers_stderr(self):
+        assert lifecycle is not None
+        captured = []
+        program = "import sys; sys.stderr.write('capped'); sys.stdout.buffer.write(b'x' * (4*1024*1024+1))"
+        with self.assertRaises(cleanup.CloudError):
+            lifecycle.command([sys.executable, "-c", program], timeout=3, stderr_sink=captured.append)
+        self.assertEqual(captured, [b"capped"])
+
+    def test_interrupt_preserves_exception_and_delivers_stderr(self):
+        assert lifecycle is not None
+        captured = []
+        def interrupt(signum, frame):
+            raise KeyboardInterrupt()
+        original = signal.signal(signal.SIGALRM, interrupt)
+        try:
+            signal.setitimer(signal.ITIMER_REAL, 0.2)
+            with self.assertRaises(KeyboardInterrupt):
+                lifecycle.command([sys.executable, "-c",
+                                   "import sys,time; sys.stderr.write('interrupted'); sys.stderr.flush(); time.sleep(60)"],
+                                  timeout=3, stderr_sink=captured.append)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, original)
+        self.assertEqual(captured, [b"interrupted"])
+
+    def test_azure_callback_and_dynamic_default(self):
+        assert lifecycle is not None
+        config = {"AZURE_SUBSCRIPTION_ID": GUID}
+        def injected(args, *, timeout):
+            self.assertEqual(args[:3], ["az", "aks", "show"])
+            self.assertEqual(timeout, 25)
+            return b'{"source":"injected"}'
+        self.assertEqual(lifecycle.Azure(config, run=injected).run("aks", "show"), {"source": "injected"})
+        cloud = lifecycle.Azure(config)
+        with mock.patch.object(lifecycle, "command", return_value=b'{"source":"patched"}'):
+            self.assertEqual(cloud.run("aks", "show"), {"source": "patched"})
 
 
 if __name__ == "__main__":

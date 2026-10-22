@@ -1,8 +1,15 @@
 """Offline contracts: external cloud, Kubernetes and executable boundaries are faked."""
+import contextlib
 import copy
+import io
 import json
+import signal
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
+import uuid
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -217,10 +224,14 @@ class Boundary:
         self.fail = None
         self.trust_ready = False
 
-    def __call__(self, args, *, timeout, input=None):
+    def __call__(self, args, *, timeout, input=None, stderr_sink=None):
+        if stderr_sink:
+            stderr_sink(b"")
         self.calls.append((args, input, timeout))
         if self.fail and self.fail(args):
             raise substrate.cleanup.CloudError("external boundary failure")
+        if args[0] == "git":
+            return COMMIT.encode() if "rev-parse" in args else b""
         if args[:3] == ["go", "version", "-m"]:
             return ("path\tgithub.com/agent-substrate/substrate/cmd/" + Path(args[3]).name + "\n\tbuild\tvcs.revision=" + COMMIT + "\n\tbuild\tvcs.modified=false\n").encode()
         if "--version" in args:
@@ -272,7 +283,7 @@ class InstallerTests(RendererTests):
         super().setUp()
         from argparse import Namespace
         self.env = environment()
-        self.args = Namespace(source=self.root, nodes="node-a", kubeconfig=self.root / "kubeconfig", context="selected", ate_setup=self.root / "ate-setup", ate=self.root / "kubectl-ate")
+        self.args = Namespace(source=self.root, nodes="node-a", kubeconfig=self.root / "kubeconfig", context="selected", ate_setup=self.root / "ate-setup", ate=self.root / "kubectl-ate", evidence_dir=self.root / "evidence")
         self.args.kubeconfig.write_text("private")
         self.args.kubeconfig.chmod(0o600)
         for tool in (self.args.ate_setup, self.args.ate):
@@ -282,8 +293,176 @@ class InstallerTests(RendererTests):
         self.cloud = Cloud(self.env)
         self.clock = substrate.lifecycle.Deadline(1000, now=lambda: 1001, monotonic=lambda: 1)
 
-    def install(self):
-        return substrate.install(self.args, self.render(), self.images, self.env, run=self.boundary, cloud=self.cloud, clock=self.clock, sleep=lambda _: None)
+    def install(self, run=None):
+        self.args.evidence_dir = self.root / ("evidence-" + uuid.uuid4().hex)
+        return substrate.install(self.args, self.render(), self.images, self.env, run=run or self.boundary, cloud=self.cloud, clock=self.clock, sleep=lambda _: None)
+
+    def evidence(self, name):
+        return json.loads((self.args.evidence_dir / name).read_text())
+
+    def test_probe_sigterm_exits_zero_and_only_probe_has_short_grace(self):
+        probe = substrate.probe_pod({"probe": PIN}, ["node-a"])
+        self.assertEqual(probe["spec"]["terminationGracePeriodSeconds"], 5)
+        self.assertEqual(probe["spec"]["containers"][0]["resources"]["requests"], {"cpu": "10m", "memory": "32Mi"})
+        command = probe["spec"]["containers"][0]["command"]
+        p = subprocess.Popen([sys.executable, *command[1:]], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            until = time.monotonic() + 3
+            while time.monotonic() < until:
+                status = Path(f"/proc/{p.pid}/status").read_text()
+                caught = next(line.split()[1] for line in status.splitlines() if line.startswith("SigCgt:"))
+                if int(caught, 16) & (1 << (signal.SIGTERM - 1)):
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("production probe did not install a SIGTERM handler")
+            p.terminate()
+            p.communicate(timeout=2)
+            self.assertEqual(p.returncode, 0)
+        finally:
+            if p.poll() is None:
+                p.kill()
+            p.communicate()
+        self.assertNotIn("terminationGracePeriodSeconds", self.render()["manifests"][-1].get("spec", {}))
+
+    def test_source_verification_stderr_is_kept_before_any_mutation(self):
+        self.clock = substrate.lifecycle.Deadline(1000, now=lambda: 2795, monotonic=lambda: 1)
+        def wrong_source(args, **kwargs):
+            if args[0] == "git":
+                self.assertLessEqual(kwargs["timeout"], 5)
+                kwargs["stderr_sink"](b"source revision diagnostic")
+                return b"wrong revision"
+            return self.boundary(args, **kwargs)
+        with self.assertRaisesRegex(ValueError, "source revision"):
+            self.install(run=wrong_source)
+        self.assertEqual((self.args.evidence_dir / "0001.stderr.txt").read_text(), "source revision diagnostic")
+        self.assertEqual(self.evidence("steps.json")[0]["tool"], "git")
+        self.assertEqual(self.mutations(), [])
+
+    def test_apply_cli_defers_render_to_the_logged_installer(self):
+        mapping = self.root / "images.json"
+        mapping.write_text(json.dumps(self.images))
+        with patch.object(substrate, "install", return_value={"status": "passed"}) as apply, \
+                patch.object(substrate, "render") as render, contextlib.redirect_stdout(io.StringIO()):
+            status = substrate.main(["--source", str(self.root), "--image-map", str(mapping), "--nodes", "node-a",
+                                     "--apply", "--evidence-dir", str(self.args.evidence_dir)])
+        self.assertEqual(status, 0)
+        self.assertIsNone(apply.call_args.args[1])
+        render.assert_not_called()
+
+    def test_apply_renders_only_after_logged_source_verification(self):
+        proof = substrate.install(self.args, None, self.images, self.env, run=self.boundary,
+                                  cloud=self.cloud, clock=self.clock, sleep=lambda _: None)
+        self.assertEqual(proof["status"], "passed")
+        self.assertEqual([s["operation"] for s in self.evidence("steps.json")[:2]], ["rev-parse", "status"])
+
+    def test_native_proof_is_complete_before_first_cleanup_command(self):
+        boundary, observed = self.boundary, []
+        def run(args, **kwargs):
+            if "delete" in args and "pod/counter-probe" in args:
+                proof = self.evidence("native-proof.json")
+                self.assertEqual(proof["status"], "nativePassed")
+                self.assertEqual(proof["memoryCounts"], [1, 2])
+                self.assertEqual(proof["fileCounts"], [1, 2])
+                self.assertTrue(proof["stableIdentity"])
+                self.assertNotIn("smokeCleanup", proof)
+                observed.append(True)
+            return boundary(args, **kwargs)
+        self.assertEqual(self.install(run=run)["status"], "passed")
+        self.assertEqual(observed, [True])
+        self.assertEqual(self.evidence("cleanup.json")["status"], "passed")
+
+    def test_cleanup_failure_keeps_proof_and_separate_failed_cleanup(self):
+        self.boundary.fail = lambda a: "delete" in a and "actor-template" in a
+        with self.assertRaises(substrate.cleanup.CloudError):
+            self.install()
+        self.assertEqual(self.evidence("native-proof.json")["status"], "nativePassed")
+        result = self.evidence("cleanup.json")
+        self.assertEqual(result["status"], "failed")
+        actions = {a["resource"]: a["status"] for a in result["actions"]}
+        self.assertEqual(actions["actor-template"], "failed")
+        self.assertEqual(actions["atespace"], "passed")
+        self.assertEqual(actions["namespace"], "passed")
+        self.assertEqual(self.evidence("install-result.json")["status"], "failed")
+
+    def test_native_failure_is_not_masked_by_both_cleanup_failures(self):
+        self.boundary.response = "bad counter"
+        self.boundary.fail = lambda a: "delete" in a and any(x in a for x in ("pod/counter-probe", "namespace/substrate-smoke"))
+        with self.assertRaisesRegex(ValueError, "counter response"):
+            self.install()
+        self.assertFalse((self.args.evidence_dir / "native-proof.json").exists())
+        self.assertEqual(self.evidence("native-result.json"), {"status": "failed", "errorType": "ValueError"})
+        self.assertEqual(self.evidence("cleanup.json")["status"], "failed")
+
+    def test_native_proof_write_failure_still_attempts_every_cleanup(self):
+        write = substrate.Evidence.write_json
+        def fail_proof(evidence, name, data):
+            if name == "native-proof.json":
+                raise OSError("disk unavailable")
+            return write(evidence, name, data)
+        with patch.object(substrate.Evidence, "write_json", fail_proof), self.assertRaises(OSError):
+            self.install()
+        self.assertFalse((self.args.evidence_dir / "native-proof.json").exists())
+        self.assertEqual(self.evidence("native-result.json"), {"status": "failed", "errorType": "OSError"})
+        self.assertTrue(all(a["status"] == "passed" for a in self.evidence("cleanup.json")["actions"]))
+
+    def test_stderr_write_failure_during_cleanup_does_not_skip_remaining_actions(self):
+        command = substrate.Evidence.command
+        def fail_recording(evidence, args, **kwargs):
+            result = command(evidence, args, **kwargs)
+            if "delete" in args:
+                evidence.write_failed = True
+            return result
+        with patch.object(substrate.Evidence, "command", fail_recording), self.assertRaisesRegex(substrate.cleanup.CloudError, "evidence"):
+            self.install()
+        self.assertEqual(self.evidence("native-proof.json")["status"], "nativePassed")
+        self.assertEqual(self.evidence("cleanup.json")["status"], "passed")
+        self.assertTrue(all(a["status"] == "passed" for a in self.evidence("cleanup.json")["actions"]))
+        self.assertEqual(self.evidence("install-result.json"), {"status": "failed", "errorType": "EvidenceWriteError"})
+
+    def test_primary_interrupt_still_attempts_all_owned_cleanup(self):
+        calls = 0
+        def interrupt(args):
+            nonlocal calls
+            if "exec" in args and "pod/counter-probe" in args:
+                calls += 1
+                if calls == 2:
+                    raise KeyboardInterrupt
+            return False
+        self.boundary.fail = interrupt
+        with self.assertRaises(KeyboardInterrupt):
+            self.install()
+        self.assertEqual(self.evidence("native-result.json"), {"status": "failed", "errorType": "KeyboardInterrupt"})
+        self.assertTrue(all(a["status"] == "passed" for a in self.evidence("cleanup.json")["actions"]))
+        self.assertFalse((self.args.evidence_dir / "native-proof.json").exists())
+
+    def test_interrupt_during_cleanup_marks_remaining_not_reached_and_stops(self):
+        def interrupt(args):
+            if "delete" in args and "pod/counter-probe" in args:
+                raise KeyboardInterrupt
+            return False
+        self.boundary.fail = interrupt
+        with self.assertRaises(KeyboardInterrupt):
+            self.install()
+        self.assertEqual(self.evidence("native-proof.json")["status"], "nativePassed")
+        actions = {a["resource"]: a["status"] for a in self.evidence("cleanup.json")["actions"]}
+        self.assertEqual(actions["probe"], "failed")
+        self.assertTrue(all(actions[x] == "notReached" for x in ("actor", "actor-template", "atespace", "workerpool", "namespace")))
+        self.assertFalse(any("delete" in a and "workerpool/substrate-smoke" in a for a, _, _ in self.boundary.calls))
+
+    def test_missing_evidence_directory_refuses_before_commands(self):
+        self.args.evidence_dir = None
+        with self.assertRaisesRegex(ValueError, "evidence"):
+            substrate.install(self.args, self.render(), self.images, self.env, run=self.boundary, cloud=self.cloud, clock=self.clock)
+        self.assertEqual(self.boundary.calls, [])
+
+    def test_failed_readiness_records_not_reached_proof_and_cleanup(self):
+        self.boundary.fail = lambda a: "rollout" in a
+        with self.assertRaises(substrate.cleanup.CloudError):
+            self.install()
+        self.assertFalse((self.args.evidence_dir / "native-proof.json").exists())
+        self.assertEqual(self.evidence("native-result.json")["status"], "notReached")
+        self.assertEqual(self.evidence("cleanup.json")["status"], "notReached")
 
     def mutations(self):
         return [a for a, _, _ in self.boundary.calls if any(x in a for x in ("create", "delete", "exec", "rollout"))]
@@ -393,6 +572,7 @@ class InstallerTests(RendererTests):
                     return boundary(args, **kwargs)
 
                 def install(run=run):
+                    self.args.evidence_dir = self.root / ("evidence-" + uuid.uuid4().hex)
                     return substrate.install(self.args, self.render(), self.images, self.env, run=run, cloud=self.cloud, clock=self.clock, sleep=lambda _: None)
 
                 with patch.dict(os.environ, {**ambient, "AZURE_CONFIG_DIR": self.env["AZURE_CONFIG_DIR"]}):
