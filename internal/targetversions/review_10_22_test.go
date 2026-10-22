@@ -438,7 +438,13 @@ func TestSchema1GoldenStoreStillOpens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(privateTempDir(t), "golden.db")
+	// TempDir's numbered child follows the process umask and can be 0755 in
+	// CI. Open must still require an explicitly private containing directory.
+	private := filepath.Join(privateTempDir(t), "private")
+	if err := os.Mkdir(private, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(private, "golden.db")
 	if err := os.WriteFile(path, fixture, 0600); err != nil {
 		t.Fatal(err)
 	}
