@@ -45,8 +45,10 @@ def node_scope(nodes):
     if (not isinstance(nodes, list) or not 1 <= len(nodes) <= 4 or len(set(nodes)) != len(nodes)
             or any(not isinstance(n, str) or len(n) > 253 or not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", n) for n in nodes)):
         raise ValueError("explicit distinct approved node names required")
+    # Field selectors require singleton values; separate terms are ORed.
     return {"requiredDuringSchedulingIgnoredDuringExecution": {"nodeSelectorTerms": [
-        {"matchFields": [{"key": "metadata.name", "operator": "In", "values": sorted(nodes)}]}]}}
+        {"matchFields": [{"key": "metadata.name", "operator": "In", "values": [node]}]}
+        for node in sorted(nodes)]}}
 
 
 def image_map(data):
