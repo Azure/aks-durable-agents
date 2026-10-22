@@ -18,7 +18,7 @@ func TestSuiteSubjectFieldBindings(t *testing.T) {
 		"source":             func(s *Subject) { s.Source = "other" },
 		"proposal":           func(s *Subject) { s.Suite.ProposalID = "other" },
 		"proposer issuer":    func(s *Subject) { s.Suite.ProposedBy.Issuer = "other" },
-		"proposer subject":   func(s *Subject) { s.Suite.ProposedBy.Subject = "other" },
+		"proposer subject":   func(s *Subject) { s.Suite.ProposedBy.Subject = testReviewerOID },
 		"target":             func(s *Subject) { s.Resource = "other"; s.Suite.TargetID = "other" },
 		"expected version":   func(s *Subject) { s.Suite.ExpectedVersion = "other" },
 		"expected revision":  func(s *Subject) { s.Suite.ExpectedRevision++ },

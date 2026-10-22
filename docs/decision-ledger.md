@@ -44,7 +44,9 @@ proposer identity fields; effect subjects retain domain v1. Trusted registration
 must take `ProposedBy` from the verified proposal-creation request, never approval
 request metadata, agent provenance or the later approver. Proposal creation and
 approval must use the same verified issuer/oid namespace, not mixed issuer forms
-or caller-selected identity mappings. The proposer is required and cannot be replaced for the same subject generation. Changing source/evidence
+or caller-selected identity mappings. Registration requires a canonical lowercase
+GUID `oid`, rejecting pairwise `sub` values and alternate GUID spellings. The
+proposer is required and cannot be replaced for the same subject generation. Changing source/evidence
 requires a new subject reference. There can be only one open generation of a workspace/kind/subject ID;
 supersede it before registering a newer generation. A decided subject cannot be
 superseded. Re-registering identical retained content reads its existing identity.
@@ -67,8 +69,10 @@ superseded. Re-registering identical retained content reads its existing identit
   actions are `accept`, `reject`, `request_changes`; effect actions are `approve`,
   `deny`. Other actions, including Continue, cannot record an accepted decision.
 - Independent version approval is mandatory before the tenant's decision policy:
-  suite `accept` is refused when the verified approver's issuer/oid equals the
-  immutable `ProposedBy`, even if the injected policy would grant approval. The
+  suite `accept` is refused when the verified approver's issuer differs from
+  immutable `ProposedBy.Issuer`, or their oid equals `ProposedBy.Subject`, even if
+  the injected policy would grant approval. Cross-issuer identities are not
+  assumed independent; this fails closed rather than guessing an identity mapping. The
   guard runs after visibility and exact-key retry/conflict checks. Its durable
   `policy_denied` outcome leaves an open subject available to another person;
   existing closed/expired/invalid-action refusal precedence is preserved.

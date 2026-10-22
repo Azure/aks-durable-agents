@@ -3,6 +3,7 @@ package decisionledger
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,16 +18,17 @@ func TestIndependentVersionApproval(t *testing.T) {
 		action               Action
 		outcome, code        string
 	}{
-		{"proposer cannot accept", "issuer", "author", Accept, "refused", "policy_denied"},
-		{"independent person", "issuer", "reviewer", Accept, "recorded", ""},
-		{"same oid other issuer", "other-issuer", "author", Accept, "recorded", ""},
-		{"proposer may reject if policy permits", "issuer", "author", Reject, "recorded", ""},
-		{"proposer may request changes if policy permits", "issuer", "author", RequestChanges, "recorded", ""},
+		{"proposer cannot accept", "issuer", testProposerOID, Accept, "refused", "policy_denied"},
+		{"independent person", "issuer", testReviewerOID, Accept, "recorded", ""},
+		{"same oid other issuer", "other-issuer", testProposerOID, Accept, "refused", "policy_denied"},
+		{"other oid other issuer", "other-issuer", testReviewerOID, Accept, "refused", "policy_denied"},
+		{"proposer may reject if policy permits", "issuer", testProposerOID, Reject, "recorded", ""},
+		{"proposer may request changes if policy permits", "issuer", testProposerOID, RequestChanges, "recorded", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestStore(t)
 			subject := suiteSubject()
-			subject.Suite.ProposedBy = api.CallerIdentity{Issuer: "issuer", Subject: "author"}
+			subject.Suite.ProposedBy = api.CallerIdentity{Issuer: "issuer", Subject: testProposerOID}
 			ref, err := s.RegisterSubject(context.Background(), subject)
 			if err != nil {
 				t.Fatal(err)
@@ -60,7 +62,7 @@ func TestIndependentVersionApproval(t *testing.T) {
 				if err != nil || state != "open" || out.Authorization != nil {
 					t.Fatalf("self-approval consumed subject: state=%s err=%v", state, err)
 				}
-				independent, err := svc.Decide(humanContext("reviewer", time.Now().Add(time.Hour)), r)
+				independent, err := svc.Decide(humanContext(testReviewerOID, time.Now().Add(time.Hour)), r)
 				if err != nil || independent.Outcome != "recorded" || independent.ID == out.ID {
 					t.Fatalf("denial poisoned independent approval: %+v %v", independent, err)
 				}
@@ -75,12 +77,12 @@ func TestProposerIdentityRequiredAndImmutable(t *testing.T) {
 	if _, err := s.RegisterSubject(context.Background(), subject); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("unknown proposer accepted: %v", err)
 	}
-	subject.Suite.ProposedBy = api.CallerIdentity{Issuer: "issuer", Subject: "author"}
+	subject.Suite.ProposedBy = api.CallerIdentity{Issuer: "issuer", Subject: testProposerOID}
 	ref, err := s.RegisterSubject(context.Background(), subject)
 	if err != nil {
 		t.Fatal(err)
 	}
-	subject.Suite.ProposedBy.Subject = "replacement"
+	subject.Suite.ProposedBy.Subject = testReviewerOID
 	changed, err := subject.Reference()
 	if err != nil || changed.Digest == ref.Digest {
 		t.Fatalf("proposer not bound: %+v %v", changed, err)
@@ -89,26 +91,43 @@ func TestProposerIdentityRequiredAndImmutable(t *testing.T) {
 		t.Fatalf("proposer replaced: %v", err)
 	}
 }
+func TestRegisterSubjectRejectsNonOIDProposer(t *testing.T) {
+	for name, value := range map[string]string{
+		"pairwise sub":  "pairwise-subject",
+		"uppercase oid": strings.ToUpper("abcdefab-cdef-4abc-8def-abcdefabcdef"),
+		"braced oid":    "{" + testProposerOID + "}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newTestStore(t)
+			subject := suiteSubject()
+			subject.Suite.ProposedBy.Subject = value
+			if _, err := s.RegisterSubject(context.Background(), subject); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("non-oid proposer admitted: %v", err)
+			}
+		})
+	}
+}
+
 func TestIndependentApprovalPreservesReadAndStatePriority(t *testing.T) {
 	s, svc, policy, r := serviceFixture(t)
 	subject := suiteSubject()
 	subject.ID = "owned"
-	subject.Suite.ProposedBy = api.CallerIdentity{Issuer: "issuer", Subject: "author"}
+	subject.Suite.ProposedBy = api.CallerIdentity{Issuer: "issuer", Subject: testProposerOID}
 	ref, err := s.RegisterSubject(context.Background(), subject)
 	if err != nil {
 		t.Fatal(err)
 	}
 	r.Subject = ref
-	author := humanContext("author", time.Now().Add(time.Hour))
+	author := humanContext(testProposerOID, time.Now().Add(time.Hour))
 	policy.readDenied = true
 	if out, err := svc.Decide(author, r); !errors.Is(err, ErrDenied) || out.ID != "" {
 		t.Fatalf("read denial changed: %+v %v", out, err)
 	}
-	if _, err = s.lookup(author, api.CallerIdentity{Issuer: "issuer", Subject: "author"}, r.Workspace, r.Key); !errors.Is(err, ErrNotFound) {
+	if _, err = s.lookup(author, api.CallerIdentity{Issuer: "issuer", Subject: testProposerOID}, r.Workspace, r.Key); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("invisible self-approval persisted: %v", err)
 	}
 	policy.readDenied = false
-	if out, err := svc.Decide(humanContext("reviewer", time.Now().Add(time.Hour)), r); err != nil || out.Outcome != "recorded" {
+	if out, err := svc.Decide(humanContext(testReviewerOID, time.Now().Add(time.Hour)), r); err != nil || out.Outcome != "recorded" {
 		t.Fatalf("independent approval: %+v %v", out, err)
 	}
 	if out, err := svc.Decide(author, r); err != nil || out.RefusalCode != "subject_closed" {

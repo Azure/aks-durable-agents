@@ -66,7 +66,7 @@ func (s *Service) visible(ctx context.Context, h entraauth.VerifiedHuman, subjec
 // resource permissions. Decide calls it only after visibility and retry checks;
 // immutable host-retained proposer evidence cannot race a policy update.
 func (s *Service) withDecisionPolicy(ctx context.Context, h entraauth.VerifiedHuman, subject Subject, action Action, commit func(Authorization) error) error {
-	if subject.Kind == SuiteKind && action == Accept && subject.Suite.ProposedBy == h.Caller.Identity {
+	if subject.Kind == SuiteKind && action == Accept && (subject.Suite.ProposedBy.Issuer != h.Caller.Identity.Issuer || subject.Suite.ProposedBy.Subject == h.Caller.Identity.Subject) {
 		return ErrDenied
 	}
 	return s.policy.WithDecision(ctx, h, subject, action, commit)

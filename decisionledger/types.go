@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Azure/aks-durable-agents/decisionrecord"
+	"github.com/Azure/aks-durable-agents/entraauth"
 	"github.com/agent-primitives/sessions/api"
 )
 
@@ -151,7 +152,10 @@ func (s Subject) Reference() (SubjectRef, error) {
 			return bad()
 		}
 		p := s.Suite
-		if !p.ProposedBy.Valid() || p.Intent != "activate" || p.TargetID != s.Resource || p.ExpectedRevision == 0 || p.ExpectedRevision > math.MaxInt64 || !keyOK(p.OperationKey) {
+		// Reuse VerifyHuman's canonical oid form, without sub fallback. This
+		// checks form only; the registering host must verify issuer trust.
+		oidForm := entraauth.Config{Issuer: p.ProposedBy.Issuer, SubjectClaim: "oid"}
+		if !p.ProposedBy.Valid() || !oidForm.ValidIdentity(p.ProposedBy) || p.Intent != "activate" || p.TargetID != s.Resource || p.ExpectedRevision == 0 || p.ExpectedRevision > math.MaxInt64 || !keyOK(p.OperationKey) {
 			return bad()
 		}
 		ids = []string{p.ProposalID, p.TargetID, p.ExpectedVersion, p.Intent, p.OperationKey, p.Member, p.Composition, p.Platform, p.QualificationID}

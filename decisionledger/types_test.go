@@ -11,8 +11,13 @@ import (
 
 var testDigest = strings.Repeat("a", 64)
 
+const (
+	testProposerOID = "11111111-1111-4111-8111-111111111111"
+	testReviewerOID = "22222222-2222-4222-8222-222222222222"
+)
+
 func suiteSubject() Subject {
-	return Subject{Workspace: "workspace", Kind: SuiteKind, ID: "proposal", Generation: 1, Resource: "target", ExpiresAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), Source: "host-fixture", Suite: &SuiteProposal{ProposedBy: api.CallerIdentity{Issuer: "issuer", Subject: "author"}, ProposalID: "proposal", TargetID: "target", ExpectedVersion: "version1", ExpectedRevision: 1, Intent: "activate", OperationKey: "activation-key", PredecessorDigest: testDigest, SuiteDigest: testDigest, Member: "main", Composition: "none", Platform: "linux/amd64", InventoryDigest: testDigest, CasesDigest: testDigest, BindingDigest: testDigest, QualificationID: "qualification", EvidenceDigest: testDigest, SourceDigest: testDigest}}
+	return Subject{Workspace: "workspace", Kind: SuiteKind, ID: "proposal", Generation: 1, Resource: "target", ExpiresAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), Source: "host-fixture", Suite: &SuiteProposal{ProposedBy: api.CallerIdentity{Issuer: "issuer", Subject: testProposerOID}, ProposalID: "proposal", TargetID: "target", ExpectedVersion: "version1", ExpectedRevision: 1, Intent: "activate", OperationKey: "activation-key", PredecessorDigest: testDigest, SuiteDigest: testDigest, Member: "main", Composition: "none", Platform: "linux/amd64", InventoryDigest: testDigest, CasesDigest: testDigest, BindingDigest: testDigest, QualificationID: "qualification", EvidenceDigest: testDigest, SourceDigest: testDigest}}
 }
 func effectSubject() Subject {
 	s := suiteSubject()
