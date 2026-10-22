@@ -516,7 +516,8 @@ class DiagnosticTests(unittest.TestCase):
         cases = [
             ({field: [{"state": {"waiting": {"reason": reason}}}]}, [reason])
             for field in ("containerStatuses", "initContainerStatuses")
-            for reason in ("ImagePullBackOff", "ErrImagePull", "CrashLoopBackOff", "CreateContainerConfigError")]
+            for reason in ("ImagePullBackOff", "ErrImagePull", "CrashLoopBackOff", "CreateContainerConfigError",
+                           "ContainerCreating", "FailedMount")]
         cases += [
             ({"initContainerStatuses": [{"state": {"terminated": {"reason": "OOMKilled", "message": self.SECRET}}}]}, ["OOMKilled"]),
             ({"containerStatuses": [{"state": {"waiting": {"reason": "CrashLoopBackOff"}},

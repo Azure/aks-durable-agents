@@ -61,7 +61,7 @@ def manifests(raw):
                  "resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"cpu": "100m", "memory": "32Mi"}},
                  "volumeMounts": [{"name": "profiles", "mountPath": "/profiles"},
                                   {"name": "source", "mountPath": "/source", "readOnly": True}]}],
-             "volumes": [{"name": "profiles", "hostPath": {"path": "/var/lib/kubelet/seccomp", "type": "Directory"}},
+             "volumes": [{"name": "profiles", "hostPath": {"path": "/var/lib/kubelet/seccomp", "type": "DirectoryOrCreate"}},
                          {"name": "source", "configMap": {"name": NAME, "defaultMode": 292}}]}}}}]
 
 

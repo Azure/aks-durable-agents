@@ -114,9 +114,12 @@ class ProofTests(unittest.TestCase):
             self.assertEqual(proof.validate_rollout_status(candidate), candidate)
             with self.assertRaises(ValueError):
                 proof.validate_rollout_status(dict(candidate, readyNodes=0))
-        for reason in ("ImagePullBackOff", "ErrImagePull", "CrashLoopBackOff", "CreateContainerConfigError",
-                       "OOMKilled", "Unschedulable", "readiness probe failing", "other"):
+        reasons = ("ImagePullBackOff", "ErrImagePull", "CrashLoopBackOff", "CreateContainerConfigError",
+                   "ContainerCreating", "FailedMount", "OOMKilled", "Unschedulable", "readiness probe failing", "other")
+        for reason in reasons:
             proof.validate_rollout_status(dict(good, podReasons=[reason]))
+        aggregate = dict(good, podReasons=sorted(reasons))
+        self.assertEqual(proof.validate_rollout_status(aggregate), aggregate)
         for count in (None, 0, 2, 2147483647):
             proof.validate_rollout_status(dict(good, readyNodes=count, desiredNodes=count))
         invalid = [(key, value) for key in ("readyNodes", "desiredNodes")
