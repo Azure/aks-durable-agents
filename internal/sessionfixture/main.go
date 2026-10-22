@@ -30,7 +30,7 @@ func RunCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
 }
 func runCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("commands: init, harness, fake, executor, evidence, verify-replay, verify-loop, storage-proof, network-probe, resolve-intent")
+		return errors.New("commands: init, harness, actor-harness, fake, executor, evidence, verify-replay, verify-loop, storage-proof, network-probe, resolve-intent")
 	}
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	fs.SetOutput(errOut)
@@ -110,6 +110,13 @@ func runCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
 			return err
 		}
 		return serveGRPC(ctx, server, listener)
+	case "actor-harness":
+		addr := fs.String("addr", "0.0.0.0:80", "actor harness port80; literal loopback is allowed for offline tests")
+		check := fs.Bool("check", false, "print the frozen actor capability descriptor without starting a listener")
+		if err := parse(); err != nil {
+			return err
+		}
+		return runActorHarness(ctx, *addr, *check, out)
 	case "fake":
 		addr := fs.String("addr", "127.0.0.1:9001", "literal loopback HTTP address")
 		ledger := fs.String("ledger", "", "absolute durable fake call meter")
