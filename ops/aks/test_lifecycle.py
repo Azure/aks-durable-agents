@@ -242,7 +242,41 @@ class LifecycleTests(unittest.TestCase):
                 lifecycle.command([sys.executable, "-c", program], timeout=0.3)
             pid = int(pidfile.read_text())
             stat = Path(f"/proc/{pid}/stat")
-            self.assertTrue(not stat.exists() or stat.read_text().split()[2] == "Z", "descendant is still running")
+            try:
+                state = stat.read_text().split()[2]
+            except FileNotFoundError:
+                state = None  # A reaped child is stopped, even if /proc vanished just now.
+            self.assertIn(state, (None, "Z"), "descendant is still running")
+
+    def test_descendant_reaped_between_proc_exists_and_read(self):
+        original_read, original_exists = Path.read_text, Path.exists
+
+        def read(path, *args, **kwargs):
+            if str(path).startswith("/proc/") and path.name == "stat":
+                raise FileNotFoundError(str(path))
+            return original_read(path, *args, **kwargs)
+
+        def exists(path):
+            if str(path).startswith("/proc/") and path.name == "stat":
+                return True
+            return original_exists(path)
+
+        with mock.patch.object(Path, "read_text", read), mock.patch.object(Path, "exists", exists):
+            try:
+                self.test_timeout_kills_descendant_process_group()
+            except FileNotFoundError:
+                self.fail("a reaped descendant must satisfy the process-group cleanup assertion")
+
+    def test_running_descendant_still_fails_cleanup_assertion(self):
+        original_read = Path.read_text
+
+        def read(path, *args, **kwargs):
+            if str(path).startswith("/proc/") and path.name == "stat":
+                return "1 (sleep) S"
+            return original_read(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "read_text", read), self.assertRaisesRegex(AssertionError, "descendant is still running"):
+            self.test_timeout_kills_descendant_process_group()
 
     def test_same_run_teardown_overrides_expiry_but_never_other_lineage(self):
         for run in (("123", "1"), ("999", "1"), ("123", "2")):
