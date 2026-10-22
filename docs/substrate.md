@@ -62,7 +62,13 @@ cluster. Pin every runtime image and sandbox asset. Provision these separately:
   The template selects that pool, uses `VOLUMES` fidelity, disables golden
   snapshots and mounts a `durable-dir` for harness files. The harness serves
   gRPC on **port 80**, reports stateless replay, and requests no model or tool
-  credentials. The current port-9000 fixture is not that image.
+  credentials. Use the fixture image's explicit `/session-fixture actor-harness`
+  entrypoint, not the legacy port-9000/Pod-marker `harness` command. Preflight
+  verifies `actor-harness --check` on the selected immutable digest before paid
+  resources; the image role/receipt schema is unchanged. See the
+  [manual AKS actor variant](../ops/aks/SUBSTRATE.md#manual-sessions-actor-variant)
+  for the separate executor Pod, native placement/checkpoint proof and live-go
+  boundary. Offline/image checks do not qualify its live AKS execution.
 - An actor atespace reserved for this host/template binding. Do not change it or
   the template while sessions exist; Actor names derive from session UIDs.
 - A retained S3-compatible development store for kind. This does not qualify

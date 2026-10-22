@@ -1,6 +1,7 @@
 """Actor variant boundaries. All external execution is synthetic here."""
 import contextlib
 import copy
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -51,6 +52,26 @@ class NativeBindingTests(unittest.TestCase):
         self.assertEqual(template["snapshotConfig"]["goldenSnapshotConfig"]["mode"], "GOLDEN_SNAPSHOT_MODE_DISABLED")
         self.assertNotIn("/data", str(template))
         with self.assertRaises(ValueError): s.application_bundle(bundle, "fixture:latest")
+
+    def test_entrypoint_selects_actor_adapter_and_its_closed_schema(self):
+        import substrate_proof
+        records = [{"phase": phase, "case": case, "stage": stage, "passed": True} for phase in ("dormant", "live") for case in substrate_proof.CASES for stage in ("control", "denial")]
+        api = SimpleNamespace(timings=lambda: {"version": 1, "phases": {"replay": 1}, "totalSeconds": 2})
+        adapter = SimpleNamespace(SubstrateScenario=Mock(return_value=api), run=Mock(return_value=({**substrate_proof.FINAL, "replay": substrate_proof.REPLAY}, records)))
+        original = s.nightly.local_module
+        def load(name, path):
+            return adapter if path.name == "substrate_session.py" else original(name, path)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work, public = root / "work", root / "public"
+            work.mkdir(mode=0o700)
+            public.mkdir(mode=0o700)
+            argv = ["--workdir", str(work), "--public-dir", str(public), "--client", "/client", "--variant", "substrate-gvisor", "--substrate-source", "/source", "--substrate-image-map", "/map", "--substrate-tools", "/tools"]
+            with patch.object(s.nightly, "local_module", side_effect=load), patch.object(s.nightly, "Scenario") as legacy:
+                self.assertEqual(s.nightly.main(argv), 0)
+            adapter.SubstrateScenario.assert_called_once()
+            legacy.assert_not_called()
+            self.assertEqual(substrate_proof.load_public(public, "proof.json")["profile"], "aks-substrate")
 
     def test_runtime_cilium_policy_cannot_bypass_owned_router_inventory(self):
         api: Any = object.__new__(s.SubstrateScenario)

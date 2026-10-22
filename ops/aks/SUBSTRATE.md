@@ -270,3 +270,85 @@ teardown. A real run requires the operator's approval of the exact target and
 change list. The host has separate [Sessions v0.3.0/Substrate v0.5.0 wiring](../../docs/substrate.md),
 which requires a fresh compatible state set rather than an in-place runtime upgrade.
 This install-only check does not connect that host to the runtime or nightly.
+
+## Manual Sessions actor variant
+
+`aks-e2e.yml` has an explicit `substrate-gvisor` choice. It is **manual-only**:
+`run_scenario` remains false by default, `variant` defaults to `no-sandbox`, and
+scheduled runs always select the existing no-sandbox case. No Substrate scenario
+has been live-qualified by the offline/image/admission tests. A passing native
+counter install does not authorize a Sessions run. Obtain a fresh operator go
+for the exact target, node/request capacity, identities, model budget and inputs
+before dispatch; do not enable the schedule as part of this qualification.
+
+In addition to the existing operator/configuration/required-auth gates, selection
+requires `AKS_SUBSTRATE_ENABLED=true` and explicit dispatch inputs:
+
+- `variant=substrate-gvisor` and `run_scenario=true`;
+- `substrate_publish_run_id`: a successful canonical-main **Images** run;
+- `substrate_verify_run_id`: a successful canonical-main **Verified image pins**
+  run exporting the exact same Substrate publication and 15-entry image map.
+
+The pre-paid job validates both runs and map equality, anonymously pulls inputs,
+rechecks owned signatures/SBOMs and runs the selected immutable application
+harness's `actor-harness --check`. A legacy image without that entrypoint fails
+**before provisioning**. It builds/scans pinned runner and native tools and
+transfers their source/toolchain/map bundle to the scenario. Binary compilation,
+anonymous pull and signature/SBOM verification finish before cluster creation;
+cluster nodes still have to pull the published images when workloads start. Publication
+still occurs only through the existing main Images success/signature gates.
+No token, kubeconfig or Azure cache is in the prepared artifact.
+
+The same original provisioning epoch bounds all installation, scenario and
+cleanup work: **30 minutes + 15 minutes cleanup**, never separate per-variant
+windows. Existing workflow node sizing is a candidate test profile, not a new
+sizing approval. Recompute complete rendered requests including init/Always
+sidecars/probes and system workloads before requesting the first live go. Keep
+the D4 design recommendation; do not shrink host, worker or harness requests.
+Actual peak memory, cost and timing fit remain unqualified.
+
+### Assembly and proof boundaries
+
+The released Sessions v0.3.0 adapter uses verified control TLS and a host-only
+projected KSA token for audience `api.ate-system.svc`, with the live serving-DNS
+ClusterTrustBundle. The private h2c router carries the host-initiated harnesswire
+stream to actor port80; model/tool requests return on that stream. No actor→host
+callback listener, host PVC or provider/executor credentials are needed.
+
+The chart's explicit `runtime.mode=substrate` renders host and **separate executor
+Pods**, with same-node RWO affinity for their Unix socket. Executor has no WI or
+control-token mount and default-deny network. The shared host Namespace's API
+label also covers executor; host-only Pod selectors and executor egress denial,
+not a claim of separate Namespaces, enforce that boundary. Actors use a fresh
+owned WorkerPool/atespace/template; privileged node agents remain scoped to their
+infrastructure. The installer-owned router overlay replaces the upstream
+any-source data rule, permitting exact host Namespace+Pod labels and its own
+smoke probe. Reapplying the overlay preserves this rule; inventory/UID and
+additional Cilium-policy checks reject drift.
+
+The frozen actor harness performs one real-model preparation, parks with zero
+effects, and commits a ready external **VOLUMES** SUSPEND checkpoint. The host
+restarts while the gate is pending. Simulated Approve records a decision only;
+explicit Continue at the approved head resumes and produces one publication,
+receipt and artifact without another model request. This is not approve-and-run
+or delegated human/Entra approval.
+
+Private evidence binds the session to actual actor UID/template/digest, observed
+RUNNING gVisor placement before the harness invocation, authoritative worker Pod
+UID/node and the exact journal-held newest VOLUMES snapshot. First placement is
+immutable across host restart; latest may name a different worker after resume.
+A template label, Pod RuntimeClass or counter actor is not this evidence.
+Pre-cleanup native proof is separate from cleanup and overall results.
+
+The `aks-substrate` public collector accepts only its closed proof/network/timing
+schema, never raw identities, snapshot URIs, logs or private stderr. Positive
+and negative caller controls include untrusted Pod and executor access to
+router/control/model endpoints. These are **not guest-egress or hostile-tenant
+isolation qualification**; public proof says `guestEgress=not-qualified`.
+
+Finally, both trusted writers are fenced and a restored host archive runs the
+same harness in strict offline terminal replay: complete coverage, zero provider
+and executor callbacks, unchanged journal/ledger/effect inventories and effective
+socket denial. This does not restore the Substrate catalog or snapshot objects,
+prove a cold destination/worker replacement, or qualify Blob/MSHV/MEMORY/golden
+snapshots, RAM-free boot, concurrency or production recovery.

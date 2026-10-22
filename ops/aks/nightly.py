@@ -1000,6 +1000,9 @@ def main(argv=None):
     parser.add_argument("--public-dir", type=Path, required=True)
     parser.add_argument("--client", type=Path, required=True)
     parser.add_argument("--chart", type=Path, default=ROOT / "charts/aks-durable-agents")
+    parser.add_argument("--variant", choices=("no-sandbox", "substrate-gvisor"), default="no-sandbox")
+    for option in ("source", "image-map", "tools"):
+        parser.add_argument("--substrate-" + option, type=Path)
     args = parser.parse_args(argv)
     os.umask(0o077)
     stage = "preflight"
@@ -1012,11 +1015,19 @@ def main(argv=None):
         private_directory(args.public_dir)
         require(not list(args.public_dir.iterdir()), "public output directory must be empty")
         public_ready = True
-        api = Scenario(args.workdir, args.client, args.chart, os.environ)
-        proof, network = run_scenario(api)
+        native_inputs = (args.substrate_source, args.substrate_image_map, args.substrate_tools)
+        if args.variant == "substrate-gvisor":
+            require(all(path is not None for path in native_inputs), "explicit prepared Substrate inputs required")
+            adapter = local_module("aks_actor_scenario", HERE / "substrate_session.py")
+            api = adapter.SubstrateScenario(args.workdir, args.client, args.chart, os.environ, *native_inputs)
+            proof, network = adapter.run(api)
+        else:
+            require(all(path is None for path in native_inputs), "Substrate inputs require explicit variant")
+            api = Scenario(args.workdir, args.client, args.chart, os.environ)
+            proof, network = run_scenario(api)
         timings = api.timings()
         # No permissive fallback: sibling validator is mandatory at publication.
-        validator = local_module("aks_safe_proof", HERE / "proof.py")
+        validator = local_module("aks_safe_proof", HERE / ("substrate_proof.py" if args.variant == "substrate-gvisor" else "proof.py"))
         proof = validator.validate(proof)
         network = validator.validate_network(network)
         timings = validator.validate_timings(timings)

@@ -1,6 +1,10 @@
 """The actor profile must never be accepted as a legacy marker proof."""
 import copy
+import importlib.util
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import proof
 import substrate_proof as p
@@ -9,6 +13,25 @@ FINAL = {"version": 1, "profile": "aks-substrate", "variant": "substrate-gvisor"
 
 
 class ActorPublicProofTests(unittest.TestCase):
+    def test_collector_accepts_only_explicit_actor_profile_without_logs(self):
+        spec = importlib.util.spec_from_file_location("actor_collector_test", Path(__file__).resolve().parents[1] / "demo/e2e.py")
+        assert spec is not None and spec.loader is not None
+        collector = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(collector)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "public"
+            workspace.mkdir()
+            records = [{"phase": phase, "case": case, "stage": stage, "passed": True} for phase in ("dormant", "live") for case in p.CASES for stage in ("control", "denial")]
+            for name, value in (("proof.json", FINAL), ("network-proof.json", records), ("timings.json", {"version": 1, "phases": {"replay": 1}, "totalSeconds": 2})):
+                (workspace / name).write_text(json.dumps(value))
+            (workspace / "private.log").write_text("token-and-identities")
+            result = collector.collect(workspace, root / "must-not-read", root / "output", root / "summary", "success", "https://github.com/Azure/aks-durable-agents/actions/runs/123", profile="aks-substrate", sha="a" * 40)
+            self.assertEqual(result, 0)
+            self.assertEqual(json.loads((root / "output/proof.json").read_text()), FINAL)
+            self.assertFalse((root / "output/private.log").exists())
+            self.assertNotIn("token-and-identities", (root / "summary").read_text())
+
     def test_closed_proof_requires_all_actual_invariants(self):
         self.assertEqual(p.validate(FINAL), FINAL)
         with self.assertRaises(ValueError): proof.validate(FINAL)
