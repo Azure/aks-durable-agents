@@ -14,8 +14,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 )
 
-// Config is immutable operator configuration. Required is admission-only until
-// upstream sessions supplies resource enforcement and durable policy activation.
+// Config is immutable operator configuration. Required enforces host-RPC
+// permissions, not durable journal-wide policy activation.
 type Config struct {
 	Addr, HealthAddr, Journal string
 	Mode                      authn.Mode
@@ -59,7 +59,7 @@ func (c Config) validate() error {
 		return errors.New("trusted-network Sessions requires auth off, TLS certificate/key and an explicit IPv4 wildcard listener")
 	}
 	if (!loopback(c.Addr) && !c.TrustedNetworkSessions) || !loopback(c.HealthAddr) {
-		return errors.New("sessions and health listeners must use literal loopback addresses until sessions c1/c2")
+		return errors.New("sessions and health listeners must use literal loopback addresses; public exposure is unsupported")
 	}
 	_, port, _ := net.SplitHostPort(c.Addr)
 	_, healthPort, _ := net.SplitHostPort(c.HealthAddr)

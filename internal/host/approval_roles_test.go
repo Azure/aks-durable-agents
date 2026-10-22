@@ -29,9 +29,9 @@ func TestApprovalSourcesORAndRequiredClaims(t *testing.T) {
 		{"role only", false, []string{"Approver"}, 0, []string{ownerOID}, codes.OK, ""},
 		{"listed other role", true, []string{"Reader"}, 0, []string{ownerOID}, codes.OK, ""},
 		{"both", true, []string{"Approver"}, 0, []string{ownerOID}, codes.OK, ""},
-		{"neither", false, []string{"Reader"}, 0, []string{ownerOID}, codes.PermissionDenied, "approval not permitted"},
-		{"listed missing roles", true, nil, 0, []string{ownerOID}, codes.PermissionDenied, "approval requires a nonempty roles claim; configure API app role assignments"},
-		{"listed malformed roles", true, "Approver", 0, []string{ownerOID}, codes.PermissionDenied, "approval requires a valid roles claim"},
+		{"neither", false, []string{"Reader"}, 0, []string{ownerOID}, codes.PermissionDenied, "permission denied"},
+		{"listed missing roles", true, nil, 0, []string{ownerOID}, codes.PermissionDenied, "permission denied"},
+		{"listed malformed roles", true, "Approver", 0, []string{ownerOID}, codes.PermissionDenied, "permission denied"},
 		{"guest listed role", true, []string{"Approver"}, 1, []string{ownerOID}, codes.Unauthenticated, "authentication required"},
 		{"missing group listed role", true, []string{"Approver"}, 0, nil, codes.Unauthenticated, "authentication required"},
 	} {
@@ -67,7 +67,16 @@ func TestApprovalSourcesORAndRequiredClaims(t *testing.T) {
 			}
 			uid := turn.Session.GetMetadata().GetUid()
 			token := sign(approverOID)
-			_, err = c.Approve(bearer(t.Context(), "Bearer "+token), uid, decision(t, turn.Session, true))
+			shared := bearer(t.Context(), "Bearer "+token)
+			read, readErr := c.GetSession(shared, uid)
+			if status.Code(readErr) != tc.want || (tc.want != codes.OK && read != nil) {
+				t.Fatalf("shared read code=%v want=%v", status.Code(readErr), tc.want)
+			}
+			records, replayErr := c.Replay(shared, uid, 0, 0)
+			if status.Code(replayErr) != tc.want || (tc.want != codes.OK && len(records) != 0) {
+				t.Fatalf("shared replay code=%v want=%v", status.Code(replayErr), tc.want)
+			}
+			_, err = c.Approve(shared, uid, decision(t, turn.Session, true))
 			if status.Code(err) != tc.want {
 				t.Fatalf("code=%v want=%v error=%v", status.Code(err), tc.want, err)
 			}
@@ -135,17 +144,21 @@ func TestPolicyRequiresAuth(t *testing.T) {
 
 func TestApprovalRoleIdentityBinding(t *testing.T) {
 	caller := api.CallerIdentity{Issuer: "issuer", Subject: "listed"}
+	owner := api.CallerIdentity{Issuer: "issuer", Subject: "owner"}
 	p := newApprovalPolicy([]api.CallerIdentity{caller})
-	p.verifyApproval = func(ctx context.Context) (authn.VerifiedCaller, bool, error) {
-		return authn.VerifiedCaller{Identity: api.CallerIdentity{Issuer: "other", Subject: "listed"}, ValidUntil: time.Now().Add(time.Hour)}, true, nil
-	}
-	if p.Authorize(t.Context(), api.AuthorizationRequest{Caller: caller, Action: api.ActionApprove, SessionUID: "s"}) == nil {
-		t.Fatal("role result for different caller accepted")
-	}
-	p.verifyApproval = func(ctx context.Context) (authn.VerifiedCaller, bool, error) {
-		return authn.VerifiedCaller{Identity: caller, ValidUntil: time.Now().Add(-time.Minute)}, true, nil
-	}
-	if p.Authorize(t.Context(), api.AuthorizationRequest{Caller: caller, Action: api.ActionApprove, SessionUID: "s"}) == nil {
-		t.Fatal("expired role result accepted for matching listed caller")
+	for _, action := range []api.Action{api.ActionRead, api.ActionApprove} {
+		r := api.AuthorizationRequest{Caller: caller, Owner: owner, Action: action, SessionUID: "s"}
+		p.verifyApproval = func(ctx context.Context) (authn.VerifiedCaller, bool, error) {
+			return authn.VerifiedCaller{Identity: api.CallerIdentity{Issuer: "other", Subject: "listed"}, ValidUntil: time.Now().Add(time.Hour)}, true, nil
+		}
+		if p.Authorize(t.Context(), r) == nil {
+			t.Fatalf("%s accepted role result for different caller", action)
+		}
+		p.verifyApproval = func(ctx context.Context) (authn.VerifiedCaller, bool, error) {
+			return authn.VerifiedCaller{Identity: caller, ValidUntil: time.Now().Add(-time.Minute)}, true, nil
+		}
+		if p.Authorize(t.Context(), r) == nil {
+			t.Fatalf("%s accepted expired role result for matching listed caller", action)
+		}
 	}
 }

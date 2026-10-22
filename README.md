@@ -47,7 +47,7 @@ For component checks without Docker, use the [development checks](docs/developme
 
 ## Go deeper
 
-- [Current limits and validation](docs/status.md): what has been tested, missing authorization and development dependencies.
+- [Current limits and validation](docs/status.md): what has been tested, authorization limits and development dependencies.
 - [Architecture](docs/architecture.md): how the host, execution and storage fit together.
 - [Development](docs/development.md): full offline checks and external test inputs.
 - [Cluster deployment prerequisites](charts/aks-durable-agents/README.md) and [backup/restore](ops/backup/README.md).
