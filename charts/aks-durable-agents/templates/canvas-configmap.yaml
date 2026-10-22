@@ -1,0 +1,12 @@
+{{- if (.Values.canvas | default dict).enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agents.canvasConfigName" . }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "agents.labels" . | nindent 4 }}
+immutable: true
+data:
+  engine.json: {{ include "agents.canvasConfig" . | quote }}
+{{- end }}

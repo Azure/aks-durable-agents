@@ -32,9 +32,12 @@ See the [host's remaining authorization work](host.md#what-still-belongs-upstrea
 [Sessions](https://github.com/agent-primitives/sessions) supplies the journal,
 approvals, replay without new model/tool calls, and forks. It stays cloud-neutral.
 This repository adds Entra caller identity, model access through workload identity,
-network policy, Helm packaging and backup/restore recipes. Role mapping, a
-supported Helm installation and approval-bound delegated tool access are planned,
-not current guarantees. See [architecture and trust boundaries](architecture.md).
+network policy, Helm packaging and backup/restore recipes. Optional app-role,
+group and member admission checks and subject-OR-role approval are implemented
+([configuration and limits](entraauth.md#optional-caller-and-approver-checks));
+these do not supply per-resource authorization or approval attribution. A
+supported Helm installation and approval-bound delegated tool access remain
+planned, not current guarantees. See [architecture and trust boundaries](architecture.md).
 
 The chart's fixture pod is not a sandbox. The chart does not install Substrate;
 its optional host backend needs separate infrastructure. The intended Substrate

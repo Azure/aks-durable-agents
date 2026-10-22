@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Safe artifact collector and bot-owned failure tracker for the nightly kind e2e workflow."""
+"""Safe artifact collectors and bot-owned failure trackers for kind and AKS e2e workflows."""
 import argparse
+import importlib.util
 import json
 import math
 import os
@@ -20,6 +21,10 @@ RUN_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/actions/runs/[0-9]+(/
 EVIDENCE = re.compile(r"Evidence: (/\S*/\.build/demo/[0-9a-f]{32})\s*$", re.MULTILINE)
 SAFE_PHASE = re.compile(r"[A-Za-z0-9 ._:/(),;'-]{1,160}")
 SUMMARY_RESERVE = 16 * 1024
+AKS_TITLE = "AKS e2e regression"
+AKS_MARKER = "<!-- aks-e2e-tracking -->"
+AKS_START, AKS_END = "<!-- aks-e2e-status:start -->", "<!-- aks-e2e-status:end -->"
+AKS_STAGES = ("config", "preflight", "create", "wait", "federate", "scenario", "teardown", "finalize")
 
 
 class ApiError(Exception):
@@ -100,7 +105,68 @@ def find_evidence(workspace, console_text):
     return path
 
 
-def collect(workspace, console, destination, summary, result, run_url):
+def collect_aks(workspace, destination, summary, result, run_url, sha, stage):
+    # The kind path deliberately retains logs. Never call it for real-model runs.
+    spec = importlib.util.spec_from_file_location("aks_public_proof", Path(__file__).resolve().parents[1] / "aks/proof.py")
+    assert spec is not None and spec.loader is not None
+    proof = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(proof)
+
+    if (not RUN_URL.fullmatch(run_url) or (sha and not re.fullmatch(r"[0-9a-f]{40}", sha))
+            or stage not in AKS_STAGES or result not in ("success", "failure", "cancelled")):
+        raise ValueError("invalid AKS reporting metadata")
+    dest = Path(destination)
+    dest.mkdir(parents=True)
+    valid = True
+    for name in PROOFS:
+        try:
+            value = proof.load_public(workspace, name)
+        except (OSError, ValueError, RecursionError):
+            valid = False
+            continue
+        # Reserialize closed, validated fields; never retain untrusted raw bytes.
+        (dest / name).write_text(json.dumps(value, sort_keys=True, allow_nan=False) + "\n")
+    status = {"result": "success" if result == "success" and valid else "failed",
+              "stage": stage, "runURL": run_url, "commitSHA": sha}
+    text = ("# AKS e2e summary\n\n" + f"- Result: {status['result']}\n"
+            + f"- Stage: {stage}\n- Run: {run_url}\n- Commit: {sha}\n")
+    if result in ("failure", "cancelled"):
+        try:
+            diagnostics = proof.load_public(workspace, "diagnostics.json")
+        except (OSError, ValueError, RecursionError):
+            text += "- Diagnostics: unavailable\n"
+        else:
+            (dest / "diagnostics.json").write_text(json.dumps(diagnostics, sort_keys=True, allow_nan=False) + "\n")
+            text += (f"- Scenario phase: {diagnostics['phase']}\n- Operation: {diagnostics['operation']}\n"
+                     + f"- Reason: {diagnostics['reason']}\n- Source fencing: {diagnostics['cleanup']}\n")
+            rollout_kind = {"profile-rollout": "DaemonSet", "deployment-rollout": "Deployment"}.get(diagnostics["operation"])
+            if rollout_kind is not None:
+                try:
+                    rollout = proof.load_public(workspace, "rollout-status.json")
+                    if rollout["controllerKind"] not in (rollout_kind, "other"):
+                        raise ValueError("mismatched AKS rollout controller")
+                except (OSError, ValueError, RecursionError):
+                    text += "- Rollout status: unavailable\n"
+                else:
+                    (dest / "rollout-status.json").write_text(json.dumps(rollout, sort_keys=True, allow_nan=False) + "\n")
+                    counts = [str(rollout[key]) if rollout[key] is not None else "unknown"
+                              for key in ("readyNodes", "desiredNodes")]
+                    text += (f"- Controller: {rollout['controllerKind']}/{rollout['controllerName']}\n"
+                             + "- Pod reasons: " + ", ".join(rollout["podReasons"]) + "\n"
+                             + "- Ready/desired nodes: " + "/".join(counts) + "\n")
+        text += "- Underlying cause: not determined\n"
+    (dest / "status.json").write_text(json.dumps(status, sort_keys=True) + "\n")
+    (dest / "summary.md").write_text(text)
+    Path(summary).parent.mkdir(parents=True, exist_ok=True)
+    Path(summary).write_text(text)
+    return 1 if result == "success" and not valid else 0
+
+
+def collect(workspace, console, destination, summary, result, run_url, profile="kind", sha="", stage="scenario"):
+    if profile == "aks":
+        return collect_aks(workspace, destination, summary, result, run_url, sha, stage)
+    if profile != "kind":
+        raise ValueError("unknown reporting profile")
     if not RUN_URL.fullmatch(run_url):
         raise ValueError("run URL is not a canonical GitHub Actions run URL")
     dest = Path(destination)
@@ -220,7 +286,7 @@ def render_block(run_url, sha):
     return f"{START}\nStatus: failing\nLatest failing run: {run_url}\nCommit: {sha}\n{END}"
 
 
-def find_tracker(api, repo):
+def find_tracker(api, repo, title=TITLE, marker=MARKER):
     """Exactly one github-actions[bot] tracker, filtered by author before counting; refuse incomplete lookups."""
     matches = []
     for page in range(1, 101):
@@ -229,7 +295,7 @@ def find_tracker(api, repo):
             raise ApiError("unexpected issue listing response")
         for item in items:
             user = item.get("user") or {}
-            if ("pull_request" not in item and item.get("title") == TITLE and MARKER in (item.get("body") or "")
+            if ("pull_request" not in item and item.get("title") == title and marker in (item.get("body") or "")
                     and user.get("login") == "github-actions[bot]" and user.get("type") == "Bot"):
                 matches.append(item)
         if len(items) < 100:
@@ -239,19 +305,30 @@ def find_tracker(api, repo):
     raise ApiError("issue lookup incomplete after 100 pages")
 
 
-def update_body(body, block):
-    starts, ends = body.count(START), body.count(END)
+def update_body(body, block, start=START, end=END):
+    starts, ends = body.count(start), body.count(end)
     if starts == 0 and ends == 0:
         return body.rstrip("\n") + "\n\n" + block + "\n"
-    if starts != 1 or ends != 1 or body.index(START) > body.index(END):
+    if starts != 1 or ends != 1 or body.index(start) > body.index(end):
         raise ApiError("tracking issue has a malformed managed status block; refusing to overwrite")
-    return body[:body.index(START)] + block + body[body.index(END) + len(END):]
+    return body[:body.index(start)] + block + body[body.index(end) + len(end):]
 
 
-def track(api, repo, run_id, sha, run_url, test=False):
+def track(api, repo, run_id, sha, run_url, test=False, profile="kind", stage="scenario"):
+    if profile not in ("kind", "aks") or (profile == "aks" and (stage not in AKS_STAGES or test)):
+        raise ValueError("invalid AKS tracker profile, stage or test mode")
     if not re.fullmatch(r"[0-9a-f]{40}", sha) or not re.fullmatch(rf"https://github\.com/{re.escape(repo)}/actions/runs/{int(run_id)}(/attempts/[0-9]+)?", run_url):
         raise ValueError("sha or run URL is not canonical for this run")
     base = f"/repos/{repo}/issues"
+    if profile == "aks":
+        issue = find_tracker(api, repo, AKS_TITLE, AKS_MARKER)
+        block = f"{AKS_START}\nStage: {stage}\nWorkflow: {run_url}\nCommit: {sha}\n{AKS_END}"
+        if issue is None:
+            issue = api.request("POST", base, {"title": AKS_TITLE, "body": f"{AKS_MARKER}\n\n{block}\n"})
+        else:
+            body = update_body(issue.get("body") or "", block, AKS_START, AKS_END)
+            api.request("PATCH", f"{base}/{issue['number']}", {"body": body, "state": "open"})
+        return f"https://github.com/{repo}/issues/{int(issue['number'])}"
     issue = find_tracker(api, repo)
     if test:
         if issue is None:
@@ -282,10 +359,15 @@ def main(argv=None, api=None):
     t.add_argument("--sha", required=True)
     t.add_argument("--run-url", required=True)
     t.add_argument("--test", action="store_true")
+    c.add_argument("--sha", default="")
+    for command in (c, t):
+        command.add_argument("--profile", choices=("kind", "aks"), default="kind")
+        command.add_argument("--stage", default="scenario")
     args = parser.parse_args(argv)
     try:
         if args.command == "collect":
-            code = collect(args.workspace, args.console, args.destination, args.summary, args.result, args.run_url)
+            code = collect(args.workspace, args.console, args.destination, args.summary, args.result, args.run_url,
+                           args.profile, args.sha, args.stage)
             if code:
                 print("collector: success claim has invalid or missing proof; see summary", file=sys.stderr)
             return code
@@ -294,7 +376,7 @@ def main(argv=None, api=None):
             if not token:
                 raise ValueError("GITHUB_TOKEN is required")
             api = GitHubAPI(token)
-        print("Tracker:", track(api, args.repo, args.run_id, args.sha, args.run_url, args.test))
+        print("Tracker:", track(api, args.repo, args.run_id, args.sha, args.run_url, args.test, args.profile, args.stage))
         return 0
     except (ApiError, ValueError, OSError) as exc:
         print(f"e2e {args.command} failed: {exc}", file=sys.stderr)

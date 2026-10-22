@@ -8,7 +8,7 @@ run; offline fixtures do not qualify a live deployment.
 ## Start offline
 
 Component checks run without Azure credentials or model keys. Use Python
-**3.14.3** and the Go toolchain from [`go.mod`](../go.mod) (currently **1.27.2**):
+**3.14.3** and the Go toolchain from [`go.mod`](../go.mod) (currently **1.27.3**):
 
 ```sh
 go mod download
@@ -51,7 +51,7 @@ Read the [backup and restore recipe](../ops/backup/README.md) before opening ret
 ## Full development checks
 
 CI runs on pull requests and pushes to `main`. To run the same checks locally,
-use the Go toolchain pinned in `go.mod` (currently Go 1.27.2; language floor 1.27):
+use the Go toolchain pinned in `go.mod` (currently Go 1.27.3; language floor 1.27):
 
 ```sh
 set -e
@@ -67,6 +67,14 @@ go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
 govulncheck ./...
 ```
 
+Image validation additionally runs `bash ops/images/vulncheck.sh` after
+`make images` and `bash ops/images/smoke.sh`, using the same installed scanner.
+It strictly scans the actual packaged Go executables in all three images.
+Publication scans built binaries before push and packaged binaries before signing.
+Only kubectl/kubelogin runner scans are report-only, with full findings in the
+run summary and separate artifacts; see the [runner scan policy](../ops/aks/TOOL-SCANS.md).
+These Go checks do not audit OS layers or Python dependencies.
+
 For the chart checks, use Helm **3.20.0**, Python **3.14.3** and the pinned
 Python requirements:
 
@@ -80,8 +88,15 @@ refusal tests with synthetic fixtures; bare defaults intentionally refuse missin
 operator inputs. See the [chart README](../charts/aks-durable-agents/README.md#offline-verification).
 
 Tests use fake credentials and local TLS servers, including the **real sessions
-OpenAI adapter** at the [canonical upstream pin](entraauth.md#offline-verification-and-the-sessions-dependency). They require neither Azure access nor model keys. There is no
-automatic live test. A separately approved CLI-identity smoke check must use an
+OpenAI adapter** at the [canonical upstream pin](entraauth.md#offline-verification-and-the-sessions-dependency). They require neither Azure access nor model keys. The [AKS workflow](../ops/aks/README.md) defaults to read-only manual dispatch and
+requests the operator-gated no-sandbox scenario daily at 05:43 UTC. It retains
+simulated approval, parked-host restart, effective policy controls, fenced
+backup/strict replay, whole-cluster teardown and independent expiry cleanup.
+Qualification and operator opt-ins remain required; `AKS_BUDGET_CONFIRMED` is an
+operator confirmation backed by budget alerts and the sweeper, not a live spending
+check or hard spending cap. No billing read grant, new IAM or paging is added.
+Offline tests use fake cloud commands and optional local Docker exercises, never
+Azure provisioning or inference. A separately approved CLI-identity smoke check must use an
 explicit `AzureCLICredential`, no retries, and at most three calls; missing RBAC
 must be reported, not assigned.
 
@@ -90,6 +105,7 @@ Run the backup and native producer unit tests separately:
 ```sh
 python3 -B -m unittest discover -s ops/backup -p 'test_*.py'
 python3 -B -m unittest discover -s ops/canvas -p 'test_*.py'
+python3 -B -m unittest discover -s ops/aks -p 'test_*.py'
 ```
 
 ## External fixture qualification

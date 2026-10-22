@@ -6,10 +6,12 @@ profile installs two single-replica
 `Recreate` Deployments (host; harness/executor/inert fake), a harness-only
 ClusterIP Service, separate ServiceAccounts, immutable configuration, three
 NetworkPolicies, and optionally a retained RWO PVC. **Workloads start at zero
-replicas.** No sessions API Service or Ingress is installed; sessions `8080` and
-separate host health `8081` listeners remain loopback-only. The opt-in
+replicas.** By default no sessions API Service or Ingress is installed; sessions
+`8080` and separate host health `8081` listeners remain loopback-only. The opt-in
 [native document producer profile](#native-document-producer-profile) replaces
 the fixture harness/executor/fake pod without changing the legacy defaults.
+The separate [private Canvas profile](#private-canvas-engine-profile) adds a
+headless engine and private TLS Sessions Service; it is disabled by default.
 
 ## Prerequisites and operator steps
 
@@ -46,7 +48,14 @@ existing journals, receipts, policy run IDs, ledgers, PVC subpaths and operator
 values as one compatible set. Do not reset a ledger to adopt new example values.
 - Create the Entra application/permission configuration separately. Required
   auth needs `tenantID`, exact tenant `issuer`, GUID `audience`, nonempty
-  `allowedClientIDs`, `requiredScope`, and explicit `{issuer, subject}` approvers.
+  `allowedClientIDs`, `requiredScope`, and explicit `{issuer, subject}` approvers
+  or `approverRoles`. Approval uses **subject OR app role**, never bypassing
+  optional `memberOnly`/`requiredGroups` admission. `requiredRoles` admits any
+  listed caller role; all listed groups are required. All default off/empty.
+  Configured approver roles require a nonempty `roles` claim even for listed
+  subjects; startup logs source counts and operator role names, not claims.
+  See [policy setup and OR example](../../docs/entraauth.md#optional-caller-and-approver-checks).
+  New claim policies are refused with `auth.mode: off`.
   Each approver `issuer` must equal `auth.issuer` exactly; with `subjectClaim: oid`
   each `subject` must be a lowercase object ID GUID, and with `sub` it must have
   no ASCII whitespace or control characters. Values that rendered before can now
@@ -145,15 +154,16 @@ Do not use the synthetic test fixtures for installation.
      --namespace agents -f operator-values.yaml --set workloads.enabled=false
    ```
 
-2. **Apply/verify NetworkPolicies before scaling workloads.** Read back all three
-   rendered release policies and inspect every additive policy in the namespace:
+2. **Apply/verify NetworkPolicies before scaling workloads.** Read back all
+   rendered release policies (three normally, five with Canvas) and inspect every
+   additive policy in the namespace:
 
    ```sh
    kubectl --context my-aks --namespace agents get networkpolicy -o yaml
    kubectl --context my-aks --namespace agents get deployment
    ```
 
-   Confirm both Deployments have zero replicas, exact release/namespace selectors
+   Confirm all Deployments have zero replicas, exact release/namespace selectors
    and expected rules. Independently qualify Cilium enforcement with approved
    network probes before proceeding; object existence is not proof of enforcement.
    If any rule/enforcement is unknown, stop. If chart policies are explicitly
@@ -227,6 +237,145 @@ profile with fake HTTPS inference and enforced Cilium denials. Its diagnostic
 images and explicit trusted-network mode do **not** qualify AKS, workload
 identity, authenticated callers, real inference, actions, or copied replay.
 
+## Private Canvas engine profile
+
+**Experimental, explicit auth-off trusted network only; identity is not
+exercised.** This profile requires the separately reviewed Canvas hosted runtime
+and matching engine/producer image receipts. The chart cannot attest binary
+contents or runtime-image compatibility. Offline render tests do not qualify a
+live PVC, Cilium, AKS, workload identity, real model calls, or replay. Remote
+announcement/executor/operator replay remains unavailable until its separate
+implementation; readiness is not permission to replay or infer.
+
+Keep all existing host/model/native inputs and add these operator inputs (the
+placeholders are deliberately not deployable):
+
+```yaml
+canvas:
+  image:
+    repository: <reviewed-registry/repository>
+    digest: sha256:<actual-64-lowercase-hex-digest>
+    includesHealthProbe: true
+  enabled: true
+  instanceID: <unique-project-instance>
+  origin: https://127.0.0.1:9443
+  sessionsTLSSecretName: <existing-host-tls-secret>
+  tlsSecretName: <different-existing-engine-tls-secret>
+  persistence:
+    existingClaim: "" # Or an independently verified, prepared engine disk claim.
+    size: 1Gi
+    storageClass: managed-csi
+harness:
+  native:
+    enabled: true # Also supply the exact prepared entries described above.
+auth:
+  mode: off
+  trustedNetwork: true
+networkPolicy:
+  enabled: true
+workloads:
+  enabled: false
+```
+
+The closed schema requires explicit instance ID, HTTPS literal-127.0.0.1 origin
+with canonical port 1–65535, both TLS Secret references, a digest-pinned engine
+image and its health-probe attestation. `instanceID` is 1–63 lowercase ASCII
+letters, digits or hyphens, starting with a letter, matching the runtime. Use a
+separate instance/project/private state root per release. No credential or PEM
+material belongs in values or ConfigMaps. `auth.tlsSecretName` and the required
+mode auth ConfigMap are not used by this profile; required-auth and disabled
+Canvas profiles retain their existing behavior.
+
+### Separate disks, prepared files and writer fencing
+
+The engine gets **only its own disk** at `/data`, never the host journal/ledger
+or native producer mount. A newly created claim is retained (`keep`),
+`volumeMode: Filesystem`, **ReadWriteOncePod**, default class `managed-csi`.
+Use Azure Disk CSI with a POSIX filesystem; no Azure Files/SMB support is claimed.
+For an existing claim, the operator must independently verify the underlying
+Azure Disk, Filesystem/POSIX semantics, RWOP access mode and effective fencing
+before enabling the release. Merely naming a different claim does not prove it
+uses a different disk. The chart refuses a claim name shared with host/harness.
+
+Before startup, with every prior writer stopped and fenced, prepare the engine
+mount writable by UID/GID 65532. Supply real definition/layout/source-archive
+files under `/data/definition/` (entry `/data/definition/canvas.yaml`), preserving
+their normal source modes and the definition's relative paths. Prepare writable
+`/data/home` and `/data/tmp`; these are `HOME` and `TMPDIR`. Do not put model keys,
+Sessions credentials, or TLS keys on the engine disk. No registry fetch or
+engine model egress is permitted. Do not use projected ConfigMap symlinks for
+prepared definition/archive inputs or strip their normal read modes.
+
+Leave `/data/state` absent for a fresh instance: the runtime creates a private
+0700 **child**, not a state root at the PVC mount point. Preserve compatible
+private state on restart. The runtime owns the stable lifecycle flock and
+instance/definition/endpoint binding; the chart does not initialize, migrate,
+chmod/chown, recursively apply fsGroup, reset, or repair old ownership. No init
+container, hook or preparation Job is installed. Incompatible/unmarked/nonprivate
+state must refuse rather than be adopted. Never change an instance/definition or
+reset old state to get past refusal.
+
+All three Deployments stay single-replica `Recreate`, with no surge; the engine
+uses nonroot 65532, read-only root filesystem, all capabilities dropped, no token
+automount, no workload identity and no sidecars. RWOP, Recreate and flock do not
+replace operational fencing. Fence the old node/writer before force-detach or
+recovery. Retain both disks and reconcile unknown outcomes. Endpoint metadata
+binds the configured Sessions DNS endpoint, **not its journal/backend identity**:
+a replacement host journal behind the same DNS is not detected by that marker.
+Retain/fence the host PVC too; per-session UID/project/harness checks fail closed
+on missing/moving evidence, not by creating replacement sessions.
+
+### Two TLS hops, loopback port-forward and readiness
+
+1. Supply a host Secret with `tls.crt`, `tls.key`, and `ca.crt`. Its leaf must have
+   the exact rendered DNS SAN
+   `<agents.name>-sessions.<namespace>.svc.cluster.local` (use the rendered name,
+   including shortening/hash for long releases). Engine config pins that FQDN
+   with `:8080`, explicit CA verification and no plaintext downgrade. The engine
+   receives **only `ca.crt` via Secret items**, never the host private key.
+2. Supply a **different** engine TLS Secret with `tls.crt` and `tls.key`; its leaf
+   needs IP SAN **127.0.0.1**. Keep its issuing CA in the operator's local trust
+   file for the adapter/browser. Secret file projections are read-only and
+   readable by UID65532. Treat rotation of either TLS Secret/CA as requiring
+   explicit affected-process restarts; no live reload is promised.
+3. The headless engine runs `/usr/local/bin/canvas-engine -config
+   /config/engine.json`, serving HTTPS **only on 127.0.0.1:8443**. There is no
+   engine Service, Ingress, NodePort or LoadBalancer. For the example origin,
+   an approved operator may forward the selected engine pod's port with
+   `kubectl --context my-aks --namespace agents port-forward pod/<engine-pod> 9443:8443`.
+   The local forward port **must equal `canvas.origin`'s port**; the pod listen
+   port need not equal it. Do not expose the forward on a public interface.
+4. Configure the local Canvas adapter with its explicit HTTPS engine URL
+   `https://127.0.0.1:9443` and absolute CA-file reference (its version-1
+   `CANVAS_ENGINE_CONFIG` file uses `engineURL` and `caFile`). Do not disable TLS
+   verification or substitute ambient credentials. The iframe receives neither
+   TLS keys nor Sessions/model credentials. This is a headless API plus a local
+   adapter, not a public engine UI or sign-in flow.
+
+Engine readiness executes `/usr/local/bin/canvas-engine health-probe
+127.0.0.1:8081`; that command must perform bounded **HTTP GET `/readyz`**, requiring
+status 200 and its command-owned response body. A TCP connect is insufficient
+while initialization owns reserved sockets. The image's `includesHealthProbe`
+value is an operator attestation of this behavior, not a chart implementation of
+it. Host health remains loopback-only with its existing `/host health-probe`.
+
+Engine configuration is public paths/identifiers only, a flat version-1 JSON
+ConfigMap with an immutable content-hashed name. Changing the origin creates a
+new ConfigMap reference and a Recreate rollout without changing `/data/state` or
+implicitly migrating identity/state. Preserve instance/definition/endpoint
+bindings; content hashing is not permission to change retained-state identity.
+
+Use the policy-first gate above: **all three pods dormant, verify all five
+policies and additive rules, then enable the same release**. The only new
+application flow is engine → this release's host TCP8080 in the same namespace;
+engine egress is that exact host selector plus kube-system DNS UDP/TCP53. Existing
+host egress is unchanged, and the native harness still has no egress allowance.
+The host uses `-addr=0.0.0.0:8080 -sessions-trusted-network=true` with both TLS
+files even in auth-off mode. Health remains `127.0.0.1:8081`. NetworkPolicy is
+**not authentication**: label identity is not exercised, selectors can be
+spoofed by sufficiently privileged actors, and other additive policies can
+weaken isolation. Do not enable in a hostile or unverified namespace.
+
 ## Offline verification
 
 Pinned tools: **Helm 3.20.0** (`v3.20.0+gb2e4314`), **Python 3.14.3**, and
@@ -238,7 +387,10 @@ python3 -B charts/aks-durable-agents/tests/test_chart.py
 
 The suite runs strict `helm lint` and `helm template` offline with Kubernetes
 1.37 for default-shape/required-auth and proof-shape/auth-off fixtures, compares
-goldens, and checks schema failures and safety invariants. Bare defaults refuse
+goldens, and checks schema failures and safety invariants. Canvas coverage checks
+real rendered objects, exact JSON/host-argument fixtures, private TLS projections,
+independent RWOP storage, selectors, security and disabled-profile compatibility.
+Bare defaults refuse
 rendering: real digests, identity, auth and pricing inputs are intentionally
 missing. Fixture IDs and `a…`/`b…` digests are synthetic, not deployment receipts.
 To deliberately regenerate and inspect goldens, append `--update-goldens`.

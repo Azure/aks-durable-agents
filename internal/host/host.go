@@ -89,6 +89,7 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 		return nil, err
 	}
 	var verifier authn.CallerVerifier
+	approval := newApprovalPolicy(c.Approvers)
 	if c.Mode == authn.Required {
 		authLog := logger
 		if authLog == nil {
@@ -102,7 +103,19 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 		if err != nil {
 			return nil, err
 		}
-		verifier = newLoggingVerifier(a.verifier, authLog, time.Now)
+		logged := newLoggingVerifier(a.verifier, authLog, time.Now)
+		verifier = logged
+		if len(identity.ApproverRoles) > 0 {
+			approval.verifyApproval = func(ctx context.Context) (authn.VerifiedCaller, bool, error) {
+				caller, match, err := a.verifier.VerifyApproval(ctx)
+				if err != nil {
+					logged.approvalFailed(debugReason(err))
+				}
+				return caller, match, err
+			}
+		}
+		authLog.Info("approval sources active", "subjects", len(approval.approvers), "app_roles", identity.ApproverRoles,
+			"member_only", identity.MemberOnly, "required_roles", identity.RequiredRoles, "required_group_count", len(identity.RequiredGroups))
 	}
 	// The deployment is host policy, not a harness-controlled override.
 	modelFn := func(ctx context.Context, r api.ModelRequest) (api.ModelResponse, error) {
@@ -157,7 +170,7 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 		return nil, err
 	}
 	svc := session.NewService(a.store, registry, session.WithLogger(logger))
-	a.sessions, a.health, err = newServers(c.Mode, verifier, newApprovalPolicy(c.Approvers), svc, transport)
+	a.sessions, a.health, err = newServers(c.Mode, verifier, approval, svc, transport)
 	if err != nil {
 		return nil, err
 	}
@@ -210,8 +223,8 @@ func (a *application) Close() {
 	})
 }
 
-// Run owns both listeners and all host resources until cancellation. Neither
-// listener can be publicly bound while upstream c1/c2 enforcement is absent.
+// Run owns both listeners and all host resources until cancellation. Health is
+// always loopback; private Sessions exposure requires the explicit TLS opt-in.
 func Run(ctx context.Context, c Config, logger *slog.Logger) error {
 	if logger == nil {
 		logger = slog.Default()
@@ -222,7 +235,11 @@ func Run(ctx context.Context, c Config, logger *slog.Logger) error {
 	if c.ModelPolicy == "" {
 		return errors.New("host requires explicit -model-policy: unknown price or unbounded model calls are refused")
 	}
-	lis, err := net.Listen("tcp", c.Addr)
+	network := "tcp"
+	if c.TrustedNetworkSessions {
+		network = "tcp4"
+	}
+	lis, err := net.Listen(network, c.Addr)
 	if err != nil {
 		return fmt.Errorf("sessions listener: %w", err)
 	}
@@ -239,6 +256,9 @@ func Run(ctx context.Context, c Config, logger *slog.Logger) error {
 	defer a.Close()
 	if c.Mode == authn.Off {
 		logger.Warn("authentication off: trusted-network local development only")
+		if c.TrustedNetworkSessions {
+			logger.Warn("private TLS Sessions listener: identity not exercised; network isolation must be enforced")
+		}
 	}
 	logger.Warn("experimental proof only: sessions resource authorization/attribution missing; shared authority, no owner isolation or journal policy activation", "auth_mode", string(c.Mode))
 	logger.Info("host listening", "sessions", lis.Addr().String(), "health", ops.Addr().String())

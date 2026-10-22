@@ -1,6 +1,7 @@
 {{- include "agents.validateNative" . -}}
 {{- $root := . -}}
 {{- $name := include "agents.name" . -}}
+{{- $canvas := (.Values.canvas | default dict).enabled -}}
 {{- range $role := list "harness" "host" }}
 ---
 apiVersion: apps/v1
@@ -64,7 +65,12 @@ spec:
           imagePullPolicy: IfNotPresent
           command: [/host]
           args:
+            {{- if $canvas }}
+            - -addr=0.0.0.0:8080
+            - -sessions-trusted-network=true
+            {{- else }}
             - -addr=127.0.0.1:8080
+            {{- end }}
             - -health-addr=127.0.0.1:8081
             {{- if $root.Values.harness.native.enabled }}
             {{- range $root.Values.harness.native.entries }}
@@ -88,6 +94,8 @@ spec:
             - {{ printf "-model-scope=%s" $root.Values.model.scope | quote }}
             {{- if eq $root.Values.auth.mode "required" }}
             - -auth-config=/auth/auth.json
+            {{- end }}
+            {{- if or $canvas (eq $root.Values.auth.mode "required") }}
             - -tls-cert=/tls/tls.crt
             - -tls-key=/tls/tls.key
             {{- end }}
@@ -118,6 +126,8 @@ spec:
             - name: auth
               mountPath: /auth
               readOnly: true
+            {{- end }}
+            {{- if or $canvas (eq $root.Values.auth.mode "required") }}
             - name: tls
               mountPath: /tls
               readOnly: true
@@ -194,9 +204,15 @@ spec:
           configMap:
             name: {{ $name }}-auth
             defaultMode: 0444
+        {{- end }}
+        {{- if or $canvas (eq $root.Values.auth.mode "required") }}
         - name: tls
           secret:
+            {{- if $canvas }}
+            secretName: {{ $root.Values.canvas.sessionsTLSSecretName | quote }}
+            {{- else }}
             secretName: {{ $root.Values.auth.tlsSecretName | quote }}
+            {{- end }}
             defaultMode: 0444
         {{- end }}
         {{- end }}

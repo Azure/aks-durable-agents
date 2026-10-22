@@ -2,12 +2,12 @@
 image:
   host:
     repository: "ghcr.io/azure/aks-durable-agents/host"
-    digest: "sha256:864a68cb40efb4aaf4737fcf05baf546fdd4aceaba7f1911cde4ce6f878daf1b"
+    digest: "sha256:4ddf17048729198ab5fa144349a87d8e74695d1fc359d7dce300fd2dcc411e9c"
     # Operator attestation: legacy /session-fixture probe, or native /host health-probe.
     includesHealthProbe: true
   harness:
     repository: "ghcr.io/azure/aks-durable-agents/session-fixture"
-    digest: "sha256:0942af46da49f0e4cb267467bd98fd7a921b67b1c6eff139ebe4fc6e32ad2524"
+    digest: "sha256:e97186b0c1211eef17b89877912b9aafd32028f8b9c8596bfb2808fe1ca60aa2"
 
 # Install dormant. Apply/verify policies before enabling workloads (see README).
 workloads:
@@ -22,6 +22,12 @@ auth:
   allowedClientIDs: []
   requiredScope: ""
   subjectClaim: oid
+  # Optional: any caller role, all group IDs, explicit acct=0 membership.
+  requiredRoles: []
+  requiredGroups: []
+  memberOnly: false
+  # Any approver role OR a listed subject grants approval (see docs/entraauth.md).
+  approverRoles: []
   approvers: []
   # Existing Secret with tls.crt and tls.key; never put key material in values.
   tlsSecretName: ""
@@ -83,3 +89,23 @@ harness:
 
 networkPolicy:
   enabled: true
+
+# Explicit private TLS, native-harness, auth-off profile. Never an auth boundary.
+canvas:
+  image:
+    repository: ""
+    digest: ""
+    # Attest the reviewed image owns the HTTP /readyz health-probe command.
+    includesHealthProbe: false
+  enabled: false
+  instanceID: ""
+  # HTTPS literal-loopback origin; local port-forward port, not necessarily 8443.
+  origin: ""
+  # Existing host Secret: exact Service DNS SAN, tls.crt/tls.key and ca.crt.
+  sessionsTLSSecretName: ""
+  # Separate engine Secret: IP SAN 127.0.0.1, tls.crt/tls.key.
+  tlsSecretName: ""
+  persistence:
+    existingClaim: ""
+    size: 1Gi
+    storageClass: managed-csi

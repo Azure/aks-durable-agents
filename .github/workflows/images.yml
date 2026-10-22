@@ -31,9 +31,13 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - name: Install the pinned strict Go vulnerability scanner
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
       - run: make images
       - name: Smoke-test actual image commands without network
         run: bash ops/images/smoke.sh
+      - name: Require clean scans of all packaged Go executables
+        run: bash ops/images/vulncheck.sh
 
   publish:
     if: github.repository == 'Azure/aks-durable-agents' && github.event_name == 'push'
@@ -54,13 +58,18 @@ jobs:
           test "$(go env GOVERSION)" = "$(awk '$1 == "toolchain" {print $2}' go.mod)"
           go mod download
           go mod verify
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          govulncheck ./...
           go test -race ./...
+          python3 -B -m unittest discover -s ops/images -p 'test_backup_helper.py'
           python3 -B -m unittest discover -s ops/images -p 'test_update_pins.py'
           make image-binaries
+          govulncheck -mode=binary .build/images/host
+          govulncheck -mode=binary .build/images/session-fixture
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
           version: v0.38.0
-          driver-opts: image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+          driver-opts: image=moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
@@ -73,7 +82,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           echo "epoch=$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
-          for role in host session-fixture; do
+          for role in host session-fixture backup-helper; do
             tags="ghcr.io/azure/aks-durable-agents/$role:sha-$GITHUB_SHA"
             if [[ "$REF_TYPE" == tag ]]; then
               [[ "$REF_NAME" =~ ^v[A-Za-z0-9_.-]{0,127}$ ]]
@@ -109,16 +118,37 @@ jobs:
           build-args: SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
           provenance: mode=max
           attests: type=sbom,generator=docker/buildkit-syft-scanner@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        id: backup-helper
+        with:
+          context: ops/backup
+          file: ops/backup/Dockerfile
+          platforms: linux/amd64
+          network: none
+          outputs: type=registry,rewrite-timestamp=true
+          tags: ${{ steps.source.outputs.backup-helper }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          build-args: |
+            HOST_IMAGE=ghcr.io/azure/aks-durable-agents/host@${{ steps.host.outputs.digest }}
+            SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
+          provenance: mode=max
+          attests: type=sbom,generator=docker/buildkit-syft-scanner@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
       - name: Smoke-test the pushed image contents before signing
         env:
           HOST_DIGEST: ${{ steps.host.outputs.digest }}
           FIXTURE_DIGEST: ${{ steps.fixture.outputs.digest }}
+          HELPER_DIGEST: ${{ steps.backup-helper.outputs.digest }}
         run: |
           docker pull --platform linux/amd64 "ghcr.io/azure/aks-durable-agents/host@$HOST_DIGEST"
           docker pull --platform linux/amd64 "ghcr.io/azure/aks-durable-agents/session-fixture@$FIXTURE_DIGEST"
           docker tag "ghcr.io/azure/aks-durable-agents/host@$HOST_DIGEST" local/aks-durable-agents/host:local
           docker tag "ghcr.io/azure/aks-durable-agents/session-fixture@$FIXTURE_DIGEST" local/aks-durable-agents/session-fixture:local
-          bash ops/images/smoke.sh
+          docker pull --platform linux/amd64 "ghcr.io/azure/aks-durable-agents/backup-helper@$HELPER_DIGEST"
+          bash ops/images/smoke.sh local/aks-durable-agents "ghcr.io/azure/aks-durable-agents/backup-helper@$HELPER_DIGEST"
+      - name: Require clean packaged-Go scans before signing
+        env:
+          HELPER_DIGEST: ${{ steps.backup-helper.outputs.digest }}
+        run: bash ops/images/vulncheck.sh local/aks-durable-agents "ghcr.io/azure/aks-durable-agents/backup-helper@$HELPER_DIGEST"
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.1.3
@@ -126,6 +156,7 @@ jobs:
         env:
           HOST_DIGEST: ${{ steps.host.outputs.digest }}
           FIXTURE_DIGEST: ${{ steps.fixture.outputs.digest }}
+          HELPER_DIGEST: ${{ steps.backup-helper.outputs.digest }}
         run: |
           mkdir -p .build/publication
           python3 - <<'PY'
@@ -139,7 +170,10 @@ jobs:
               'harness': {'repository': 'ghcr.io/azure/aks-durable-agents/session-fixture', 'digest': os.environ['FIXTURE_DIGEST']}}}
           Path('.build/publication/images.json').write_text(json.dumps(validate_manifest(data), indent=2) + '\n')
           PY
-          for pair in "host@$HOST_DIGEST" "session-fixture@$FIXTURE_DIGEST"; do
+          python3 -B ops/images/backup_helper.py create --source-commit "$GITHUB_SHA" \
+            --host-digest "$HOST_DIGEST" --helper-digest "$HELPER_DIGEST" \
+            --output .build/publication/backup-helper.json
+          for pair in "host@$HOST_DIGEST" "session-fixture@$FIXTURE_DIGEST" "backup-helper@$HELPER_DIGEST"; do
             ref="ghcr.io/azure/aks-durable-agents/$pair"
             name="${pair%%@*}"
             cosign sign --yes "$ref"

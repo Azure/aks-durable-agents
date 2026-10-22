@@ -32,5 +32,9 @@ metadata:
     {{- include "agents.labels" . | nindent 4 }}
 immutable: true
 data:
-  auth.json: {{ dict "identity" (dict "tenantID" .Values.auth.tenantID "issuer" .Values.auth.issuer "audience" .Values.auth.audience "allowedClientIDs" .Values.auth.allowedClientIDs "requiredScope" .Values.auth.requiredScope "subjectClaim" .Values.auth.subjectClaim) "approvers" .Values.auth.approvers | toJson | quote }}
+  {{- $identity := dict "tenantID" .Values.auth.tenantID "issuer" .Values.auth.issuer "audience" .Values.auth.audience "allowedClientIDs" .Values.auth.allowedClientIDs "requiredScope" .Values.auth.requiredScope "subjectClaim" .Values.auth.subjectClaim }}
+  {{- range $key := list "requiredRoles" "requiredGroups" "memberOnly" "approverRoles" }}
+  {{- if index $.Values.auth $key }}{{ $_ := set $identity $key (index $.Values.auth $key) }}{{ end }}
+  {{- end }}
+  auth.json: {{ dict "identity" $identity "approvers" .Values.auth.approvers | toJson | quote }}
 {{- end }}

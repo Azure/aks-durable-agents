@@ -12,7 +12,69 @@
     "harness",
     "networkPolicy"
   ],
+  "allOf": [
+    {
+      "if": {
+        "required": ["canvas"],
+        "properties": {"canvas": {"required": ["enabled"], "properties": {"enabled": {"const": true}}}}
+      },
+      "then": {
+        "properties": {
+          "canvas": {
+            "required": ["instanceID", "origin", "sessionsTLSSecretName", "tlsSecretName", "persistence", "image"],
+            "properties": {
+              "instanceID": {"pattern": "^[a-z][a-z0-9-]{0,62}$"},
+              "origin": {"pattern": "^https://127\\.0\\.0\\.1:[1-9][0-9]{0,4}$"},
+              "sessionsTLSSecretName": {"minLength": 1},
+              "tlsSecretName": {"minLength": 1},
+              "persistence": {"required": ["existingClaim", "size", "storageClass"]},
+              "image": {
+                "required": ["repository", "digest", "includesHealthProbe"],
+                "properties": {
+                  "repository": {"pattern": "^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9]+([._/-][a-z0-9]+)*$"},
+                  "digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+                  "includesHealthProbe": {"const": true}
+                }
+              }
+            }
+          },
+          "harness": {"required": ["native"], "properties": {"native": {"required": ["enabled"], "properties": {"enabled": {"const": true}}}}},
+          "auth": {"properties": {"mode": {"const": "off"}, "trustedNetwork": {"const": true}}},
+          "networkPolicy": {"properties": {"enabled": {"const": true}}}
+        }
+      }
+    }
+  ],
   "properties": {
+    "canvas": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "repository": {"type": "string"},
+            "digest": {"type": "string"},
+            "includesHealthProbe": {"type": "boolean"}
+          }
+        },
+        "enabled": {"type": "boolean"},
+        "instanceID": {"type": "string"},
+        "origin": {"type": "string"},
+        "sessionsTLSSecretName": {"type": "string", "pattern": "^$|^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", "maxLength": 253},
+        "tlsSecretName": {"type": "string", "pattern": "^$|^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", "maxLength": 253},
+        "persistence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "existingClaim": {"type": "string", "pattern": "^$|^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", "maxLength": 253},
+            "size": {"type": "string", "pattern": "^[1-9][0-9]*(Mi|Gi|Ti)$"},
+            "storageClass": {"type": "string", "pattern": "^$|^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"}
+          }
+        }
+      }
+    },
     "image": {
       "type": "object",
       "additionalProperties": false,
@@ -133,6 +195,19 @@
             "sub"
           ]
         },
+        "requiredRoles": {
+          "type": "array", "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "pattern": "^[^\\x00-\\x20\\x7f]+$"}
+        },
+        "approverRoles": {
+          "type": "array", "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "pattern": "^[^\\x00-\\x20\\x7f]+$"}
+        },
+        "requiredGroups": {
+          "type": "array", "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}
+        },
+        "memberOnly": {"type": "boolean"},
         "approvers": {
           "type": "array",
           "uniqueItems": true,
@@ -175,7 +250,11 @@
             "properties": {
               "trustedNetwork": {
                 "const": true
-              }
+              },
+              "requiredRoles": {"maxItems": 0},
+              "approverRoles": {"maxItems": 0},
+              "requiredGroups": {"maxItems": 0},
+              "memberOnly": {"const": false}
             }
           }
         },
@@ -210,9 +289,6 @@
               "allowedClientIDs": {
                 "minItems": 1
               },
-              "approvers": {
-                "minItems": 1
-              },
               "requiredScope": {
                 "type": "string",
                 "pattern": "^[^\\s]+$"
@@ -220,7 +296,11 @@
               "tlsSecretName": {
                 "minLength": 1
               }
-            }
+            },
+            "anyOf": [
+              {"properties": {"approvers": {"minItems": 1}}},
+              {"required": ["approverRoles"], "properties": {"approverRoles": {"minItems": 1}}}
+            ]
           }
         },
         {

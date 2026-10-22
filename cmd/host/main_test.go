@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -30,6 +31,21 @@ func TestAuthConfig(t *testing.T) {
 		if _, err := parse([]string{"-auth-config=" + path}); err == nil {
 			t.Fatal("invalid or oversized auth config accepted")
 		}
+	}
+}
+
+func TestOptionalAuthPolicyConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	raw := `{"identity":{"requiredRoles":["Reviewer","Approver"],"requiredGroups":["group"],"memberOnly":true,"approverRoles":["Approver"]},"approvers":[]}`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := parse([]string{"-auth-config=" + path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(c.Identity.RequiredRoles, []string{"Reviewer", "Approver"}) || !slices.Equal(c.Identity.RequiredGroups, []string{"group"}) || !c.Identity.MemberOnly || !slices.Equal(c.Identity.ApproverRoles, []string{"Approver"}) {
+		t.Fatal("policy not mapped")
 	}
 }
 
