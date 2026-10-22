@@ -14,7 +14,11 @@ import (
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := Initialize(filepath.Join(t.TempDir(), "private", "ledger.sqlite"), "host-lineage")
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Initialize(filepath.Join(dir, "private", "ledger.sqlite"), "host-lineage")
 	if err != nil {
 		t.Fatal(err)
 	}

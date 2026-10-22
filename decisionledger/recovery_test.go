@@ -51,7 +51,11 @@ func TestLedgerCrashHelper(t *testing.T) {
 func TestProcessCrashReadBack(t *testing.T) {
 	for _, mode := range []string{"before", "after"} {
 		t.Run(mode, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "private", "ledger.sqlite")
+			dir, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "private", "ledger.sqlite")
 			cmd := exec.Command(os.Args[0], "-test.run=^TestLedgerCrashHelper$")
 			cmd.Env = append(os.Environ(), "ADA_LEDGER_TEST_MODE="+mode, "ADA_LEDGER_TEST_PATH="+path)
 			out, err := cmd.StdoutPipe()
