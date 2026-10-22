@@ -130,6 +130,31 @@ def collect_aks(workspace, destination, summary, result, run_url, sha, stage):
               "stage": stage, "runURL": run_url, "commitSHA": sha}
     text = ("# AKS e2e summary\n\n" + f"- Result: {status['result']}\n"
             + f"- Stage: {stage}\n- Run: {run_url}\n- Commit: {sha}\n")
+    if result in ("failure", "cancelled"):
+        try:
+            diagnostics = proof.load_public(workspace, "diagnostics.json")
+        except (OSError, ValueError, RecursionError):
+            text += "- Diagnostics: unavailable\n"
+        else:
+            (dest / "diagnostics.json").write_text(json.dumps(diagnostics, sort_keys=True, allow_nan=False) + "\n")
+            text += (f"- Scenario phase: {diagnostics['phase']}\n- Operation: {diagnostics['operation']}\n"
+                     + f"- Reason: {diagnostics['reason']}\n- Source fencing: {diagnostics['cleanup']}\n")
+            rollout_kind = {"profile-rollout": "DaemonSet", "deployment-rollout": "Deployment"}.get(diagnostics["operation"])
+            if rollout_kind is not None:
+                try:
+                    rollout = proof.load_public(workspace, "rollout-status.json")
+                    if rollout["controllerKind"] not in (rollout_kind, "other"):
+                        raise ValueError("mismatched AKS rollout controller")
+                except (OSError, ValueError, RecursionError):
+                    text += "- Rollout status: unavailable\n"
+                else:
+                    (dest / "rollout-status.json").write_text(json.dumps(rollout, sort_keys=True, allow_nan=False) + "\n")
+                    counts = [str(rollout[key]) if rollout[key] is not None else "unknown"
+                              for key in ("readyNodes", "desiredNodes")]
+                    text += (f"- Controller: {rollout['controllerKind']}/{rollout['controllerName']}\n"
+                             + "- Pod reasons: " + ", ".join(rollout["podReasons"]) + "\n"
+                             + "- Ready/desired nodes: " + "/".join(counts) + "\n")
+        text += "- Underlying cause: not determined\n"
     (dest / "status.json").write_text(json.dumps(status, sort_keys=True) + "\n")
     (dest / "summary.md").write_text(text)
     Path(summary).parent.mkdir(parents=True, exist_ok=True)

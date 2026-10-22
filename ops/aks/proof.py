@@ -8,6 +8,17 @@ from pathlib import Path
 MAX_BYTES = 16 * 1024
 PHASES = frozenset(("preflight", "install", "network-dormant", "network-live", "park",
                     "restart", "approve", "continue", "backup", "replay", "cleanup"))
+OPERATIONS = frozenset(("phase", "profile-create", "profile-rollout", "profile-verify", "profile-remove",
+                        "profile-node-check", "namespace-create", "volume-create", "chart-install", "policy-check",
+                        "fixture-init-create", "fixture-init-wait", "fixture-init-remove", "deployment-rollout"))
+REASONS = frozenset(("deadline-exhausted", "command-timeout", "command-failed", "interrupted",
+                     "invariant-failed", "io-failed", "unclassified-failure"))
+CLEANUP = frozenset(("succeeded", "failed", "not-run"))
+ROLLOUT_CONTROLLERS = frozenset((("DaemonSet", "nightly-profile"),
+    ("Deployment", "kaimahi-aks-durable-agents-host"),
+    ("Deployment", "kaimahi-aks-durable-agents-harness"), ("other", "other")))
+POD_REASONS = frozenset(("ImagePullBackOff", "ErrImagePull", "CrashLoopBackOff", "CreateContainerConfigError",
+                         "ContainerCreating", "FailedMount", "OOMKilled", "Unschedulable", "readiness probe failing", "other"))
 _FINAL = {
     "version": 1, "profile": "aks", "model": "real", "approval": "simulated", "entra": "not-run",
     "modelCalls": 1, "fakeModelCalls": 0, "published": 1, "receipts": 1, "artifacts": 1,
@@ -76,7 +87,43 @@ def validate_timings(value):
     return {"version": 1, "phases": dict(value["phases"]), "totalSeconds": value["totalSeconds"]}
 
 
-VALIDATORS = {"proof.json": validate, "network-proof.json": validate_network, "timings.json": validate_timings}
+def validate_diagnostics(value):
+    """Failure category only: never exception text or an underlying-cause claim."""
+    _closed(value, ("version", "phase", "operation", "reason", "cleanup"))
+    _literals(value, {"version": 1})
+    for key, choices in (("phase", PHASES), ("operation", OPERATIONS), ("reason", REASONS), ("cleanup", CLEANUP)):
+        if type(value[key]) is not str or value[key] not in choices:
+            raise ValueError("invalid AKS diagnostics")
+    return {key: value[key] for key in ("version", "phase", "operation", "reason", "cleanup")}
+
+
+def validate_rollout_status(value):
+    """Closed aggregate categories, not pod identity, messages or root-cause evidence."""
+    _closed(value, ("version", "controllerKind", "controllerName", "podReasons", "readyNodes", "desiredNodes"))
+    _literals(value, {"version": 1})
+    kind, name = value["controllerKind"], value["controllerName"]
+    if type(kind) is not str or type(name) is not str or (kind, name) not in ROLLOUT_CONTROLLERS:
+        raise ValueError("invalid AKS rollout controller")
+    reasons = value["podReasons"]
+    if type(reasons) is not list or not 1 <= len(reasons) <= len(POD_REASONS):
+        raise ValueError("invalid AKS rollout reasons")
+    clean = []
+    for reason in reasons:
+        if type(reason) is not str or reason not in POD_REASONS:
+            raise ValueError("invalid AKS rollout reasons")
+        clean.append(reason)
+    if clean != sorted(set(clean)):
+        raise ValueError("invalid AKS rollout reasons")
+    for key in ("readyNodes", "desiredNodes"):
+        count = value[key]
+        if count is not None and (kind != "DaemonSet" or type(count) is not int or not 0 <= count <= 2147483647):
+            raise ValueError("invalid AKS rollout count")
+    return {"version": 1, "controllerKind": kind, "controllerName": name,
+            "podReasons": list(reasons), "readyNodes": value["readyNodes"], "desiredNodes": value["desiredNodes"]}
+
+
+VALIDATORS = {"proof.json": validate, "network-proof.json": validate_network, "timings.json": validate_timings,
+              "diagnostics.json": validate_diagnostics, "rollout-status.json": validate_rollout_status}
 
 
 def _object(pairs):

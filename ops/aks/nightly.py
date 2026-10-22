@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Disposable AKS production-host scenario. No Azure API, retries, or demo meter.
 
-All subprocess output and client/archive state are private. Public files exist
+All subprocess output and client/archive state are private. Success proofs exist
 only after the complete scenario, strict recovery, and final source fencing.
+Failures may publish only closed, fixed-enum diagnostics without error text.
 Cluster/FIC/node-RG teardown belongs to the workflow, not this program.
 """
 import argparse
@@ -46,6 +47,7 @@ def local_module(name, path):
 
 
 node_profile = local_module("aks_node_profile", HERE / "profile.py")
+rollout_schema = local_module("aks_rollout_schema", HERE / "proof.py")
 # Existing modules import their adjacent helpers by name. Pin search paths to
 # this checkout; no pip install, package discovery, or downloaded implementation.
 _search_path = sys.path[:]
@@ -60,13 +62,129 @@ finally:
     sys.path[:] = _search_path
 
 
+class SafeFailure(ValueError):
+    """Private error context with an explicit, non-sensitive failure category."""
+    def __init__(self, reason, message="scenario failed"):
+        super().__init__(message)
+        self.reason = reason
+
+
+def failure_reason(error):
+    if isinstance(error, SafeFailure):
+        return error.reason
+    if isinstance(error, KeyboardInterrupt):
+        return "interrupted"
+    if isinstance(error, OSError):
+        return "io-failed"
+    return "unclassified-failure"
+
+
+def failure_diagnostics(api, error):
+    return {"version": 1, "phase": getattr(api, "phase_name", "preflight"),
+            "operation": getattr(api, "operation", "phase"),
+            "reason": failure_reason(error), "cleanup": getattr(api, "cleanup_status", "not-run")}
+
+
 def require(condition, message="scenario invariant failed"):
     if not condition:
-        raise ValueError(message)
+        raise SafeFailure("invariant-failed", message)
 
 
 def strict_json(raw):
     return json.loads(raw, object_pairs_hook=update_pins.unique_object)
+
+
+def rollout_fallback(kind, name):
+    if (type(kind) is not str or type(name) is not str
+            or (kind, name) not in rollout_schema.ROLLOUT_CONTROLLERS):
+        kind, name = "other", "other"
+    return {"version": 1, "controllerKind": kind, "controllerName": name,
+            "podReasons": ["other"], "readyNodes": None, "desiredNodes": None}
+
+
+def controller_uid(obj, kind, name):
+    require(obj["apiVersion"] == "apps/v1" and obj["kind"] == kind and obj["metadata"]["name"] == name)
+    uid = obj["metadata"]["uid"]
+    require(type(uid) is str and bool(uid))
+    return uid
+
+
+def controlled_by(obj, kind, owners):
+    references = obj["metadata"].get("ownerReferences", [])
+    require(type(references) is list)
+    controllers = [ref for ref in references if ref.get("controller") is True]
+    require(len(controllers) <= 1)
+    if not controllers:
+        return False
+    ref = controllers[0]
+    return (ref.get("apiVersion") == "apps/v1" and ref.get("kind") == kind
+            and type(ref.get("name")) is str and type(ref.get("uid")) is str
+            and ref["name"] in owners and ref["uid"] == owners[ref["name"]])
+
+
+def pod_reason_codes(pod):
+    # Only literal structured reason fields. Running/not Ready does not prove a
+    # probe-specific cause; the schema's readiness label is reserved, not emitted.
+    status, reasons = pod.get("status", {}), set()
+    conditions = status.get("conditions", [])
+    require(type(conditions) is list)
+    if any(c.get("type") == "PodScheduled" and c.get("status") == "False"
+           and c.get("reason") == "Unschedulable" for c in conditions):
+        reasons.add("Unschedulable")
+    choices = rollout_schema.POD_REASONS - {"readiness probe failing"}
+    for field in ("containerStatuses", "initContainerStatuses"):
+        containers = status.get(field, [])
+        require(type(containers) is list)
+        for container in containers:
+            state, last = container.get("state", {}), container.get("lastState", {})
+            for source, state_kind in ((state, "waiting"), (state, "terminated"), (last, "terminated")):
+                if state_kind in source:
+                    reason = source[state_kind].get("reason")
+                    reasons.add(reason if type(reason) is str and reason in choices else "other")
+    return reasons or {"other"}
+
+
+def project_rollout(kind, name, labels, controller, pods, replicasets=None):
+    if controller.get("kind") != kind or controller.get("metadata", {}).get("name") != name:
+        return rollout_schema.validate_rollout_status(rollout_fallback("other", "other"))
+    uid = controller_uid(controller, kind, name)
+    # Selectors are trusted constants/chart labels, never taken from the API.
+    require(controller["spec"]["selector"] == {"matchLabels": labels})
+    owners, owner_kind = {name: uid}, kind
+    if kind == "Deployment":
+        if type(replicasets) is not dict:
+            raise SafeFailure("invariant-failed", "invalid ReplicaSet list")
+        require((replicasets["apiVersion"], replicasets["kind"]) in (("apps/v1", "ReplicaSetList"), ("v1", "List")))
+        require(type(replicasets["items"]) is list)
+        owners, owner_kind = {}, "ReplicaSet"
+        for replica in replicasets["items"]:
+            if controlled_by(replica, "Deployment", {name: uid}):
+                rs_name = replica["metadata"]["name"]
+                require(type(rs_name) is str and bool(rs_name))
+                owners[rs_name] = controller_uid(replica, "ReplicaSet", rs_name)
+        # RS selectors contain private pod-template-hash labels in addition to
+        # the Deployment core selector. Ownership, not selector equality, binds.
+    require(pods["apiVersion"] == "v1" and pods["kind"] in ("PodList", "List"))
+    require(type(pods["items"]) is list)
+    reasons = set()
+    for pod in pods["items"]:
+        require(pod["apiVersion"] == "v1" and pod["kind"] == "Pod")
+        metadata = pod["metadata"]
+        if metadata.get("deletionTimestamp"):
+            continue
+        pod_labels = metadata.get("labels", {})
+        require(type(pod_labels) is dict)
+        if (all(pod_labels.get(key) == value for key, value in labels.items())
+                and controlled_by(pod, owner_kind, owners)):
+            reasons.update(pod_reason_codes(pod))
+    report = rollout_fallback(kind, name)
+    report["podReasons"] = sorted(reasons or {"other"})
+    if kind == "DaemonSet":
+        status = controller.get("status", {})
+        for key, source in (("readyNodes", "numberReady"), ("desiredNodes", "desiredNumberScheduled")):
+            count = status.get(source)
+            report[key] = count if type(count) is int and 0 <= count <= 2147483647 else None
+    return rollout_schema.validate_rollout_status(report)
 
 
 def json_records(raw):
@@ -296,7 +414,8 @@ class Deadlines:
     def remaining(self, cleanup=False):
         now = max(self.clock(), self.anchor + time.monotonic() - self.monotonic)
         seconds = (self.hard if cleanup else self.work) - now
-        require(seconds > 0, "deadline exhausted")
+        if not seconds > 0:
+            raise SafeFailure("deadline-exhausted", "deadline exhausted")
         return seconds
 
 
@@ -332,10 +451,14 @@ class Executor:
                 stdout=stdout, stderr=stderr, env=self.env, start_new_session=True)
             try:
                 process.communicate(data, timeout=timeout)
-            except BaseException:
+            except BaseException as error:
                 self.kill(process)
-                raise ValueError("external command interrupted or expired") from None
-        require(process.returncode == 0, "external command failed")
+                reason = "command-timeout" if isinstance(error, subprocess.TimeoutExpired) else failure_reason(error)
+                # ValueError catchability lets fence attempt the second scale
+                # even when cancellation interrupts the first external command.
+                raise SafeFailure(reason, "external command interrupted or expired") from None
+        if process.returncode != 0:
+            raise SafeFailure("command-failed", "external command failed")
         path = Path(stdout.name) if isinstance(stdout.name, str) else self.directory / f"command-{self.sequence:04}.stdout"
         require(path.stat().st_size <= 16 * 1024 * 1024, "command output too large")
         return path.read_bytes()
@@ -434,6 +557,8 @@ class Scenario:
         self.values_path = workdir / "values.json"
         write_json(self.values_path, self.values)
         self.phase_name, self.phase_started, self.started = "preflight", time.monotonic(), time.monotonic()
+        self.operation, self.diagnostics, self.cleanup_status = "phase", None, "not-run"
+        self.rollout_status = None
         self.phases = {}
         self.deployments, self.labels = {}, {}
         self.owned = False
@@ -447,6 +572,7 @@ class Scenario:
         now = time.monotonic()
         self.phases[self.phase_name] = self.phases.get(self.phase_name, 0) + now - self.phase_started
         self.phase_name, self.phase_started = name, now
+        self.operation = "phase"
 
     def timings(self):
         now = time.monotonic()
@@ -454,9 +580,69 @@ class Scenario:
         phases[self.phase_name] = phases.get(self.phase_name, 0) + now - self.phase_started
         return {"version": 1, "phases": phases, "totalSeconds": now - self.started}
 
-    def kube(self, *args, data=None, cleanup=False, namespace=None):
+    def kube(self, *args, data=None, cleanup=False, namespace=None, limit=None):
         prefix = self.prefix if namespace is None else [*self.prefix[:-1], namespace]
-        return self.executor.run([*prefix, *args], data=data, cleanup=cleanup)
+        options = {"limit": limit} if limit is not None else {}
+        return self.executor.run([*prefix, *args], data=data, cleanup=cleanup, **options)
+
+    def rollout(self, kind, name, namespace=None):
+        previous = self.operation
+        if kind in ("DaemonSet", "Deployment"):
+            self.operation = "profile-rollout" if kind == "DaemonSet" else "deployment-rollout"
+        try:
+            self.kube("rollout", "status", kind.lower() + "/" + name, "--timeout=180s", namespace=namespace)
+        except (Exception, KeyboardInterrupt) as error:
+            # Save the full safe fallback before any optional reads or cleanup.
+            self.rollout_status = rollout_fallback(kind, name)
+            if isinstance(error, SafeFailure) and error.reason == "command-failed":
+                try:
+                    self.capture_rollout(kind, name, namespace)
+                except (Exception, KeyboardInterrupt):
+                    # A secondary cancellation stops ALL capture. Bare raise
+                    # below retains the active rollout failure and finally fence.
+                    pass
+            raise
+        self.operation = previous
+
+    def capture_rollout(self, kind, name, namespace):
+        if self.rollout_status is None or self.rollout_status["controllerKind"] == "other":
+            return
+        if kind == "DaemonSet":
+            require(namespace == node_profile.NAMESPACE)
+            labels = {"nightly-profile": "installer"}
+        else:
+            require(namespace in (None, NAMESPACE))
+            roles = [role for role, deployment in self.deployments.items() if deployment == name]
+            require(len(roles) == 1)
+            labels = self.labels[roles[0]]
+        end = time.monotonic() + min(5, self.deadlines.remaining())
+
+        def remaining():
+            seconds = min(self.deadlines.remaining(), end - time.monotonic())
+            require(seconds >= .001)
+            return seconds
+
+        def read(resource, *args):
+            seconds = remaining()
+            # Round down, never let kubectl's request timeout exceed authority.
+            timeout = int(seconds * 1000) / 1000
+            raw = self.kube("get", resource, *args, "-o", "json", f"--request-timeout={timeout:.3f}s",
+                            namespace=namespace, limit=seconds)
+            remaining()
+            require(len(raw) <= 16 * 1024 * 1024)
+            value = strict_json(raw)
+            remaining()
+            return value
+
+        selector = ",".join(key + "=" + value for key, value in labels.items())
+        controller = read(kind.lower() + "/" + name)
+        replicasets = read("replicasets", "-l", selector) if kind == "Deployment" else None
+        pods = read("pods", "-l", selector)
+        remaining()
+        report = project_rollout(kind, name, labels, controller, pods, replicasets)
+        remaining()
+        # No partial counts survive errors, expired work or cancellation.
+        self.rollout_status = report
 
     def get(self, kind, *args, namespace=None):
         return strict_json(self.kube("get", kind, *args, "-o", "json", namespace=namespace))
@@ -508,29 +694,41 @@ class Scenario:
         self.nodes = self.nodes_ready()
 
     def profile(self):
+        self.operation = "profile-create"
         raw = (ROOT / "ops/backup/no-network.json").read_bytes()
         for obj in node_profile.manifests(raw):
             self.create(obj, namespace=node_profile.NAMESPACE)
-        self.kube("rollout", "status", "daemonset/" + node_profile.NAME, "--timeout=180s", namespace=node_profile.NAMESPACE)
+        self.operation = "profile-rollout"
+        self.rollout("DaemonSet", node_profile.NAME, namespace=node_profile.NAMESPACE)
+        self.operation = "profile-verify"
         pods = self.get("pods", "-l", "nightly-profile=installer", namespace=node_profile.NAMESPACE)["items"]
         require(len(pods) == 2 and {p["spec"]["nodeName"] for p in pods} == self.nodes and all(ready(p) for p in pods))
         for pod in pods:
             self.kube("exec", pod["metadata"]["name"], "-c", "install", "--", "/bin/sh", "-ec", node_profile.verify_script(raw), namespace=node_profile.NAMESPACE)
+        self.operation = "profile-remove"
         self.kube("delete", "daemonset/" + node_profile.NAME, "configmap/" + node_profile.NAME, "--cascade=foreground", "--wait=true", "--timeout=120s", namespace=node_profile.NAMESPACE)
         self.kube("delete", "namespace", node_profile.NAMESPACE, "--wait=true", "--timeout=120s")
         require(not self.kube("get", "namespace", node_profile.NAMESPACE, "--ignore-not-found", "-o", "name").strip())
+        self.operation = "profile-node-check"
         self.nodes_ready()
 
     def install(self):
         self.profile()
+        self.operation = "namespace-create"
         self.create({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": NAMESPACE}})
         self.owned = True
+        self.operation = "volume-create"
         self.create({"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": {"name": PVC}, "spec": {
             "accessModes": ["ReadWriteOnce"], "storageClassName": STORAGE_CLASS, "resources": {"requests": {"storage": "1Gi"}}}})
+        self.operation = "chart-install"
         self.helm("install", RELEASE, self.chart, "--namespace", NAMESPACE, "-f", self.values_path)
+        self.operation = "policy-check"
         self.check_policies(initial=True)
+        self.operation = "fixture-init-create"
         self.create(prepare_manifest(self.subpath, self.pins["harness"]))
+        self.operation = "fixture-init-wait"
         self.wait("pod/nightly-prepare", "jsonpath={.status.phase}=Succeeded")
+        self.operation = "fixture-init-remove"
         self.kube("delete", "pod/nightly-prepare", "--wait=true", "--timeout=120s")
 
     def check_policies(self, initial=False):
@@ -604,7 +802,7 @@ class Scenario:
         self.kube("delete", "pod/nightly-credential", "--wait=true", "--timeout=120s")
         for role in ("harness", "host"):
             self.kube("scale", "deployment/" + self.deployments[role], "--replicas=1")
-            self.kube("rollout", "status", "deployment/" + self.deployments[role], "--timeout=180s")
+            self.rollout("Deployment", self.deployments[role])
         self.marker()
 
     def evidence(self):
@@ -771,14 +969,26 @@ def run_scenario(api):
             "replay": {"completed": True, "providerCalls": 0, "executorCalls": 0, "coverageComplete": True, "unchanged": True}}
         return proof, records
     finally:
-        failed_stage = api.phase_name if hasattr(api, "phase_name") and sys.exc_info()[0] is not None else None
+        primary = sys.exc_info()[1]
+        failed_stage = api.phase_name if hasattr(api, "phase_name") and primary is not None else None
+        # Keep the primary context on the Scenario, before cleanup resets phase
+        # and operation. Cleanup exceptions retain their existing precedence.
+        if primary is not None:
+            api.diagnostics = failure_diagnostics(api, primary)
         api.phase("cleanup")
         try:
             api.cleanup()
-        except (ValueError, OSError, KeyboardInterrupt):
-            if failed_stage is not None:
+        except (Exception, KeyboardInterrupt) as error:
+            api.cleanup_status = "failed"
+            if primary is None:
+                api.diagnostics = failure_diagnostics(api, error)
+            api.diagnostics["cleanup"] = "failed"
+            if failed_stage is not None and isinstance(error, (ValueError, OSError, KeyboardInterrupt)):
                 print("aks-nightly: cleanup also failed after stage=" + failed_stage, file=sys.stderr)
             raise
+        api.cleanup_status = "succeeded"
+        if primary is not None:
+            api.diagnostics["cleanup"] = "succeeded"
         if failed_stage is not None:
             api.phase_name = failed_stage
 
@@ -793,12 +1003,14 @@ def main(argv=None):
     os.umask(0o077)
     stage = "preflight"
     api = None
+    public_ready = False
     try:
         private_directory(args.workdir)
         require(args.public_dir.is_absolute() and args.public_dir.resolve() == args.public_dir)
         require(args.public_dir != args.workdir and args.public_dir not in args.workdir.parents and args.workdir not in args.public_dir.parents, "private/public directories must be disjoint")
         private_directory(args.public_dir)
         require(not list(args.public_dir.iterdir()), "public output directory must be empty")
+        public_ready = True
         api = Scenario(args.workdir, args.client, args.chart, os.environ)
         proof, network = run_scenario(api)
         timings = api.timings()
@@ -810,9 +1022,26 @@ def main(argv=None):
         write_json(args.public_dir / "proof.json", proof)
         write_json(args.public_dir / "network-proof.json", network)
         write_json(args.public_dir / "timings.json", timings)
-    except (Exception, KeyboardInterrupt):
+    except (Exception, KeyboardInterrupt) as error:
         stage = api.phase_name if api is not None else stage
         print("aks-nightly: failed stage=" + stage, file=sys.stderr)
+        # Diagnostics are best effort, never a replacement failure or an excuse
+        # to write into a directory that failed the public/private boundary.
+        try:
+            if public_ready:
+                validator = local_module("aks_safe_proof", HERE / "proof.py")
+                diagnostics = getattr(api, "diagnostics", None) or failure_diagnostics(api, error)
+                write_json(args.public_dir / "diagnostics.json", validator.validate_diagnostics(diagnostics))
+        except (Exception, KeyboardInterrupt):
+            pass
+        # Independent best effort: neither optional writer can suppress the
+        # original diagnostic or change the failed return status.
+        try:
+            if public_ready and api is not None and api.rollout_status is not None:
+                validator = local_module("aks_safe_proof", HERE / "proof.py")
+                write_json(args.public_dir / "rollout-status.json", validator.validate_rollout_status(api.rollout_status))
+        except (Exception, KeyboardInterrupt):
+            pass
         return 1
     return 0
 
