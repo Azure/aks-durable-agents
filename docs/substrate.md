@@ -55,6 +55,9 @@ cluster. Pin every runtime image and sandbox asset. Provision these separately:
 
 - Substrate control API with verified server TLS, projected short-lived client
   token and a dedicated host identity. Keep the token and CA outside the Actor.
+  Label the host's namespace `ate.dev/api-access=true`: v0.5.0's default control
+  API ingress policy requires this for access from another namespace. This label
+  does not replace control authentication or the host's own egress policy.
 - A gVisor WorkerPool and one ActorTemplate in the configured template atespace.
   The template selects that pool, uses `VOLUMES` fidelity, disables golden
   snapshots and mounts a `durable-dir` for harness files. The harness serves
@@ -122,6 +125,14 @@ and the [v0.5.0 adapter (#201)](https://github.com/agent-primitives/sessions/pul
 These offline checks do not qualify the assembled approval/recovery scenario or
 [effective restore-source behavior (#192)](https://github.com/agent-primitives/sessions/issues/192).
 Declaring the harness stateless alone is not VOLUMES enforcement.
+
+In v0.5.0 native Pause uses `SUSPENDING` and `SUSPENDED`, not `PAUSING` and
+`PAUSED`, and can leave the newest snapshot node-local. The adapter's checkpoint
+validation refuses stale or local-only evidence with `FAILED_PRECONDITION`,
+pending upload with `UNAVAILABLE`, and transitioning/busy Actors with `ABORTED`.
+After inspecting and reconciling Actor state, use Sessions Suspend to establish
+and record a durable checkpoint before Resume; retrying a stale reference cannot
+fix it. These client-side checks are not atomic restore preconditions.
 
 Client-side checkpoint validation is not atomic with Resume. One host reduces
 competition but does not fence router auto-resume or operator lifecycle calls.
