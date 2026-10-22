@@ -16,6 +16,17 @@ if spec.loader and spec.origin and Path(spec.origin).exists():
     spec.loader.exec_module(backup)
 
 
+class WriterRolesTests(unittest.TestCase):
+    def test_substrate_writers_are_explicit_and_legacy_stays_strict(self):
+        def deployments(*roles):
+            return [{"metadata": {"labels": {"app.kubernetes.io/component": role}}} for role in roles]
+        backup.writer_roles(deployments("host", "harness"), "remote")
+        backup.writer_roles(deployments("host", "executor"), "substrate")
+        for runtime, roles in (("remote", ("host", "executor")), ("substrate", ("host", "harness")), ("substrate", ("host", "executor", "harness")), ("anything", ("host", "executor"))):
+            with self.subTest(runtime=runtime, roles=roles), self.assertRaises(ValueError):
+                backup.writer_roles(deployments(*roles), runtime)
+
+
 class SnapshotTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

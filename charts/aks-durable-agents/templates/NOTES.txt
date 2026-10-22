@@ -4,7 +4,7 @@ Workloads enabled: {{ .Values.workloads.enabled }}
 NetworkPolicies enabled: {{ .Values.networkPolicy.enabled }}
 
 Install/upgrade with workloads.enabled=false first (zero replicas). Apply and verify
-NetworkPolicies BEFORE scaling workloads: read back all {{ if (.Values.canvas | default dict).enabled }}five{{ else }}three{{ end }} release policies,
+NetworkPolicies BEFORE scaling workloads: read back all {{ if (.Values.canvas | default dict).enabled }}five{{ else if eq .Values.runtime.mode "substrate" }}two{{ else }}three{{ end }} release policies,
 inspect additive policies, and independently verify Cilium enforcement. Only then
 upgrade the SAME release with workloads.enabled=true. See README for commands.
 {{ if not .Values.networkPolicy.enabled }}
@@ -14,7 +14,12 @@ already be applied and verified before enabling workloads.
 Stop ALL previous writers before sharing a PVC. A new run needs a separately
 prepared subtree; preserve the previous journal, ledger, receipts and policy.
 No bootstrap/migration or Secret/cloud provisioning is performed by this chart.
-{{ if .Values.harness.native.enabled }}
+{{ if eq .Values.runtime.mode "substrate" }}
+Substrate: separate executor Pod, default-deny network, no workload identity.
+Only the host mounts the audienced control token and live serving-DNS trust bundle.
+Verify the owned router ingress policy and actual actor placement/checkpoint proof.
+Host image must support /host health-probe and private placement receipts.
+{{ else if .Values.harness.native.enabled }}
 Host image must support /host health-probe. Verify the digest.
 {{ else }}
 Host image must contain /host and /session-fixture (network-probe). Verify the digest.

@@ -18,6 +18,13 @@ branch run additionally requires an operator-approved temporary allowance for
 that exact branch in `nightly-aks`. Do not allow PR/fork refs or arbitrary branches.
 Remove the temporary allowance after qualification; keep `main` cleanup enabled.
 
+For the separate **install-only Substrate v0.5.0** recipe and the explicit
+manual-only **`substrate-gvisor` Sessions actor variant**, see
+[Substrate on disposable AKS](SUBSTRATE.md#manual-sessions-actor-variant).
+The variant keeps the schedule/default no-sandbox path unchanged. It requires
+separate operator enablement, exact publication/verification run inputs and a
+fresh live go; local tests and the native counter pass are not that qualification.
+
 ## Operator configuration
 
 Create the GitHub environment `nightly-aks` with a custom deployment branch rule

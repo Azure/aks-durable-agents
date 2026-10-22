@@ -16,9 +16,9 @@ func TestSubstrateResolvedModules(t *testing.T) {
 	}
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	for _, want := range []struct{ path, version string }{
-		{"github.com/agent-primitives/sessions", "v0.2.1-0.20261019224537-f18a2cb1454d"},
-		{"github.com/agent-primitives/sessions/integrations/substrate", "v0.0.0-20261019224537-f18a2cb1454d"},
-		{"github.com/agent-substrate/substrate", "v0.4.1-0.20261013053953-96dffb287919"},
+		{"github.com/agent-primitives/sessions", "v0.3.0"},
+		{"github.com/agent-primitives/sessions/integrations/substrate", "v0.3.0"},
+		{"github.com/agent-substrate/substrate", "v0.5.0"},
 	} {
 		var got struct {
 			Path, Version string

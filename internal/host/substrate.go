@@ -27,6 +27,7 @@ import (
 type SubstrateConfig struct {
 	Harness, ActorAtespace, TemplateAtespace, Template            string
 	ControlAddr, ControlServerName, CAFile, TokenFile, RouterAddr string
+	PlacementFile                                                 string
 }
 
 func (s SubstrateConfig) validate() error {
@@ -65,12 +66,12 @@ func openSubstrate(s SubstrateConfig, logger *slog.Logger) (*substrate.Backend, 
 	}
 	conn, err := grpc.NewClient(s.ControlAddr,
 		grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, ServerName: name})),
-		grpc.WithPerRPCCredentials(token), grpc.WithUnaryInterceptor(boundControlRPC))
+		grpc.WithPerRPCCredentials(token), grpc.WithUnaryInterceptor(substrateControlRPC(s.PlacementFile)))
 	if err != nil {
 		return nil, nil, errors.New("cannot configure Substrate control connection")
 	}
 	desc := api.Descriptor{ID: s.Harness, Capabilities: api.Capabilities{Resumability: api.ResumabilityStatelessReplay}}
-	backend := substrate.New(ateadapter.New(conn), s.ActorAtespace, substrate.ObjectRef{Atespace: s.TemplateAtespace, Name: s.Template}, desc, substrate.WithRouter(s.RouterAddr), substrate.WithLogger(logger))
+	backend := substrate.New(ateadapter.New(conn), s.ActorAtespace, substrate.ObjectRef{Atespace: s.TemplateAtespace, Name: s.Template}, desc, substrate.WithRouter(s.RouterAddr), substrate.WithLogger(logger), substrate.WithVolumesOnly())
 	return backend, conn, nil
 }
 

@@ -21,13 +21,8 @@ import (
 
 type probeService struct {
 	v1.UnimplementedSessionsServer
-	approvals int
 }
 
-func (s *probeService) Approve(context.Context, *v1.ApproveRequest) (*v1.ApproveResponse, error) {
-	s.approvals++
-	return &v1.ApproveResponse{}, nil
-}
 func (*probeService) GetSession(context.Context, *v1.GetSessionRequest) (*v1.Session, error) {
 	return &v1.Session{}, nil
 }
@@ -56,9 +51,9 @@ func dialServer(t *testing.T, s *grpc.Server) *grpc.ClientConn {
 	return conn
 }
 
-func TestServersSeparateAndGateApprovals(t *testing.T) {
+func TestServersSeparateServices(t *testing.T) {
 	svc := &probeService{}
-	sessions, health, err := newServers(authn.Required, testVerifier{api.CallerIdentity{Issuer: "issuer", Subject: "owner"}}, newApprovalPolicy(nil), svc, nil)
+	sessions, health, err := newServers(authn.Required, testVerifier{api.CallerIdentity{Issuer: "issuer", Subject: "owner"}}, svc, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,10 +61,6 @@ func TestServersSeparateAndGateApprovals(t *testing.T) {
 	ops := dialServer(t, health)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err = v1.NewSessionsClient(conn).Approve(ctx, &v1.ApproveRequest{Session: "session"})
-	if status.Code(err) != codes.PermissionDenied || svc.approvals != 0 {
-		t.Fatalf("approval code=%v calls=%d", status.Code(err), svc.approvals)
-	}
 	_, err = healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{})
 	if status.Code(err) != codes.Unimplemented {
 		t.Fatalf("Sessions listener exposes health: %v", err)
@@ -100,7 +91,7 @@ func TestServersSeparateAndGateApprovals(t *testing.T) {
 }
 
 func TestServerBoundsStreamByCredentialExpiry(t *testing.T) {
-	sessions, health, err := newServers(authn.Required, expiringVerifier{}, newApprovalPolicy(nil), &probeService{}, nil)
+	sessions, health, err := newServers(authn.Required, expiringVerifier{}, &probeService{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

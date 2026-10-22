@@ -256,7 +256,7 @@ type demo struct {
 
 const testDraft = "Northwind Lantern v2.4 — 18 October 2026\n\nThis fictional release introduces faster search and CSV export. This is an offline demo only; rollout pending approval. Review these release notes before the local publication simulation."
 
-func newDemo(t *testing.T) *demo {
+func newDemo(t *testing.T, configure ...func(*demo)) *demo {
 	t.Helper()
 	d := &demo{t: t, data: privateDir(t)}
 	if _, err := fixtureAdapter(t.Context(), "init", "--scenario", "v2", "--data", d.data, "--socket", filepath.Join(d.data, "publish.sock")); err != nil {
@@ -306,6 +306,9 @@ func newDemo(t *testing.T) *demo {
 	}
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
+	}
+	for _, option := range configure {
+		option(d)
 	}
 	d.startHost()
 	return d

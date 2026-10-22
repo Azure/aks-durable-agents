@@ -36,6 +36,9 @@ The [reference fixture source and image build recipe](../../ops/images/README.md
 are supplied; the external RPC client/reviewer used by older rehearsals are not.
 Publication bootstraps before real digest defaults; until those pins land, supply
 reviewed image digests explicitly. Do not infer provenance from `appVersion`.
+Required-mode owner authorization needs a published, verified and pinned host
+image containing the `WithAuthorization` change. The current digest alone does
+not establish that behavior; follow [publish then pin](../../ops/images/README.md#publish-then-pin).
 The reference fixture is not a production agent. It simulates local publication
 and includes an inert fake role; it does not turn the production host into a
 fake-model host. Initialize a new private subtree for this public fixture
@@ -63,8 +66,20 @@ values as one compatible set. Do not reset a ledger to adopt new example values.
   for `oid`), not `subjectClaim`.
   Supply an existing `auth.tlsSecretName` with `tls.crt`/`tls.key` readable by
   UID65532. No credential material belongs in values; the chart creates no Secret.
-  Required auth is **admission-only**, not sessions resource enforcement or
-  authenticated two-human approval. Off requires explicit `trustedNetwork: true`.
+  Required mode enforces owner permissions on host RPCs. Listed subjects OR
+  verified approver roles can read and approve any valid owned session, including
+  full prompts, outputs and tool arguments; ownership alone does not grant approval.
+  No other cross-owner operations are granted. Listing stays owner-only; approvers
+  need UIDs out of band, with no inbox or notifier. Required-mode Fork is refused.
+  Approve records only a decision, never an implicit Resume. See the
+  [response disclosure and rollout rules](../../docs/host.md#read-disclosure-and-rollout).
+  This is not journal-wide enforcement or verified approval attribution: the
+  journal marker stays `off`, unenforced writers can bypass it and caller-bound
+  retries are absent. Keep journals private and exclusive to the enforced host,
+  with loopback/TLS and NetworkPolicy restrictions. No public-host or two-human
+  independence guarantee is added. Off requires explicit `trustedNetwork: true`;
+  anyone reaching that auth-off host can read, act and approve. Off-mode behavior,
+  including Fork and the private Canvas profile, is unchanged.
 - Create a workload identity and federated identity credential whose subject is
   `system:serviceaccount:<namespace>:<release>-aks-durable-agents-host`
   (prefixes over 40 characters use a shortened name plus an eight-hex SHA256
@@ -113,6 +128,15 @@ reset. Retain the prior journal/ledger and evidence. Input limits do not alter
 historical requests or their hashes.
 
 ### Retained storage: no automatic initialization
+
+**Required-mode authorization starts on a new private journal.** Ownerless
+sessions are denied to everyone, including approvers; no automatic binding or
+migration is supplied. Stop and fence old writers and retain their data as a
+separate compatible set. Do not enable required mode against an existing auth-off
+journal in place or replace a retained Canvas journal behind the same endpoint.
+For unchanged required-mode restarts, preserve the new journal and its owners.
+The [Sessions schema-v6 upgrade/rollback warning](../../docs/host.md#configuration-and-local-build)
+still applies to older retained journals; a schema upgrade does not bind owners.
 
 **Stop all previous writers before this release shares any PVC.** RWO,
 `Recreate`, and pod affinity do not fence another release or old deployment.

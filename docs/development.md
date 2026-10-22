@@ -17,7 +17,15 @@ python3 -B -m unittest discover -s ops/backup -p 'test_*.py'
 ```
 
 These exercise components with fake credentials and local test servers, not a
-cluster workflow. For the self-contained fake-model kind workflow, use
+cluster workflow. The
+[local team proof state](../internal/squadproof/README.md) has separate admission,
+scoped executor and receipt-gated queue tests under
+`go test -race ./internal/squadproof`. Its optional `squadproof` tag enables
+non-shipping local runtime fixtures using production's Sessions components;
+`go test -race -tags squadproof ./internal/squadproof` tests those explicitly.
+The production host and model limits are unchanged. Neither suite starts a
+cluster or supplies an automatic team coordinator.
+For the self-contained fake-model kind workflow, use
 [`make demo`](../ops/demo/README.md); it builds its own client inside Docker.
 
 For Helm lint, rendering and refusal tests, use Helm **3.20.0** and the
@@ -61,10 +69,15 @@ go mod verify
 go build ./...
 go vet ./...
 go test -race ./...
+go test -tags squadproof -list '^TestProofBuildBoundary$' ./internal/squadproof | grep -x TestProofBuildBoundary
+go test -race -tags squadproof ./internal/squadproof
+go vet -tags squadproof ./internal/squadproof ./cmd/squad-proof
+go build -tags squadproof -o .build/squad-proof ./cmd/squad-proof
 go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
-staticcheck ./...
+staticcheck -tags squadproof ./...
 go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
 govulncheck ./...
+govulncheck -tags squadproof ./internal/squadproof ./cmd/squad-proof
 ```
 
 Image validation additionally runs `bash ops/images/vulncheck.sh` after
@@ -96,7 +109,10 @@ Qualification and operator opt-ins remain required; `AKS_BUDGET_CONFIRMED` is an
 operator confirmation backed by budget alerts and the sweeper, not a live spending
 check or hard spending cap. No billing read grant, new IAM or paging is added.
 Offline tests use fake cloud commands and optional local Docker exercises, never
-Azure provisioning or inference. A separately approved CLI-identity smoke check must use an
+Azure provisioning or inference. `go test -race -run '^TestInterruptedDeclaredToolRecovery$' ./internal/host`
+checks ordinary controller-mediated recovery after an executor commits but its
+reply is lost: an exact durable declaration permits redrive under the original
+session/key; false or omitted declarations refuse without another tool call. A separately approved CLI-identity smoke check must use an
 explicit `AzureCLICredential`, no retries, and at most three calls; missing RBAC
 must be reported, not assigned.
 

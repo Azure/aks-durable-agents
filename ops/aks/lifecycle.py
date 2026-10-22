@@ -31,27 +31,34 @@ LOCATION = "westus3"
 PROVIDERS = ("Microsoft.ContainerService", "Microsoft.Compute", "Microsoft.Network", "Microsoft.Storage", "Microsoft.ManagedIdentity")
 
 
-def command(args, *, timeout, input=None):
-    """Bound the entire trusted command's process group, including grandchildren."""
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise cleanup.CloudError("command deadline exhausted")
+def command(args, *, timeout, input=None, stderr_sink=None):
+    """Bound the process group; an optional trusted sink receives only stderr."""
+    stderr = b""
     try:
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise cleanup.CloudError("command deadline exhausted")
         with subprocess.Popen(args, stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True) as process:
             try:
-                out, _ = process.communicate(input=input, timeout=timeout)
+                out, stderr = process.communicate(input=input, timeout=timeout)
             except BaseException:
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-                process.communicate()
+                _, stderr = process.communicate()
                 raise
             if process.returncode or len(out) > 4 * 1024 * 1024:
                 raise cleanup.CloudError("command failed; outcome may be unknown")
             return out
     except (OSError, subprocess.TimeoutExpired):
         raise cleanup.CloudError("command unavailable or deadline exhausted") from None
+    finally:
+        if stderr_sink is not None:
+            try:
+                stderr_sink(stderr)
+            except Exception:  # noqa: BLE001, S110 — trusted diagnostics cannot mask command outcomes.
+                pass
 
 
 class Deadline:
@@ -174,14 +181,15 @@ def check_quota(data):
 
 
 class Azure(cleanup.Azure):
-    def __init__(self, config, clock=None, teardown=False):
+    def __init__(self, config, clock=None, teardown=False, run=None):
         super().__init__(config)
-        self.clock, self.teardown = clock, teardown
+        self.clock, self.teardown, self.command = clock, teardown, run
 
     def run(self, *args, mutation=False):
         seconds = min(25, self.clock.remaining(cleanup=self.teardown)) if self.clock else 25
-        raw = command(["az", *args, "--subscription", self.config["AZURE_SUBSCRIPTION_ID"],
-                       "--only-show-errors", "--output", "json"], timeout=seconds)
+        raw = (self.command if self.command is not None else command)(
+            ["az", *args, "--subscription", self.config["AZURE_SUBSCRIPTION_ID"],
+             "--only-show-errors", "--output", "json"], timeout=seconds)
         if mutation:
             return None
         try:

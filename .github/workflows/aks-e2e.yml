@@ -9,6 +9,19 @@ on:
         description: 'Provision and run the real-model scenario (requires required-auth qualification and explicit operator enablement)'
         type: boolean
         default: false
+      variant:
+        description: 'Manual scenario variant; schedule always uses no-sandbox'
+        type: choice
+        default: no-sandbox
+        options: [no-sandbox, substrate-gvisor]
+      substrate_publish_run_id:
+        description: 'Successful main Images run for the immutable Substrate map'
+        type: string
+        default: ''
+      substrate_verify_run_id:
+        description: 'Successful main Verified image pins run exporting that exact map'
+        type: string
+        default: ''
 
 permissions: {}
 
@@ -28,6 +41,7 @@ env:
   AKS_IDENTITY_RESOURCE_GROUP: ${{ vars.AKS_IDENTITY_RESOURCE_GROUP }}
   AKS_MODEL_IDENTITY_NAME: ${{ vars.AKS_MODEL_IDENTITY_NAME }}
   AKS_SCENARIO_ENABLED: ${{ vars.AKS_SCENARIO_ENABLED }}
+  AKS_SUBSTRATE_ENABLED: ${{ vars.AKS_SUBSTRATE_ENABLED }}
   AKS_BUDGET_CONFIRMED: ${{ vars.AKS_BUDGET_CONFIRMED }}
   MODEL_ENDPOINT: ${{ vars.MODEL_ENDPOINT }}
   MODEL_DEPLOYMENT: ${{ vars.MODEL_DEPLOYMENT }}
@@ -53,6 +67,7 @@ jobs:
     outputs:
       configured: ${{ steps.config.outputs.configured }}
       scenario: ${{ steps.config.outputs.scenario }}
+      variant: ${{ steps.config.outputs.variant }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -65,8 +80,13 @@ jobs:
         id: config
         env:
           RUN_SCENARIO: ${{ github.event_name == 'schedule' || inputs.run_scenario }}
+          EVENT_NAME: ${{ github.event_name }}
+          VARIANT: ${{ inputs.variant }}
+          PUBLISH_RUN_ID: ${{ inputs.substrate_publish_run_id }}
+          VERIFY_RUN_ID: ${{ inputs.substrate_verify_run_id }}
         run: |
           python3 -B ops/aks/cleanup.py config | tee -a "$GITHUB_OUTPUT"
+          python3 -B ops/aks/substrate_inputs.py select | tee -a "$GITHUB_OUTPUT"
           if [[ "$RUN_SCENARIO" == true ]]; then
             [[ "$AKS_BOOTSTRAP_ENABLED" == true && "$AKS_SCENARIO_ENABLED" == true && "$AKS_BUDGET_CONFIRMED" == true ]] || {
               echo 'Scenario remains blocked: required-auth qualification and operator budget/config approval are required.' >&2
@@ -140,9 +160,62 @@ jobs:
       - name: Refuse unsupported configuration before paid resources
         run: python3 -B ops/aks/lifecycle.py preflight
 
+  substrate-inputs:
+    needs: config
+    if: ${{ needs.config.outputs.scenario == 'true' && needs.config.outputs.variant == 'substrate-gvisor' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14.3'
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310
+        with:
+          version: v3.20.0
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: v3.1.3
+      - name: Mask operator identifiers without logging into Azure
+        run: python3 -B ops/aks/lifecycle.py mask
+      - name: Build checksum-pinned runner clients before any paid resource
+        run: bash ops/aks/tools.sh
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: agent-substrate/substrate
+          ref: e8d40c33f96f4b7a4984bfea7334a36ab5b45b7b
+          path: .substrate-source
+          persist-credentials: false
+      - name: Verify public images and actor entrypoint and build scanned native tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_RUN_ID: ${{ inputs.substrate_publish_run_id }}
+          VERIFY_RUN_ID: ${{ inputs.substrate_verify_run_id }}
+        run: |
+          python3 -B ops/aks/substrate_inputs.py prepare --output "$RUNNER_TEMP/substrate-prepared" \
+            --source "$GITHUB_WORKSPACE/.substrate-source" \
+            --publish-run-id "$PUBLISH_RUN_ID" --verify-run-id "$VERIFY_RUN_ID"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: prepared-substrate-scenario
+          path: ${{ runner.temp }}/substrate-prepared/prepared.tar.gz
+          retention-days: 7
+          if-no-files-found: error
+
   create:
-    needs: [config, preflight]
-    if: ${{ needs.config.outputs.scenario == 'true' }}
+    needs: [config, preflight, substrate-inputs]
+    if: >-
+      ${{ !cancelled() && needs.config.outputs.scenario == 'true' && needs.preflight.result == 'success' &&
+          (needs.config.outputs.variant != 'substrate-gvisor' || needs.substrate-inputs.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     environment: nightly-aks
@@ -248,8 +321,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      actions: read
     env:
       AKS_STARTED_EPOCH: ${{ needs.create.outputs.started }}
+      VARIANT: ${{ needs.config.outputs.variant }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -266,13 +341,36 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        if: ${{ needs.config.outputs.variant != 'substrate-gvisor' }}
         with:
           go-version-file: go.mod
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310
+        if: ${{ needs.config.outputs.variant != 'substrate-gvisor' }}
         with:
           version: v3.20.0
       - name: Install checksum-pinned clients and compile the existing RPC client
+        if: ${{ needs.config.outputs.variant != 'substrate-gvisor' }}
         run: python3 -B ops/aks/lifecycle.py tools
+      - name: Restore only this run's verified pre-paid Substrate inputs
+        if: ${{ needs.config.outputs.variant == 'substrate-gvisor' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          umask 077
+          gh run download "$GITHUB_RUN_ID" --repo Azure/aks-durable-agents --name prepared-substrate-scenario --dir "$RUNNER_TEMP/prepared-download"
+          python3 - <<'PY'
+          import os,pathlib,shutil,tarfile
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'aks-prepared'
+          root.mkdir(mode=0o700)
+          with tarfile.open(pathlib.Path(os.environ['RUNNER_TEMP'])/'prepared-download/prepared.tar.gz') as archive:
+              archive.extractall(root,filter='data')
+          shutil.copytree(root/'tool-report',pathlib.Path(os.environ['RUNNER_TEMP'])/'aks-tool-report')
+          with open(os.environ['GITHUB_ENV'],'a') as output:
+              for key,value in {'SUBSTRATE_SOURCE':root/'source','SUBSTRATE_TOOLS':root/'native-tools','SUBSTRATE_IMAGE_MAP':root/'verified/substrate-images.json','AKS_RPC_CLIENT':root/'runner-tools/demo-client','GOROOT':root/'go-toolchain','GOTOOLCHAIN':'local','PYTHONPATH':str(root/'python-deps')+(os.pathsep+os.environ['PYTHONPATH'] if os.environ.get('PYTHONPATH') else '')}.items():
+                  output.write(f'{key}={value}\n')
+          with open(os.environ['GITHUB_PATH'],'a') as output:
+              output.write(str(root/'runner-tools')+'\n'+str(root/'go-toolchain/bin')+'\n')
+          PY
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: ${{ always() }}
         with:
@@ -295,8 +393,12 @@ jobs:
           mkdir -m 700 "$RUNNER_TEMP/aks-private/work" "$RUNNER_TEMP/aks-public-raw"
           export WORK_DEADLINE_EPOCH=$((AKS_STARTED_EPOCH + 1800))
           export HARD_DEADLINE_EPOCH=$((AKS_STARTED_EPOCH + 2700))
+          args=(--variant "$VARIANT")
+          if [[ "$VARIANT" == substrate-gvisor ]]; then
+            args+=(--substrate-source "$SUBSTRATE_SOURCE" --substrate-image-map "$SUBSTRATE_IMAGE_MAP" --substrate-tools "$SUBSTRATE_TOOLS")
+          fi
           python3 -B ops/aks/nightly.py --workdir "$RUNNER_TEMP/aks-private/work" \
-            --public-dir "$RUNNER_TEMP/aks-public-raw" --client "$RUNNER_TEMP/aks-nightly-tools/demo-client"
+            --public-dir "$RUNNER_TEMP/aks-public-raw" --client "${AKS_RPC_CLIENT:-$RUNNER_TEMP/aks-nightly-tools/demo-client}" "${args[@]}"
       - name: Collect only allowlisted proof data, never console or private state
         if: ${{ always() }}
         env:
@@ -305,7 +407,9 @@ jobs:
         run: |
           result="$RESULT"
           [[ "$result" == skipped ]] && result=failure
-          python3 -B ops/demo/e2e.py collect --profile aks \
+          profile=aks
+          [[ "${VARIANT:-no-sandbox}" == substrate-gvisor ]] && profile=aks-substrate
+          python3 -B ops/demo/e2e.py collect --profile "$profile" \
             --workspace "$RUNNER_TEMP/aks-public-raw" --console "$RUNNER_TEMP/not-read" \
             --destination "$RUNNER_TEMP/aks-public" --summary "$GITHUB_STEP_SUMMARY" \
             --result "$result" --run-url "$RUN_URL" --sha "$GITHUB_SHA" --stage scenario
@@ -350,7 +454,7 @@ jobs:
         run: python3 -B ops/aks/lifecycle.py teardown
 
   finalize:
-    needs: [config, preflight, create, wait, federate, scenario, teardown]
+    needs: [config, preflight, substrate-inputs, create, wait, federate, scenario, teardown]
     if: ${{ always() && (github.event_name == 'schedule' || inputs.run_scenario) && github.repository == 'Azure/aks-durable-agents' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -366,7 +470,13 @@ jobs:
           FEDERATE_RESULT: ${{ needs.federate.result }}
           SCENARIO_RESULT: ${{ needs.scenario.result }}
           TEARDOWN_RESULT: ${{ needs.teardown.result }}
+          VARIANT: ${{ needs.config.outputs.variant }}
+          INPUTS_RESULT: ${{ needs.substrate-inputs.result }}
         run: |
+          if [[ "${VARIANT:-no-sandbox}" == substrate-gvisor && "${INPUTS_RESULT:-skipped}" != success ]]; then
+            echo 'Substrate inputs were not verified before provisioning.' >&2
+            exit 1
+          fi
           for result in "$CONFIG_RESULT" "$PREFLIGHT_RESULT" "$CREATE_RESULT" "$WAIT_RESULT" "$FEDERATE_RESULT" "$SCENARIO_RESULT" "$TEARDOWN_RESULT"; do
             [[ "$result" == success ]] || {
               echo 'AKS scenario failed or cleanup is unconfirmed. The independent expiry sweeper is a backstop, not successful teardown.' >&2

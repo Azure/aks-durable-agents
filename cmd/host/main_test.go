@@ -82,6 +82,16 @@ func TestSubstrateFlags(t *testing.T) {
 	}
 }
 
+func TestSubstratePlacementFlagIsExplicitAndNotStandalone(t *testing.T) {
+	if _, err := parse([]string{"-substrate-placement-file=/data/substrate-placement.json"}); err == nil {
+		t.Fatal("standalone placement flag accepted")
+	}
+	c, err := parse([]string{"-auth-mode=off", "-substrate-harness=release-notes=assets/release-notes", "-substrate-placement-file=/data/substrate-placement.json"})
+	if err != nil || c.Substrate == nil || c.Substrate.PlacementFile != "/data/substrate-placement.json" {
+		t.Fatalf("placement flag not mapped: %+v %v", c.Substrate, err)
+	}
+}
+
 func TestRepeatedHarnessServiceKeepsEveryExactPort(t *testing.T) {
 	const first = "native.agents.svc.cluster.local:9000"
 	const second = "native.agents.svc.cluster.local:9001"

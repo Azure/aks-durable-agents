@@ -47,6 +47,70 @@ class ChartTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
 
+    def substrate_values(self):
+        values = copy.deepcopy(self.defaults)
+        values["runtime"] = {"mode": "substrate", "substrate": {"atespace": "substrate-sessions", "templateAtespace": "substrate-sessions", "template": "release-notes"}}
+        return values
+
+    def test_substrate_has_separate_executor_without_remote_harness(self):
+        docs = self.documents(self.substrate_values())
+        deployments = {d["metadata"]["labels"]["app.kubernetes.io/component"]: d for d in docs if d["kind"] == "Deployment"}
+        self.assertEqual(set(deployments), {"host", "executor"})
+        host = deployments["host"]["spec"]["template"]
+        executor = deployments["executor"]["spec"]["template"]
+        self.assertEqual([c["name"] for c in executor["spec"]["containers"]], ["executor"])
+        self.assertNotIn("azure.workload.identity/use", executor["metadata"]["labels"])
+        self.assertEqual(host["metadata"]["labels"]["azure.workload.identity/use"], "true")
+        self.assertNotEqual(host["spec"]["serviceAccountName"], executor["spec"]["serviceAccountName"])
+        args = host["spec"]["containers"][0]["args"]
+        self.assertIn("-substrate-harness=release-notes=substrate-sessions/release-notes", args)
+        self.assertIn("-substrate-placement-file=/data/substrate-placement.json", args)
+        self.assertIn("-ateapi-server-name=api.ate-system.svc", args)
+        self.assertFalse(any(a.startswith(("-peer-node-file", "-node-name", "-harness=", "-harness-service")) for a in args))
+        self.assertFalse(any(d["kind"] == "Service" and d["metadata"]["name"].endswith("-harness") for d in docs))
+        affinity = host["spec"]["affinity"]["podAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"][0]
+        self.assertEqual(affinity["labelSelector"]["matchLabels"]["app.kubernetes.io/component"], "executor")
+        self.assertEqual(affinity["topologyKey"], "kubernetes.io/hostname")
+
+    def test_substrate_credentials_and_network_do_not_match_executor(self):
+        docs = self.documents(self.substrate_values())
+        pods = {d["metadata"]["labels"]["app.kubernetes.io/component"]: d["spec"]["template"] for d in docs if d["kind"] == "Deployment"}
+        volumes = {v["name"]: v for v in pods["host"]["spec"]["volumes"]}
+        sources = volumes["substrate-control"]["projected"]["sources"]
+        self.assertIn({"serviceAccountToken": {"audience": "api.ate-system.svc", "expirationSeconds": 3600, "path": "token"}}, sources)
+        self.assertIn({"clusterTrustBundle": {"signerName": "servicedns.podcert.ate.dev/identity", "labelSelector": {"matchLabels": {"podcert.ate.dev/canarying": "live"}}, "path": "ca.crt"}}, sources)
+        self.assertFalse(any(v["name"] == "substrate-control" for v in pods["executor"]["spec"]["volumes"]))
+        self.assertFalse(pods["executor"]["spec"]["automountServiceAccountToken"])
+        policies = [d["spec"] for d in docs if d["kind"] == "NetworkPolicy"]
+        for policy in policies:
+            labels = policy["podSelector"]["matchLabels"]
+            if all(pods["executor"]["metadata"]["labels"].get(k) == v for k, v in labels.items()):
+                self.assertEqual(policy.get("egress", []), [])
+                self.assertEqual(policy.get("ingress", []), [])
+        host_policy = next(p for p in policies if p["podSelector"]["matchLabels"].get("app.kubernetes.io/component") == "host")
+        runtime = [r for r in host_policy["egress"] if any(peer.get("namespaceSelector", {}).get("matchLabels", {}).get("kubernetes.io/metadata.name") == "ate-system" for peer in r.get("to", []))]
+        # NetworkPolicy selects the router Pod's target8080, not Service80.
+        self.assertEqual({port["port"] for r in runtime for port in r["ports"]}, {8080, 443})
+        self.assertEqual({peer["podSelector"]["matchLabels"]["app"] for r in runtime for peer in r["to"]}, {"ate-api-server", "atenet-router"})
+
+    def test_substrate_refuses_missing_or_mixed_routes(self):
+        for change in ({"mode": "unknown"}, {"substrate": {"template": ""}}, {"substrate": {"atespace": "bad/name"}}):
+            values = self.substrate_values()
+            for key, value in change.items():
+                if isinstance(value, dict):
+                    values["runtime"][key].update(value)
+                else:
+                    values["runtime"][key] = value
+            self.assertNotEqual(render(values).returncode, 0)
+        values = self.native_values()
+        values["runtime"] = self.substrate_values()["runtime"]
+        result = render(values)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot be combined", result.stderr)
+        values = self.substrate_values()
+        values["networkPolicy"] = {"enabled": False}
+        self.assertNotEqual(render(values).returncode, 0)
+
     def test_lint_and_goldens(self):
         for fixture in ("default-inputs", "proof-values"):
             with self.subTest(fixture=fixture):
@@ -379,13 +443,16 @@ class ChartTests(unittest.TestCase):
             notes = (chart / "templates/NOTES.txt").read_text()
             wrapper = "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: test-notes}\ndata:\n  notes: |\n"
             (chart / "templates/operator-notes.yaml").write_text(wrapper + "\n".join("    " + line for line in notes.splitlines()) + "\n")
-            for native, values in ((False, self.defaults), (True, self.native_values())):
+            for native, values in ((False, self.defaults), (True, self.native_values()), (True, self.substrate_values())):
                 with self.subTest(native=native), tempfile.NamedTemporaryFile(mode="w", suffix=".json") as source:
                     json.dump(values, source)
                     source.flush()
                     result = helm("template", "test", chart, "--namespace", "agents", "--kube-version", "1.37.0", "-f", source.name)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     rendered = next(doc["data"]["notes"] for doc in yaml.safe_load_all(result.stdout) if doc and doc.get("metadata", {}).get("name") == "test-notes")
+                    if values.get("runtime", {}).get("mode") == "substrate":
+                        self.assertIn("all two release policies", rendered)
+                        self.assertIn("separate executor Pod", rendered)
                     if native:
                         self.assertIn("/host health-probe", rendered)
                         self.assertNotIn("/session-fixture", rendered)

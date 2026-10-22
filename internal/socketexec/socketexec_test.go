@@ -103,6 +103,44 @@ func TestLoadEmptyAndExactHarnessRoutes(t *testing.T) {
 	noDial(t, ln) // Load must not probe even a reachable executor.
 }
 
+func TestLoadBindingsExactDurableDeclarations(t *testing.T) {
+	text := `{"version":1,"executors":[{"name":"pub","type":"unix","socket":"/tmp/publish.sock"}],"tools":[
+		{"harness":"publisher","tool":"publish","executor":"pub","durable_dedup":true},
+		{"harness":"publisher","tool":"false","executor":"pub","durable_dedup":false},
+		{"harness":"publisher","tool":"omitted","executor":"pub"},
+		{"harness":"publisher","tool":"null","executor":"pub","durable_dedup":null},
+		{"harness":"Publisher","tool":"Publish","executor":"pub","durable_dedup":true}]}`
+	path := filepath.Join(t.TempDir(), "tools.json")
+	if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+		t.Fatal(err)
+	}
+	harnesses := map[string]string{"publisher": "unused", "Publisher": "unused"}
+	bindings, err := socketexec.LoadBindings(path, harnesses)
+	if err != nil || len(bindings) != 2 {
+		t.Fatalf("bindings=%v err=%v", bindings, err)
+	}
+	for _, tc := range []struct {
+		harness, tool string
+		want          bool
+	}{
+		{"publisher", "publish", true}, {"publisher", "Publish", false},
+		{"publisher", "false", false}, {"publisher", "omitted", false},
+		{"publisher", "null", false}, {"publisher", "unknown", false},
+		{"Publisher", "Publish", true}, {"Publisher", "publish", false},
+	} {
+		if got := bindings[tc.harness].DurableDedup(tc.tool); got != tc.want {
+			t.Errorf("%s/%s durable=%t want %t", tc.harness, tc.tool, got, tc.want)
+		}
+	}
+	invalid := strings.Replace(text, `"tool":"false","executor":"pub"`, `"tool":"false","executor":"missing"`, 1)
+	if err := os.WriteFile(path, []byte(invalid), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if bindings, err := socketexec.LoadBindings(path, harnesses); err == nil || len(bindings) != 0 {
+		t.Fatalf("invalid later route leaked partial declarations: %v %v", bindings, err)
+	}
+}
+
 func TestLoadRejectsMalformedAndMismatchedConfig(t *testing.T) {
 	valid := config("/tmp/publish.sock", `,"durable_dedup":true`, "")
 	cases := map[string]string{

@@ -6,11 +6,11 @@
 tokens** through the sessions `authn.CallerVerifier` interface. It does not grant
 session ownership. Optional admission checks constrain app roles, groups and
 member accounts; the host separately combines verified approver app roles with
-its explicit subject allowlist. It adds no host activation, TLS, or
-authorization enforcement. Live access requires a separately assembled trusted
-TLS host, the opt-in sessions authentication interceptors, and the sessions
-ownership/authorization enforcement PR sequence; this package alone is not a
-secure live deployment. This caller identity is separate from the keyless model
+its explicit subject allowlist for read and approval access to owned sessions.
+This package alone adds no host activation, TLS or authorization enforcement.
+The [embedded host](host.md) assembles trusted TLS, authentication interceptors
+and required-mode per-RPC authorization. That is host-RPC isolation, not
+journal-wide enforcement or a secure public deployment. This caller identity is separate from the keyless model
 transport's workload identity.
 
 ## Host wiring and lifetime
@@ -137,7 +137,8 @@ server := grpc.NewServer(
   Approval-path verification failures use `approval verification failed`, not
   `caller authentication failed`, with a separate per-reason rate limit. A caller
   context ending on that path is logged at debug as `caller context ended during
-  approval verification`.
+  approval verification`. These same diagnostics also cover approver-source
+  checks for cross-owner reads; the message does not mean a decision was submitted.
 
 ## Optional caller and approver checks
 
@@ -150,14 +151,16 @@ admission and subject-only approval behavior. Configure these fields on
 | `RequiredRoles` | `requiredRoles` | At least **one** listed app-role value in `roles` on every call |
 | `RequiredGroups` | `requiredGroups` | **All** listed lowercase group object IDs in `groups` on every call |
 | `MemberOnly` | `memberOnly` | Explicit JSON integer `acct=0` on every call; guests and absent/malformed claims refused |
-| `ApproverRoles` | `approverRoles` | At least **one** listed app role grants approval, OR a configured approver subject |
+| `ApproverRoles` | `approverRoles` | At least **one** listed app role grants full read and approval on owned sessions, OR a configured approver subject |
 
 **Host image prerequisite:** enabling `requiredRoles`, `requiredGroups`,
 `memberOnly` or `approverRoles` requires a published, verified and pinned host
 image containing these checks. A pre-feature image refuses the new auth JSON.
 After source merge, follow the [publish, verify and pin process](../ops/images/README.md#publish-then-pin)
 before enabling these settings; do not assume the chart's default host digest
-contains the checks.
+contains the checks. Required-mode owner isolation likewise needs a published,
+verified and pinned image containing the host's `WithAuthorization` wiring; an
+existing digest does not establish that behavior.
 
 `memberOnly` means **`acct=0` (tenant `userType: Member`)**, not a home-tenant
 account guarantee. [B2B users can be Members](https://learn.microsoft.com/en-us/entra/external-id/user-properties#can-microsoft-entra-b2b-users-be-added-as-members-instead-of-guests),
@@ -171,9 +174,13 @@ configured values are rejected. These restrictions cannot be enabled with auth
 mode `off`. App roles never replace the required delegated `scp`, tenant,
 audience, client or signature checks. Directory roles (`wids`) are not app roles.
 
-**Approval uses OR:** after all configured admission checks pass, either an exact
-listed issuer/subject or an approver app role grants approval. An owner has no
-implicit approval right. For example:
+**Approver access uses OR:** after all configured admission checks pass, either
+an exact listed issuer/subject or a verified approver app role grants `GetSession`,
+`Replay` and `Approve` on any valid owned session. An owner has no implicit
+approval right. Approvers can read full sessions: prompts, outputs and tool
+arguments, not just the pending decision. See [response disclosure](host.md#read-disclosure-and-rollout).
+No other cross-owner operation is granted. Listing is owner-only; there is no
+inbox or notifier, so approvers need the UID out of band. For example:
 
 ```yaml
 auth:
@@ -187,7 +194,8 @@ auth:
 ```
 
 The listed subject with `roles=["Reviewer"]`, or an unlisted subject with
-`roles=["Approver"]`, can approve **only** with `acct=0` and the required group.
+`roles=["Approver"]`, can read and approve owned sessions **only** with `acct=0`
+and the required group.
 Neither source bypasses those checks. An empty subject list is allowed with an
 approver role. Helm requires at least one approval source in required mode; the
 Go host permits neither source, which denies all approvals.
@@ -195,19 +203,19 @@ Go host permits neither source, which denies all approvals.
 caller list if it should admit approvers without another role.
 
 **No silent subject fallback when role claims are absent.** With approver roles
-configured, every approval requires a nonempty, well-formed string-array `roles`
-claim, including for listed subjects. A listed subject needs at least one API
+configured, every approval and cross-owner read requires a nonempty, well-formed
+string-array `roles` claim, including for listed subjects. A listed subject needs at least one API
 app-role assignment (not necessarily an approver role). **Operator upgrade note:**
 before adding `approverRoles` to a subject-only deployment, assign the configured
 approver app role to those subjects too and acquire fresh tokens. Otherwise,
 listed subjects whose tokens have no `roles` claim are intentionally refused.
 A listed subject with another valid API app role still qualifies through the
-subject route (OR). A missing/empty claim is
-refused with `approval requires a nonempty roles claim; configure API app role
-assignments`; malformed claims are refused with `approval requires a valid roles
-claim`. Ordinary calls are unaffected by `approverRoles`. Startup cannot know
-whether future tenant tokens carry roles; this guard runs on each approval,
-not a tenant-wide heuristic. If ordinary `requiredRoles` admission rejects first,
+subject route (OR). Missing/empty or malformed claims now return generic
+`PermissionDenied`, not the older role-setup text. Fixed diagnostic logs retain
+`roles_missing` and `roles_invalid` for approval and cross-owner read checks.
+Ordinary owner operations, including reads, do not require `approverRoles`.
+Startup cannot know whether future tenant tokens carry roles; this guard runs on
+each approver-source check, not a tenant-wide heuristic. If ordinary `requiredRoles` admission rejects first,
 the RPC instead returns generic `UNAUTHENTICATED` and the operator log diagnoses
 `roles_missing` or `roles_invalid`.
 
@@ -226,10 +234,12 @@ On startup the host logs `approval sources active` with the configured subject
 `required_roles` names and `required_group_count`. These are operator settings,
 never claim values, subject IDs or group IDs. Invalid policy configuration is
 refused at host startup with a field-specific rule, without echoing the value;
-`Config.ValidatePolicy` also exposes this check without trust I/O. Approval role checks re-verify the same request's
-credential and bind its identity to `authn.Caller(ctx)`. They retain no roles or
-authority by subject; calling the policy without incoming credentials fails
-closed. No upstream Sessions role transport or owner isolation is implied.
+`Config.ValidatePolicy` also exposes this check without trust I/O. Approver role
+checks re-verify the same request's credential, bind its identity to
+`authn.Caller(ctx)` and require unexpired verified evidence. They retain no roles
+or authority by subject; calling that role path without incoming credentials
+fails closed. No upstream Sessions role transport is added. Ownerless sessions
+are denied to everyone; required-mode rollout needs a [new private journal](host.md#read-disclosure-and-rollout).
 
 For the API registration, define user app roles and assign users/groups to them
 so delegated tokens contain `roles`. Enable GUID group claims for group checks;
@@ -268,8 +278,9 @@ and [expose-an-API guidance](https://learn.microsoft.com/en-us/entra/identity-pl
 5. Restrict who can get a token. The verifier pins tenant, API, client, and
    scope and, **unless optional checks above are configured**, not the user
    population: every user who can get a delegated token for an allowlisted client
-   and `RequiredScope` authenticates, and
-   authenticated callers share session access ([host limits](host.md)). Depending
+   and `RequiredScope` authenticates. Authentication permits creation, not access
+   to other owners' sessions; the host applies [owner and approver checks](host.md).
+   Depending
    on tenant policy that can include B2B guests; enable `memberOnly` to require
    explicit member status. Enable **Assignment required** (`appRoleAssignmentRequired=true`)
    and [assign](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/assign-user-or-group-access-portal)
@@ -311,17 +322,20 @@ without a tenant, credentials, or any cloud calls:
 go test -race -count=1 -run TestGRPCAuthentication ./entraauth
 ```
 
-The `go.mod` requirement selects canonical upstream Sessions commit
-`f18a2cb1454d1eea0c9e9063646a5251653bd95e`, pseudo-version
-`v0.2.1-0.20261019224537-f18a2cb1454d`, with no fork replacement. It includes the
+The `go.mod` requirement selects canonical upstream Sessions **v0.3.0**
+(root release commit `bcbd4d9`), with no fork replacement. It includes the
 merged [authentication seam (#180)](https://github.com/agent-primitives/sessions/pull/180)
 (`NewInterceptors`, `CallerVerifier`, `Caller`); the Entra verifier contract is
 unchanged. Unary authentication is admission-only: a completed handler result is
 not overwritten solely because its context ended during execution. Streaming
 expiry enforcement remains in the upstream interceptor.
 
-This is still an unreleased development pin, not delivery of
-[per-RPC authorization (#190)](https://github.com/agent-primitives/sessions/pull/190)
-or approval attribution. When a compatible release includes the required seams,
-update the requirement and run `go mod tidy`, then rerun the host and chart
-checks. Do not select v0.2.0, which lacks the authentication seam.
+The release also contains the upstream
+[per-RPC authorization seam (#190)](https://github.com/agent-primitives/sessions/pull/190),
+which the host installs with `WithAuthorization` only in required mode. This
+isolates host RPCs, not every journal writer: the durable marker remains `off`,
+and verified approval attribution and caller-bound retries remain absent. Keep
+the [host's journal, listener and deployment limits](host.md#what-still-belongs-upstream);
+do not expose it to untrusted users. Auth-off is unchanged: anyone reaching that
+host may read, act and approve.
+See the [coupled Substrate version set](substrate.md#version-set).
