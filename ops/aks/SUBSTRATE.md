@@ -191,5 +191,7 @@ Offline tests use synthetic image maps and mocked external commands. A render
 against the exact upstream source can verify manifest adaptation, not image
 pullability, API/admission behavior, runtime isolation, restore fidelity or live
 teardown. A real run requires the operator's approval of the exact target and
-change list. Sessions host wiring is a separate follow-up after the compatible
-adapter merges.
+change list. The host now selects the [released Sessions/adapter version set](../../docs/substrate.md#version-set),
+which requires fresh Substrate state rather than an in-place runtime upgrade.
+Sessions host wiring remains a separate follow-up; module pins alone do not
+connect this install-only check to the host or nightly.

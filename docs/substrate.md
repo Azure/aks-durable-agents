@@ -109,9 +109,9 @@ Substrate does not replace them.
 
 The [two Preview 0 paths](preview-0.md#1-proof-on-real-aks--blocked) are conditional:
 **“single host; recovery authority not yet boot-scoped”** with Substrate, or
-**“no sandbox isolation yet”** without it. The Substrate path still needs qualification of the released
-fidelity and held-checkpoint checks, a compatible released Blob plugin,
-and actual AKS lifecycle/network/backup proof. This wiring alone closes none of
+**“no sandbox isolation yet”** without it. The Substrate path still needs
+qualification of the released fidelity and held-checkpoint checks, a compatible
+released Blob plugin, and actual AKS lifecycle/network/backup proof. This wiring alone closes none of
 those gates; do not use it as an unqualified park/recovery demonstration.
 Public Suspend/Resume and approval parks still invoke Substrate snapshot/restore
 paths in the current pin. They remain unqualified: the host keeps default
@@ -124,8 +124,8 @@ Declaring the harness stateless does not disable snapshot/restore RPC paths.
 In v0.5.0 a paused Actor is `SUSPENDED` with a node-local newest snapshot, not
 `PAUSED`; a pause in progress is `SUSPENDING`, not `PAUSING`. The adapter selects
 the newest generation before checking durability, never an older completed one.
-Resume requires the exact recorded held checkpoint and a completed durable copy.
-A stale or local-only checkpoint is `FAILED_PRECONDITION`; a pending upload is
+Restoring a suspended Actor requires the exact recorded held checkpoint and a
+completed durable copy. A stale or local-only checkpoint is `FAILED_PRECONDITION`; a pending upload is
 `UNAVAILABLE`, and a transitioning/busy Actor is `ABORTED`. For this stateless
 host, inspect the Actor and Suspend again to establish and record a durable
 checkpoint before Resume; retrying a stale reference cannot fix it. These are

@@ -2,8 +2,8 @@
 
 [Back to overview](../README.md) · [Caller authentication](entraauth.md) · [Keyless transport](modeltransport.md)
 
-**Experimental proof only.** Sessions does not yet invoke `Authorizer` in its RPC
-handlers. This host does not fork those handlers or invent a replacement
+**Experimental proof only.** This host does not enable Sessions' opt-in per-RPC
+resource authorization. It does not fork those handlers or invent a replacement
 ownership/policy activation contract. By default both listeners must be **literal
 loopback IPs**, even with authentication enabled. The explicit auth-off private
 TLS exception below changes only the Sessions listener, never health or required

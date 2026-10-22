@@ -60,8 +60,8 @@ func TestFixtureAssemblyIntegration(t *testing.T) {
 		t.Fatal("second proposal did not park without publishing")
 	}
 	stop()
-	// Construct a v4-shaped fixture by removing only v5 ownership additions from
-	// the stopped test journal. This is test setup, NOT a supported rollback path.
+	// Construct a v4-shaped fixture by removing v5 ownership and v6 model-policy
+	// additions from the stopped journal. This is test setup, NOT a rollback path.
 	raw, err := sql.Open("sqlite", f.config.Journal)
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +69,7 @@ func TestFixtureAssemblyIntegration(t *testing.T) {
 	_, err = raw.Exec(`DROP INDEX sessions_owner_project_created;
  ALTER TABLE sessions DROP COLUMN owner_subject;
  ALTER TABLE sessions DROP COLUMN owner_issuer;
+ ALTER TABLE sessions DROP COLUMN model_policy;
  DROP TABLE journal_authorization;
  PRAGMA user_version=4;`)
 	if err != nil {
@@ -93,8 +94,8 @@ func TestFixtureAssemblyIntegration(t *testing.T) {
 	var version int
 	err = check.QueryRow(`PRAGMA user_version`).Scan(&version)
 	_ = check.Close()
-	if err != nil || version != 5 {
-		t.Fatalf("journal not upgraded to v5: %d %v", version, err)
+	if err != nil || version != 6 {
+		t.Fatalf("journal not upgraded to v6: %d %v", version, err)
 	}
 	if _, err := c.Approve(ctx, uid, approveB); err != nil {
 		t.Fatal(err)
