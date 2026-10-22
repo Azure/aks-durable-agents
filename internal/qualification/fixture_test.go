@@ -67,7 +67,7 @@ func TestPrivateFixtureUmask(t *testing.T) {
 }
 
 func TestCreateRefusesNonPrivateParent(t *testing.T) {
-	parent := t.TempDir()
+	parent := privateTestDir(t)
 	if err := os.Chmod(parent, 0755); err != nil {
 		t.Fatal(err)
 	}

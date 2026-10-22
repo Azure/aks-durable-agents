@@ -3,6 +3,7 @@ package qualification
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,8 +16,11 @@ import (
 )
 
 func (s *Store) blob(ref BlobRef) ([]byte, error) {
-	if !validDigest(ref.Digest) || ref.Size < 1 || ref.Size > maxBlobBytes || privateDir(filepath.Join(s.dir, "evidence")) != nil {
+	if !validDigest(ref.Digest) || ref.Size < 1 || ref.Size > maxBlobBytes {
 		return nil, ErrIntegrity
+	}
+	if err := privateDir(filepath.Join(s.dir, "evidence")); err != nil {
+		return nil, err
 	}
 	f, err := privateFile(filepath.Join(s.dir, "evidence", ref.Digest[7:]), false)
 	if err != nil {
@@ -24,11 +28,17 @@ func (s *Store) blob(ref BlobRef) ([]byte, error) {
 	}
 	defer f.Close()
 	st, err := f.Stat()
-	if err != nil || st.Size() != ref.Size {
+	if err != nil {
+		return nil, fileError(err)
+	}
+	if st.Size() != ref.Size {
 		return nil, ErrIntegrity
 	}
 	b, err := io.ReadAll(io.LimitReader(f, maxBlobBytes+1))
-	if err != nil || int64(len(b)) != ref.Size || hashBytes(b) != ref.Digest {
+	if err != nil {
+		return nil, fileError(err)
+	}
+	if int64(len(b)) != ref.Size || hashBytes(b) != ref.Digest {
 		return nil, ErrIntegrity
 	}
 	return b, nil
@@ -39,23 +49,29 @@ func (s *Store) retain(data []byte) (BlobRef, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ref := BlobRef{hashBytes(data), int64(len(data))}
-	if s.db == nil || len(data) == 0 || len(data) > maxBlobBytes {
+	if s.db == nil {
+		return BlobRef{}, ErrUnavailable
+	}
+	if len(data) == 0 || len(data) > maxBlobBytes {
 		return BlobRef{}, ErrInvalid
 	}
 	dir := filepath.Join(s.dir, "evidence")
-	if privateDir(dir) != nil {
-		return BlobRef{}, ErrIntegrity
+	if err := privateDir(dir); err != nil {
+		return BlobRef{}, err
 	}
 	path := filepath.Join(dir, ref.Digest[7:])
 	if _, err := os.Lstat(path); err == nil {
-		_, err = s.blob(ref)
-		return ref, err
+		if _, err = s.blob(ref); err != nil {
+			return ref, err
+		}
+		// A previous rename may have succeeded before its directory sync failed.
+		return ref, syncDir(dir)
 	} else if !os.IsNotExist(err) {
-		return BlobRef{}, ErrIntegrity
+		return BlobRef{}, fileError(err)
 	}
 	f, err := os.CreateTemp(dir, ".pending-")
 	if err != nil {
-		return BlobRef{}, ErrIntegrity
+		return BlobRef{}, fileError(err)
 	}
 	name := f.Name()
 	defer os.Remove(name)
@@ -63,11 +79,17 @@ func (s *Store) retain(data []byte) (BlobRef, error) {
 		err = f.Sync()
 	}
 	closeErr := f.Close()
-	if err != nil || closeErr != nil {
-		return BlobRef{}, ErrIntegrity
+	if err != nil {
+		return BlobRef{}, fileError(err)
 	}
-	if os.Rename(name, path) != nil || syncDir(dir) != nil {
-		return BlobRef{}, ErrIntegrity
+	if closeErr != nil {
+		return BlobRef{}, fileError(closeErr)
+	}
+	if err = os.Rename(name, path); err != nil {
+		return BlobRef{}, fileError(err)
+	}
+	if err = syncDir(dir); err != nil {
+		return BlobRef{}, err
 	}
 	return ref, nil
 }
@@ -87,22 +109,33 @@ func (s *Store) complete(ctx context.Context, l lease, obs []Observation) (Recor
 		}
 		return r, nil
 	}
-	if r.State != Running {
+	switch r.State {
+	case Verifying:
+		// Explicit retries may resume only the retained intent under this lease.
+		// Reevaluate its evidence and expiry rather than trusting an earlier result.
+		if objectDigest("observations-v1", r.Observations) != objectDigest("observations-v1", obs) {
+			return Record{}, ErrConflict
+		}
+	case Running:
+		// Bound and detach caller-owned slices before retaining the verifying intent.
+		b, err := json.Marshal(obs)
+		if err != nil || len(b) > maxRecordBytes-maxRequestBytes {
+			return Record{}, ErrInvalid
+		}
+		if err = json.Unmarshal(b, &r.Observations); err != nil {
+			return Record{}, ErrInvalid
+		}
+		r.State = Verifying
+		if err = s.transaction(ctx, func() error { return s.save(ctx, r, false) }); err != nil {
+			return Record{}, err
+		}
+	default:
 		return Record{}, ErrConflict
 	}
-	// Bound and detach caller-owned slices before retaining the verifying intent.
-	b, err := json.Marshal(obs)
-	if err != nil || len(b) > maxRecordBytes-maxRequestBytes {
-		return Record{}, ErrInvalid
-	}
-	if err = json.Unmarshal(b, &r.Observations); err != nil {
-		return Record{}, ErrInvalid
-	}
-	r.State = Verifying
-	if err = s.transaction(ctx, func() error { return s.save(ctx, r, false) }); err != nil {
-		return Record{}, err
-	}
 	outcome, evalErr := s.evaluate(r)
+	if errors.Is(evalErr, ErrUnavailable) {
+		return Record{}, ErrUnavailable
+	}
 	if !time.Now().Before(r.Request.Plan.ExpiresAt) {
 		evalErr = ErrIneligible
 	}
@@ -125,6 +158,10 @@ func (s *Store) complete(ctx context.Context, l lease, obs []Observation) (Recor
 // VerifyForActivation verifies retained evidence against an independently
 // resolved plan. It grants no permission and must be called inside the future
 // activation authority's current-policy/target gate, not cached as approval.
+// Execution uniqueness is local to one record. The trusted runner must bind
+// journals to this subject/binding and prevent reuse across qualification runs.
+// ModelCall.Model is a harness request label, not deployment attestation; the
+// runner must independently bind the host-selected candidate/judge deployments.
 func (s *Store) VerifyForActivation(ctx context.Context, id string, expected Plan, now time.Time) (Verified, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -137,6 +174,9 @@ func (s *Store) VerifyForActivation(ctx context.Context, id string, expected Pla
 		return Verified{}, ErrIneligible
 	}
 	state, err := s.evaluate(r)
+	if errors.Is(err, ErrUnavailable) {
+		return Verified{}, ErrUnavailable
+	}
 	if err != nil || state != Passed {
 		return Verified{}, ErrIntegrity
 	}
@@ -266,7 +306,10 @@ func (s *Store) evaluate(r Record) (State, error) {
 				return Incomplete, ErrIntegrity
 			}
 			input, output, err := s.journal(o.Candidate, used, "")
-			if err != nil || hashBytes([]byte(input)) != c.InputDigest {
+			if err != nil {
+				return Incomplete, err
+			}
+			if hashBytes([]byte(input)) != c.InputDigest {
 				return Incomplete, ErrIntegrity
 			}
 			judgeCount := 0
@@ -305,7 +348,7 @@ func (s *Store) evaluate(r Record) (State, error) {
 					for _, call := range j.Calls {
 						in, out, err := s.journal(call, used, a.JudgeModel)
 						if err != nil {
-							return Incomplete, ErrIntegrity
+							return Incomplete, err
 						}
 						var binding judgeInput
 						var score judgeScore

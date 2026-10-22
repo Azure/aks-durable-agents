@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -32,16 +33,23 @@ func newID() string {
 	}
 	return hex.EncodeToString(b[:])
 }
+func currentOwner(info os.FileInfo) bool {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	return ok && st.Uid == uint32(os.Geteuid())
+}
 func privateDir(path string) error {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return ErrIntegrity
 	}
 	for cur := path; ; cur = filepath.Dir(cur) {
 		st, err := os.Lstat(cur)
-		if err != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+		if err != nil {
+			return fileError(err)
+		}
+		if !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
 			return ErrIntegrity
 		}
-		if cur == path && st.Mode().Perm() != 0700 {
+		if cur == path && (st.Mode().Perm() != 0700 || !currentOwner(st)) {
 			return ErrIntegrity
 		}
 		if cur == filepath.Dir(cur) {
@@ -56,11 +64,15 @@ func privateFile(path string, create bool) (*os.File, error) {
 	}
 	fd, err := unix.Open(path, flags, 0600)
 	if err != nil {
-		return nil, ErrIntegrity
+		return nil, fileError(err)
 	}
 	f := os.NewFile(uintptr(fd), path)
 	st, err := f.Stat()
-	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 {
+	if err != nil {
+		f.Close()
+		return nil, fileError(err)
+	}
+	if !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || !currentOwner(st) {
 		f.Close()
 		return nil, ErrIntegrity
 	}
@@ -69,13 +81,14 @@ func privateFile(path string, create bool) (*os.File, error) {
 func syncDir(dir string) error {
 	f, err := os.Open(dir)
 	if err != nil {
-		return ErrIntegrity
+		return fileError(err)
 	}
-	defer f.Close()
-	if f.Sync() != nil {
-		return ErrIntegrity
+	err = f.Sync()
+	closeErr := f.Close()
+	if err != nil {
+		return fileError(err)
 	}
-	return nil
+	return fileError(closeErr)
 }
 func dbURI(path string, readonly bool) string {
 	u := url.URL{Scheme: "file", Path: path}
@@ -95,14 +108,17 @@ func dbURI(path string, readonly bool) string {
 // Create exclusively initializes a new private root. A partial failed creation
 // is deliberately not adoptable by Open and is never automatically removed.
 func Create(dir string) (*Store, error) {
-	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir || privateDir(filepath.Dir(dir)) != nil {
+	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir {
 		return nil, ErrIntegrity
+	}
+	if err := privateDir(filepath.Dir(dir)); err != nil {
+		return nil, err
 	}
 	if err := os.Mkdir(dir, 0700); err != nil {
-		return nil, ErrIntegrity
+		return nil, fileError(err)
 	}
 	if err := os.Mkdir(filepath.Join(dir, "evidence"), 0700); err != nil {
-		return nil, ErrIntegrity
+		return nil, fileError(err)
 	}
 	id := newID()
 	for _, item := range []struct{ name, data string }{{"lock", ""}, {"lineage", id}, {"records.db", ""}} {
@@ -116,7 +132,7 @@ func Create(dir string) (*Store, error) {
 		}
 		f.Close()
 		if err != nil {
-			return nil, ErrIntegrity
+			return nil, fileError(err)
 		}
 	}
 	s, err := lockStore(dir, id)
@@ -130,7 +146,7 @@ func Create(dir string) (*Store, error) {
 	}()
 	s.db, err = sql.Open("sqlite", dbURI(filepath.Join(dir, "records.db"), false))
 	if err != nil {
-		return nil, ErrIntegrity
+		return nil, databaseError(err)
 	}
 	s.db.SetMaxOpenConns(1)
 	_, err = s.db.Exec(`BEGIN IMMEDIATE;
@@ -143,7 +159,7 @@ func Create(dir string) (*Store, error) {
 		_, err = s.db.Exec("COMMIT")
 	}
 	if err != nil {
-		return nil, ErrIntegrity
+		return nil, databaseError(err)
 	}
 	if err = syncDir(dir); err != nil {
 		return nil, err
@@ -154,8 +170,11 @@ func Create(dir string) (*Store, error) {
 	return s, nil
 }
 func lockStore(dir, lineage string) (*Store, error) {
-	if privateDir(dir) != nil || privateDir(filepath.Join(dir, "evidence")) != nil {
-		return nil, ErrIntegrity
+	if err := privateDir(dir); err != nil {
+		return nil, err
+	}
+	if err := privateDir(filepath.Join(dir, "evidence")); err != nil {
+		return nil, err
 	}
 	f, err := privateFile(filepath.Join(dir, "lock"), false)
 	if err != nil {
@@ -166,7 +185,7 @@ func lockStore(dir, lineage string) (*Store, error) {
 		if errors.Is(err, unix.EWOULDBLOCK) {
 			return nil, ErrBusy
 		}
-		return nil, ErrIntegrity
+		return nil, fileError(err)
 	}
 	return &Store{dir: dir, lineage: lineage, lock: f}, nil
 }
@@ -190,17 +209,23 @@ func Open(dir, lineage string) (_ *Store, err error) {
 		path := filepath.Join(dir, name)
 		if _, e := os.Lstat(path); os.IsNotExist(e) && name != "lineage" && name != "records.db" {
 			continue
-		} else if e == nil && (name == "records.db-wal" || name == "records.db-shm") {
+		} else if e != nil {
+			return nil, fileError(e)
+		} else if name == "records.db-wal" || name == "records.db-shm" {
 			// DELETE-mode storage never owns WAL sidecars, even empty/private
 			// ones; leave the entire recovery set untouched for inspection.
 			return nil, ErrIntegrity
 		}
 		f, e := privateFile(path, false)
 		if e != nil {
-			return nil, ErrIntegrity
+			return nil, e
 		}
 		st, e := f.Stat()
-		if e != nil || st.Size() == 0 && name == "records.db" {
+		if e != nil {
+			f.Close()
+			return nil, fileError(e)
+		}
+		if st.Size() == 0 && name == "records.db" {
 			f.Close()
 			return nil, ErrIntegrity
 		}
@@ -208,41 +233,59 @@ func Open(dir, lineage string) (_ *Store, err error) {
 			// Even mode=ro can create WAL/SHM sidecars. Require the rollback
 			// format before SQLite can touch the unverified recovery set.
 			var header [20]byte
-			if _, e = io.ReadFull(f, header[:]); e != nil || string(header[:16]) != "SQLite format 3\x00" || header[18] != 1 || header[19] != 1 {
+			if _, e = io.ReadFull(f, header[:]); e != nil {
+				f.Close()
+				return nil, fileError(e)
+			}
+			if string(header[:16]) != "SQLite format 3\x00" || header[18] != 1 || header[19] != 1 {
 				f.Close()
 				return nil, ErrIntegrity
 			}
 		}
 		if name == "lineage" {
 			data := make([]byte, 129)
-			n, _ := f.Read(data)
+			n, readErr := f.Read(data)
+			if readErr != nil {
+				f.Close()
+				return nil, fileError(readErr)
+			}
 			if string(data[:n]) != lineage {
 				f.Close()
 				return nil, ErrIntegrity
 			}
 		}
-		f.Close()
+		if e = f.Close(); e != nil {
+			return nil, fileError(e)
+		}
 	}
 	// Verify identity before journal_mode or any other writable PRAGMA.
 	ro, e := sql.Open("sqlite", dbURI(filepath.Join(dir, "records.db"), true))
 	if e != nil {
-		return nil, ErrIntegrity
+		return nil, databaseError(e)
 	}
-	var version, count int
-	var saved string
-	e = ro.QueryRow("SELECT count(*),version,lineage FROM metadata").Scan(&count, &version, &saved)
-	ro.Close()
-	if e != nil || count != 1 || version != 1 || saved != lineage {
+	var rawCount, rawVersion, rawLineage any
+	e = ro.QueryRow("SELECT count(*),version,lineage FROM metadata").Scan(&rawCount, &rawVersion, &rawLineage)
+	closeErr := ro.Close()
+	if e != nil {
+		return nil, databaseError(e)
+	}
+	if closeErr != nil {
+		return nil, databaseError(closeErr)
+	}
+	count, countOK := rawCount.(int64)
+	version, versionOK := rawVersion.(int64)
+	saved, lineageOK := rawLineage.(string)
+	if !countOK || !versionOK || !lineageOK || count != 1 || version != 1 || saved != lineage {
 		return nil, ErrIntegrity
 	}
 	s.db, err = sql.Open("sqlite", dbURI(filepath.Join(dir, "records.db"), false))
 	if err != nil {
-		return nil, ErrIntegrity
+		return nil, databaseError(err)
 	}
 	s.db.SetMaxOpenConns(1)
 	rows, e := s.db.Query("SELECT id,workspace,target,request_key,CASE WHEN length(body)<=? THEN body ELSE NULL END FROM records", maxRecordBytes)
 	if e != nil {
-		return nil, ErrIntegrity
+		return nil, databaseError(e)
 	}
 	for rows.Next() {
 		var b []byte
@@ -256,7 +299,7 @@ func Open(dir, lineage string) (_ *Store, err error) {
 	e = rows.Err()
 	rows.Close()
 	if e != nil {
-		return nil, ErrIntegrity
+		return nil, databaseError(e)
 	}
 	return s, nil
 }
@@ -276,22 +319,28 @@ func (s *Store) Close() error {
 		}
 		s.lock = nil
 	}
-	return err
+	if err != nil {
+		return ErrUnavailable
+	}
+	return nil
 }
 func (s *Store) read(ctx context.Context, id string) (Record, error) {
-	var b []byte
 	var r Record
-	var workspace, target, key string
+	var rawWorkspace, rawTarget, rawKey, rawBody any
 	if s.db == nil {
-		return r, ErrIntegrity
+		return r, ErrUnavailable
 	}
-	if err := s.db.QueryRowContext(ctx, "SELECT workspace,target,request_key,CASE WHEN length(body)<=? THEN body ELSE NULL END FROM records WHERE id=?", maxRecordBytes, id).Scan(&workspace, &target, &key, &b); err != nil {
+	if err := s.db.QueryRowContext(ctx, "SELECT workspace,target,request_key,CASE WHEN length(body)<=? THEN body ELSE NULL END FROM records WHERE id=?", maxRecordBytes, id).Scan(&rawWorkspace, &rawTarget, &rawKey, &rawBody); err != nil {
 		if ctx.Err() != nil {
 			return r, ctx.Err()
 		}
-		return r, ErrIntegrity
+		return r, databaseError(err)
 	}
-	if strictJSON(b, &r) != nil || r.ID != id || checkRecord(r, s.lineage) != nil || r.Request.Plan.Subject.Workspace != workspace || r.Request.Plan.Subject.Target != target || r.Request.Key != key {
+	workspace, workspaceOK := rawWorkspace.(string)
+	target, targetOK := rawTarget.(string)
+	key, keyOK := rawKey.(string)
+	b, bodyOK := rawBody.([]byte)
+	if !workspaceOK || !targetOK || !keyOK || !bodyOK || strictJSON(b, &r) != nil || r.ID != id || checkRecord(r, s.lineage) != nil || r.Request.Plan.Subject.Workspace != workspace || r.Request.Plan.Subject.Target != target || r.Request.Key != key {
 		return Record{}, ErrIntegrity
 	}
 	return r, nil
@@ -316,19 +365,19 @@ func (s *Store) save(ctx context.Context, r Record, insert bool) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return ErrIntegrity
+		return databaseError(err)
 	}
 	return nil
 }
 func (s *Store) transaction(ctx context.Context, fn func() error) error {
 	if s.db == nil {
-		return ErrIntegrity
+		return ErrUnavailable
 	}
 	if _, err := s.db.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return ErrIntegrity
+		return databaseError(err)
 	}
 	defer s.db.ExecContext(context.Background(), "ROLLBACK") // also releases a transaction after cancellation
 	if err := fn(); err != nil {
@@ -338,7 +387,7 @@ func (s *Store) transaction(ctx context.Context, fn func() error) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return ErrIntegrity
+		return databaseError(err)
 	}
 	return nil
 }
@@ -351,9 +400,13 @@ func (s *Store) Admit(ctx context.Context, req Request) (Record, error) {
 	}
 	var result Record
 	err := s.transaction(ctx, func() error {
-		var id string
-		e := s.db.QueryRowContext(ctx, "SELECT id FROM records WHERE workspace=? AND target=? AND request_key=?", req.Plan.Subject.Workspace, req.Plan.Subject.Target, req.Key).Scan(&id)
+		var rawID any
+		e := s.db.QueryRowContext(ctx, "SELECT id FROM records WHERE workspace=? AND target=? AND request_key=?", req.Plan.Subject.Workspace, req.Plan.Subject.Target, req.Key).Scan(&rawID)
 		if e == nil {
+			id, ok := rawID.(string)
+			if !ok {
+				return ErrIntegrity
+			}
 			r, err := s.read(ctx, id)
 			if err != nil {
 				return err
@@ -368,7 +421,7 @@ func (s *Store) Admit(ctx context.Context, req Request) (Record, error) {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return ErrIntegrity
+			return databaseError(e)
 		}
 		if !req.Plan.ExpiresAt.After(time.Now()) {
 			return ErrInvalid

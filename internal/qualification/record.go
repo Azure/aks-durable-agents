@@ -17,11 +17,12 @@ import (
 )
 
 var (
-	ErrInvalid    = errors.New("qualification: invalid input")
-	ErrConflict   = errors.New("qualification: conflict")
-	ErrBusy       = errors.New("qualification: writer busy")
-	ErrIntegrity  = errors.New("qualification: integrity failure")
-	ErrIneligible = errors.New("qualification: ineligible")
+	ErrInvalid     = errors.New("qualification: invalid input")
+	ErrConflict    = errors.New("qualification: conflict")
+	ErrBusy        = errors.New("qualification: writer busy")
+	ErrIntegrity   = errors.New("qualification: integrity failure")
+	ErrUnavailable = errors.New("qualification: store unavailable")
+	ErrIneligible  = errors.New("qualification: ineligible")
 )
 
 const (
@@ -50,7 +51,9 @@ type Member struct{ ID, Digest string }
 type Assertion struct {
 	ID, Kind, Value string
 	MinScore        int
-	JudgeModel      string
+	// JudgeModel is the expected harness request label; the runner must also
+	// bind the actual host-selected judge deployment independently.
+	JudgeModel string
 }
 type Case struct {
 	ID, Digest, InputDigest string
@@ -72,6 +75,10 @@ type BlobRef struct {
 	Digest string
 	Size   int64
 }
+
+// Journal retains host-supplied anchors, not producer attestation. Execution IDs
+// are unique only within a record; the trusted runner binds journals to the
+// subject and frozen binding and prevents reuse across qualification runs.
 type Journal struct {
 	SessionID, ExecutionID, HeadHash string
 	Count                            int
