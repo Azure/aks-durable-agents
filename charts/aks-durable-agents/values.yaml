@@ -59,6 +59,14 @@ persistence:
   # Must be prepared separately; never reuse a prior run's subtree for a new run.
   subPath: sessions-v1
 
+runtime:
+  # Substrate is explicit and incompatible with native producers/remote harnesses.
+  mode: remote
+  substrate:
+    atespace: ""
+    templateAtespace: ""
+    template: ""
+
 harness:
   # Opt-in native producer profile. Entries must match the prepared inventory.
   native:

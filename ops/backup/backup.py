@@ -310,12 +310,18 @@ class Cluster:
         assert_no_consumers(self.get("pods")["items"], self.args.pvc, allowed)
 
 
+def writer_roles(deployments, runtime):
+    if runtime not in ("remote", "substrate"):
+        raise ValueError("unknown writer runtime")
+    roles = {d["metadata"]["labels"].get("app.kubernetes.io/component") for d in deployments}
+    if len(deployments) != 2 or roles != {"host", "executor" if runtime == "substrate" else "harness"}:
+        raise ValueError("expected exactly the selected host and peer writer Deployments")
+
+
 def backup_cluster(a):
     c = Cluster(a)
     deployments = c.get("deployments", "-l", "app.kubernetes.io/name=aks-durable-agents,app.kubernetes.io/instance=" + a.release)["items"]
-    roles = {d["metadata"]["labels"].get("app.kubernetes.io/component") for d in deployments}
-    if len(deployments) != 2 or roles != {"host", "harness"}:
-        raise ValueError("expected exactly the chart's host and harness Deployments")
+    writer_roles(deployments, getattr(a, "runtime", "remote"))
     counts = {d["metadata"]["name"]: d["spec"].get("replicas", 1) for d in deployments}
     for d in deployments:
         spec = d["spec"]["template"]["spec"]
@@ -418,6 +424,7 @@ def main():
             p.add_argument("--" + arg, required=True)
         if name == "backup":
             p.add_argument("--release", required=True)
+            p.add_argument("--runtime", choices=("remote", "substrate"), default="remote")
             p.add_argument("--output", required=True)
             p.add_argument("--stop", action="store_true", help="stop both writers and restart only after a verified backup")
         else:

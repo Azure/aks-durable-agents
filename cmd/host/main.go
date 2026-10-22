@@ -69,6 +69,7 @@ func parse(args []string) (host.Config, error) {
 	}{
 		{"substrate-harness", "single name=atespace/template stateless-replay route", nil},
 		{"substrate-atespace", "Actor atespace", &sub.ActorAtespace},
+		{"substrate-placement-file", "optional private first/latest native placement receipt for one controlled session", &sub.PlacementFile},
 		{"ateapi-addr", "private TLS control endpoint", &sub.ControlAddr},
 		{"ateapi-server-name", "control certificate name (default endpoint host)", &sub.ControlServerName},
 		{"ateapi-ca-file", "control CA PEM file", &sub.CAFile},

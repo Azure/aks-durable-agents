@@ -16,6 +16,12 @@ WORKFLOWS = Path(__file__).resolve().parents[2] / ".github/workflows"
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_packaged_fixture_smoke_checks_actor_entrypoint_and_port80(self):
+        smoke = (Path(__file__).resolve().parents[2] / "ops/images/smoke.sh").read_text()
+        self.assertIn("actor-harness --check", smoke)
+        self.assertIn("/session-fixture actor-harness", smoke)
+        self.assertIn("127.0.0.1:80 --expect allowed", smoke)
+
     def test_publication_and_handoff_use_only_the_required_permissions(self):
         publish = yaml.safe_load((WORKFLOWS / "images.yml").read_text())
         handoff = yaml.safe_load((WORKFLOWS / "image-pins.yml").read_text())

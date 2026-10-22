@@ -46,6 +46,22 @@
     }
   ],
   "properties": {
+    "runtime": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "substrate"],
+      "properties": {
+        "mode": {"enum": ["remote", "substrate"]},
+        "substrate": {
+          "type": "object", "additionalProperties": false,
+          "required": ["atespace", "templateAtespace", "template"],
+          "properties": {
+            "atespace": {"type": "string", "maxLength": 63, "pattern": "^$|^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"},
+            "templateAtespace": {"type": "string", "maxLength": 63, "pattern": "^$|^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"},
+            "template": {"type": "string", "maxLength": 63, "pattern": "^$|^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"}
+          }
+        }
+      }
+    },
     "canvas": {
       "type": "object",
       "additionalProperties": false,

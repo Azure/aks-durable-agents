@@ -70,12 +70,12 @@ type state struct {
 }
 
 func run(ctx context.Context, args []string, out io.Writer, fixture fixtureFunc) error {
-	const commands = "commands: prepare, park, check-parked, approve, continue, seal, verify, counter"
+	const commands = "commands: prepare, park, check-parked, checkpoint, approve, continue, seal, verify, counter"
 	if len(args) == 0 {
 		return errors.New(commands)
 	}
 	name := args[0]
-	rpc := name == "park" || name == "check-parked" || name == "approve" || name == "continue"
+	rpc := name == "park" || name == "check-parked" || name == "checkpoint" || name == "approve" || name == "continue"
 	if !rpc && name != "prepare" && name != "verify" && name != "counter" && name != "seal" {
 		return errors.New("unknown command " + strconv.Quote(name) + "; " + commands)
 	}
@@ -92,7 +92,7 @@ func run(ctx context.Context, args []string, out io.Writer, fixture fixtureFunc)
 	explicitServer := false
 	fs.Visit(func(f *flag.Flag) { explicitServer = explicitServer || f.Name == "server" })
 	if explicitServer && !rpc {
-		return errors.New("--server is only valid for park, check-parked, approve and continue")
+		return errors.New("--server is only valid for park, check-parked, checkpoint, approve and continue")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -136,6 +136,8 @@ func rpcCommand(ctx context.Context, name, data, server string) (any, error) {
 		return park(ctx, c, data)
 	case "check-parked":
 		return checkParked(ctx, c, data)
+	case "checkpoint":
+		return checkpoint(ctx, c, data)
 	case "approve":
 		return approve(ctx, c, data)
 	}
@@ -505,6 +507,29 @@ func approvalSeq(v view, st state) (int64, error) {
 		return 0, errors.New("approval decision is not the journal head")
 	}
 	return seq, nil
+}
+
+// checkpoint projects only the last committed external SUSPEND reference for
+// the already-owned scenario. It neither resolves nor resumes runtime compute.
+func checkpoint(ctx context.Context, c *client.Client, data string) (any, error) {
+	st, err := readState(data, "park.json")
+	if err != nil {
+		return nil, err
+	}
+	v, err := inspect(ctx, c, st.Session)
+	if err != nil {
+		return nil, err
+	}
+	var held *api.SnapshotRef
+	for _, event := range v.events {
+		if event.Kind == api.EventLifecycle && event.Lifecycle.Kind == api.LifecycleSuspend {
+			held = event.Lifecycle.Snapshot
+		}
+	}
+	if held == nil || held.Local != st.Session || held.ExternalURI == "" || held.Memory {
+		return nil, errors.New("scenario has no committed external stateless checkpoint")
+	}
+	return map[string]any{"version": 1, "actor": held.Local, "uri": held.ExternalURI, "memory": false}, nil
 }
 
 func approve(ctx context.Context, c *client.Client, data string) (any, error) {

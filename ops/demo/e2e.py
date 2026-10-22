@@ -105,9 +105,10 @@ def find_evidence(workspace, console_text):
     return path
 
 
-def collect_aks(workspace, destination, summary, result, run_url, sha, stage):
+def collect_aks(workspace, destination, summary, result, run_url, sha, stage, profile="aks"):
     # The kind path deliberately retains logs. Never call it for real-model runs.
-    spec = importlib.util.spec_from_file_location("aks_public_proof", Path(__file__).resolve().parents[1] / "aks/proof.py")
+    schema = {"aks": "proof.py", "aks-substrate": "substrate_proof.py"}[profile]
+    spec = importlib.util.spec_from_file_location("aks_public_proof", Path(__file__).resolve().parents[1] / "aks" / schema)
     assert spec is not None and spec.loader is not None
     proof = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(proof)
@@ -163,8 +164,8 @@ def collect_aks(workspace, destination, summary, result, run_url, sha, stage):
 
 
 def collect(workspace, console, destination, summary, result, run_url, profile="kind", sha="", stage="scenario"):
-    if profile == "aks":
-        return collect_aks(workspace, destination, summary, result, run_url, sha, stage)
+    if profile in ("aks", "aks-substrate"):
+        return collect_aks(workspace, destination, summary, result, run_url, sha, stage, profile)
     if profile != "kind":
         raise ValueError("unknown reporting profile")
     if not RUN_URL.fullmatch(run_url):
@@ -361,7 +362,7 @@ def main(argv=None, api=None):
     t.add_argument("--test", action="store_true")
     c.add_argument("--sha", default="")
     for command in (c, t):
-        command.add_argument("--profile", choices=("kind", "aks"), default="kind")
+        command.add_argument("--profile", choices=("kind", "aks", "aks-substrate") if command is c else ("kind", "aks"), default="kind")
         command.add_argument("--stage", default="scenario")
     args = parser.parse_args(argv)
     try:
