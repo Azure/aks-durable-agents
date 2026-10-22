@@ -248,6 +248,70 @@ docker buildx imagetools inspect "$image" --format '{{json .SBOM.SPDX}}'
 For a tag publication, verify the exact `@refs/tags/<tag>` certificate identity
 instead; do not relax it to accept arbitrary workflow identities.
 
+## Substrate v0.5.0 inputs
+
+The same `Images` workflow also validates ten source-built Substrate images on
+PRs and publishes them **only on canonical main pushes**, under
+`ghcr.io/azure/aks-durable-agents/substrate-<role>`. The roles are `ateapi`,
+`atecontroller`, `atelet`, `atenet`, `ateom-gvisor`, `objectstore-plugin`,
+`podcertcontroller`, `counter`, `envoy-dataplane` and `pause`. No Substrate image
+is published from a PR or release-tag push. Existing host publication is unchanged.
+
+Substrate source is fixed at `e8d40c33f96f4b7a4984bfea7334a36ab5b45b7b`.
+The eight Go images use its vendor graph, Go 1.27.3, original root/base-image
+choices, `/ko-app` paths and gVisor worker data. They explicitly stamp `v0.5.0`
+and its source commit and retain clean-source VCS metadata; this is not a claim
+of byte-identical output from upstream ko. Pause is compiled from Kubernetes
+`f54c212e3a2f75d674b717a9b29052b20b60aefc` (`v1.37.0`, pause 3.10.2), with a
+pinned GCC compiler and scratch runtime; it is not a re-tag of a prebuilt pause.
+Both sources are recorded separately from the publishing workflow revision.
+
+Each owned digest is smoke-tested, its packaged Go executables are strictly
+scanned where applicable, and it receives the same BuildKit max provenance,
+Syft SPDX attestation and verified keyless cosign identity as the host images.
+The scratch C pause image can have an empty package inventory, but still needs a
+valid attached SPDX document. Existing host SBOM checks are not relaxed. Envoy's
+upstream Rust build alone needs apt/Cargo network access; all smoke runs have no
+network. Its apt inputs are not reproducible or covered by the Go scan. These
+checks do not qualify AKS runtime behavior or audit every OS/Rust dependency.
+
+The additional builds run on every image-relevant PR/main change and may take
+longer than host-only builds. The workflow remains all-or-nothing: a failed
+Substrate build or scan also prevents the successful-run verified host-pin export.
+
+A successful main publication produces a separate `published-substrate-images`
+artifact containing `substrate-publication.json` and `substrate-images.json`.
+The latter is exactly the installer's `{sourceCommit, images}` map: ten owned
+GHCR digests plus five pinned upstream inputs (PostgreSQL, RustFS, AWS CLI,
+Envoy router and the existing Python probe base). Those five inputs are not
+claimed as source builds or signed by this workflow. `sourceCommit` identifies
+Substrate, while the publication receipt's `workflowCommit` identifies this repo.
+The host's `images.json`, helper receipt and chart pin format are unchanged.
+
+After making all ten new packages public, use the successful main Images run ID
+with **Verified image pins** as above. Its separate Substrate job checks run
+identity and workflow-source staleness, anonymously pulls all fifteen inputs,
+and verifies signatures/SBOMs for our ten. A private package produces no verified
+Substrate artifact; explicit manual verification fails until inputs are public.
+Manual verification runs both host and Substrate jobs, so public host packages
+alone are not enough for the whole run to pass.
+
+Download `verified-substrate-images` from the successful verification run. It
+contains the validated map, publication receipt and owned signature/SBOM evidence:
+
+```sh
+gh run download "$VERIFICATION_RUN_ID" --repo Azure/aks-durable-agents \
+  --name verified-substrate-images --dir "$SUBSTRATE_INPUTS"
+python3 -B ops/aks/substrate.py --source "$SUBSTRATE_SOURCE" \
+  --image-map "$SUBSTRATE_INPUTS/substrate-images.json" \
+  --nodes "$SUBSTRATE_NODES" > substrate-render.json
+```
+
+Follow the [install-only operator guide](../aks/SUBSTRATE.md). Publication and
+public input verification do not create a cluster or authorize a live run;
+that still needs the operator's exact-target go. No registry visibility, Azure
+role, schedule or Sessions dependency is changed by this workflow.
+
 References: [GHCR access and visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility),
 [GitHub token permissions](https://docs.github.com/en/actions/tutorials/authenticate-with-github_token),
 [BuildKit SBOM attestations](https://docs.docker.com/build/metadata/attestations/sbom/).

@@ -188,3 +188,74 @@ jobs:
           path: .build/publication/
           if-no-files-found: error
           retention-days: 30
+
+  substrate-validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        role: [ateapi, atecontroller, atelet, atenet, ateom-gvisor, objectstore-plugin, podcertcontroller, counter, envoy-dataplane, pause]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/substrate-image
+        with:
+          role: ${{ matrix.role }}
+          publish: 'false'
+
+  substrate-publish:
+    if: github.repository == 'Azure/aks-durable-agents' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        role: [ateapi, atecontroller, atelet, atenet, ateom-gvisor, objectstore-plugin, podcertcontroller, counter, envoy-dataplane, pause]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/substrate-image
+        with:
+          role: ${{ matrix.role }}
+          publish: 'true'
+          registry-token: ${{ secrets.GITHUB_TOKEN }}
+
+  substrate-collect:
+    if: github.repository == 'Azure/aks-durable-agents' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: substrate-publish
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14.3'
+      - name: Install pinned Python dependencies
+        run: python3 -m pip install -r charts/aks-durable-agents/tests/requirements.txt
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: substrate-image-*
+          path: .build/substrate-receipts
+          merge-multiple: true
+      - name: Record the complete checked installer map
+        run: |
+          python3 -B ops/images/substrate_images.py collect --receipts .build/substrate-receipts \
+            --revision "$GITHUB_SHA" --output .build/substrate-publication
+          echo 'Substrate v0.5.0 map: download published-substrate-images; use only after public pin verification.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: published-substrate-images
+          path: .build/substrate-publication/
+          if-no-files-found: error
+          retention-days: 30

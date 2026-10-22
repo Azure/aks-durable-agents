@@ -47,13 +47,15 @@ class ScanWorkflowTests(unittest.TestCase):
     def test_image_source_and_packaged_binary_scans_remain_strict(self):
         jobs = self.workflow("images.yml")["jobs"]
         for job in jobs.values():
+            self.assertNotIn("continue-on-error", str(job))
+            self.assertNotIn("tool_audit", str(job))
+        # The source matrix has its own packaged-binary contracts; the collector builds nothing.
+        for job in (jobs["validate"], jobs["publish"]):
             scripts = [s.get("run", "") for s in job["steps"]]
             self.assertTrue(any("go install golang.org/x/vuln/cmd/govulncheck@v1.9.0" in s for s in scripts))
             scan = next(i for i, s in enumerate(scripts) if "bash ops/images/vulncheck.sh" in s)
             smoke = next(i for i, s in enumerate(scripts) if "bash ops/images/smoke.sh" in s)
             self.assertGreater(scan, smoke)
-            self.assertNotIn("continue-on-error", str(job))
-            self.assertNotIn("tool_audit", str(job))
         publish = jobs["publish"]["steps"]
         before_push = next(s["run"] for s in publish if s.get("name") == "Verify and build from the pinned module graph")
         self.assertIn("govulncheck ./...", before_push)
