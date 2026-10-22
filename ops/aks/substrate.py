@@ -175,7 +175,8 @@ class Client:
         return decode(self.k("get", *args, "-o", "json"))
 
     def ate(self, *args, input=None):
-        return self.call(self.args.ate, "--kubeconfig", str(self.args.kubeconfig), "--context", self.args.context, *args, input=input)
+        with setup_environment(self.args.source):
+            return self.call(self.args.ate, "--kubeconfig", str(self.args.kubeconfig), "--context", self.args.context, *args, input=input)
 
     def create(self, doc, dry_run=False):
         return self.k("create", "-f", "-", *(["--dry-run=server"] if dry_run else []), input=json.dumps(doc).encode())

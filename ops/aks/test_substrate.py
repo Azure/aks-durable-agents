@@ -351,6 +351,38 @@ class InstallerTests(RendererTests):
                 self.assertEqual(os.environ["NO_DEV_ENV"], "1")
             self.assertTrue(all(os.environ[key] == value for key, value in ambient.items()))
 
+    def test_native_calls_scrub_client_overrides_and_restore_environment_on_success_or_failure(self):
+        import os
+        ambient = {"ATE_NAMESPACE": "other", "ATE_API_SERVICE_NAME": "foreign-api", "ATE_CLIENT_SERVICE_ACCOUNT": "foreign-client"}
+        for fail_resume in (False, True):
+            with self.subTest(fail_resume=fail_resume):
+                boundary, observed = Boundary(), []
+                if fail_resume:
+                    boundary.fail = lambda args: Path(args[0]).name == "kubectl-ate" and "resume" in args
+
+                def run(args, *, boundary=boundary, observed=observed, **kwargs):
+                    if Path(args[0]).name == "kubectl-ate" and "--version" not in args:
+                        observed.append((args, {key: os.environ[key] for key in ambient if key in os.environ}, os.environ.get("AZURE_CONFIG_DIR")))
+                    return boundary(args, **kwargs)
+
+                def install(run=run):
+                    return substrate.install(self.args, self.render(), self.images, self.env, run=run, cloud=self.cloud, clock=self.clock, sleep=lambda _: None)
+
+                with patch.dict(os.environ, {**ambient, "AZURE_CONFIG_DIR": self.env["AZURE_CONFIG_DIR"]}):
+                    if fail_resume:
+                        with self.assertRaises(substrate.cleanup.CloudError):
+                            install()
+                    else:
+                        self.assertEqual(install()["status"], "passed")
+                    self.assertEqual({key: os.environ.get(key) for key in ambient}, ambient)
+                    self.assertEqual(os.environ.get("AZURE_CONFIG_DIR"), self.env["AZURE_CONFIG_DIR"])
+                self.assertTrue(observed)
+                for args, overrides, profile in observed:
+                    self.assertEqual(overrides, {}, args)
+                    self.assertEqual(profile, self.env["AZURE_CONFIG_DIR"], args)
+                for resource in ("actor", "actor-template", "atespace"):
+                    self.assertTrue(any("delete" in args and resource in args for args, _, _ in observed), resource)
+
     def test_pool_readiness_timeout_prevents_actor_creation_and_cleans_pool(self):
         self.boundary.fail = lambda a: "wait" in a and "workerpool/substrate-smoke" in a
         with self.assertRaises(substrate.cleanup.CloudError):
