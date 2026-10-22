@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 import cleanup
 import lifecycle
 import yaml
+from substrate_evidence import Evidence
 
 SOURCE_COMMIT = "e8d40c33f96f4b7a4984bfea7334a36ab5b45b7b"
 KO = "ko://github.com/agent-substrate/substrate/"
@@ -164,8 +165,19 @@ def render(source, mapping, nodes, *, verify=True):
 
 
 class Client:
-    def __init__(self, args, clock, run):
-        self.args, self.clock, self.run = args, clock, run
+    def __init__(self, args, clock, run, evidence):
+        self.args, self.clock, self.run, self.evidence = args, clock, run, evidence
+        self.native_result = {"status": "notReached"}
+        self.cleanup_interrupted = False
+        self.cleanup_state = {name: {"resource": name, "status": "notReached"}
+                              for name in ("probe", "actor", "actor-template", "atespace", "workerpool", "namespace")}
+
+    def save(self, name, value):
+        # Evidence errors must not mask a primary failure or skip owned cleanup.
+        try:
+            self.evidence.write_json(name, value)
+        except Exception:  # noqa: BLE001 — final evidence cannot replace the primary failure.
+            self.evidence.write_failed = True
 
     def call(self, executable, *args, input=None, limit=90):
         return self.run([str(executable), *args], timeout=min(limit, self.clock.remaining()), input=input)
@@ -321,25 +333,50 @@ def counter_response(raw):
     return match[1], int(match[2]), int(match[3])
 
 
+def probe_pod(images, nodes):
+    return {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "counter-probe", "namespace": SMOKE},
+            "spec": {"automountServiceAccountToken": False, "restartPolicy": "Never", "terminationGracePeriodSeconds": 5,
+                     "nodeSelector": {"kubernetes.io/os": "linux", "kubernetes.io/arch": "amd64"},
+                     "affinity": {"nodeAffinity": node_scope(nodes)}, "containers": [{"name": "probe", "image": images["probe"],
+                     "command": ["python3", "-c", "import signal,sys,time; signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); time.sleep(600)"],
+                     "resources": {"requests": {"cpu": "10m", "memory": "32Mi"}, "limits": {"cpu": "100m", "memory": "128Mi"}},
+                     "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}, "runAsNonRoot": True,
+                                         "runAsUser": 65532, "seccompProfile": {"type": "RuntimeDefault"}}}]}}
+
+
+def run_smoke_cleanup(client, actions, primary):
+    client.evidence.cleanup_started = True
+    if client.cleanup_interrupted:
+        return
+    failed = False
+    for name, action in actions:
+        try:
+            action()
+            client.cleanup_state[name]["status"] = "passed"
+        except BaseException as error:
+            client.cleanup_state[name].update(status="failed", errorType=type(error).__name__)
+            if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                client.cleanup_interrupted = True
+                raise
+            failed = True
+    if failed and primary is None:
+        raise cleanup.CloudError("smoke cleanup incomplete; caller must tear down owned cluster")
+
+
 def smoke(client, bundle, images, nodes):
-    cleanup_actions = []
+    actions, primary = [], None
     try:
-        cleanup_actions.append(lambda: client.ate("delete", "atespace", SMOKE))
+        actions.append(("atespace", lambda: client.ate("delete", "atespace", SMOKE)))
         client.ate("create", "atespace", SMOKE)
-        cleanup_actions.append(lambda: client.ate("delete", "actor-template", "counter", "-a", SMOKE))
+        actions.append(("actor-template", lambda: client.ate("delete", "actor-template", "counter", "-a", SMOKE)))
         client.ate("create", "actor-template", "-f", "-", input=json.dumps(bundle["actorTemplate"]).encode())
-        cleanup_actions.append(lambda: client.ate("delete", "actor", "counter", "-a", SMOKE, "--any-state"))
+        actions.append(("actor", lambda: client.ate("delete", "actor", "counter", "-a", SMOKE, "--any-state")))
         client.ate("create", "actor", "counter", "--template", "counter", "-a", SMOKE)
         client.ate("resume", "actor", "counter", "-a", SMOKE)
         before = decode(client.ate("get", "actor", "counter", "-a", SMOKE, "-o", "json"))
         identity = running_actor(before, nodes, client)
-        probe = {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "counter-probe", "namespace": SMOKE},
-                 "spec": {"automountServiceAccountToken": False, "restartPolicy": "Never", "nodeSelector": {"kubernetes.io/os": "linux", "kubernetes.io/arch": "amd64"},
-                          "affinity": {"nodeAffinity": node_scope(nodes)}, "containers": [{"name": "probe", "image": images["probe"],
-                          "command": ["python3", "-c", "import time; time.sleep(600)"], "resources": {"requests": {"cpu": "10m", "memory": "32Mi"}, "limits": {"cpu": "100m", "memory": "128Mi"}},
-                          "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}, "runAsNonRoot": True, "runAsUser": 65532, "seccompProfile": {"type": "RuntimeDefault"}}}]}}
-        cleanup_actions.append(lambda: client.k("delete", "pod/counter-probe", "-n", SMOKE, "--ignore-not-found", "--wait=true", "--timeout=30s"))
-        client.create(probe)
+        actions.append(("probe", lambda: client.k("delete", "pod/counter-probe", "-n", SMOKE, "--ignore-not-found", "--wait=true", "--timeout=30s")))
+        client.create(probe_pod(images, nodes))
         client.k("wait", "--for=condition=Ready", "pod/counter-probe", "-n", SMOKE, "--timeout=60s")
         code = ("import urllib.request; r=urllib.request.urlopen(urllib.request.Request('http://atenet-router.ate-system.svc:80/', "
                 "headers={'ate-target-actor':'substrate-smoke/counter'}), timeout=20); "
@@ -349,17 +386,20 @@ def smoke(client, bundle, images, nodes):
         if (running_actor(after, nodes, client) != identity or first[0] != second[0]
                 or first[1:] != (1, 1) or second[1:] != (2, 2)):
             raise ValueError("same actor did not advance both native counters")
-        return {"status": "passed", "sourceCommit": SOURCE_COMMIT, "runtime": "gvisor", "requests": 2,
-                "memoryCounts": [1, 2], "fileCounts": [1, 2], "smokeCleanup": "passed"}
+        proof = {"status": "passed", "sourceCommit": SOURCE_COMMIT, "runtime": "gvisor", "requests": 2,
+                 "memoryCounts": [1, 2], "fileCounts": [1, 2]}
+        # Persist the verified result before finally can fail or be interrupted.
+        client.evidence.write_json("native-proof.json", {**proof, "status": "nativePassed", "stableIdentity": True})
+        client.native_result = {"status": "nativePassed"}
+        client.save("native-result.json", client.native_result)
+        return {**proof, "smokeCleanup": "passed"}
+    except BaseException as error:
+        primary = error
+        client.native_result = {"status": "failed", "errorType": type(error).__name__}
+        client.save("native-result.json", client.native_result)
+        raise
     finally:
-        failed = False
-        for action in reversed(cleanup_actions):
-            try:
-                action()
-            except (cleanup.CloudError, ValueError):
-                failed = True
-        if failed:
-            raise cleanup.CloudError("smoke cleanup incomplete; caller must tear down owned cluster")
+        run_smoke_cleanup(client, reversed(actions), primary)
 
 
 def install(args, bundle, mapping, env, *, run=lifecycle.command, cloud=None, clock=None, sleep=time.sleep):
@@ -372,8 +412,37 @@ def install(args, bundle, mapping, env, *, run=lifecycle.command, cloud=None, cl
         raise ValueError("explicit private kubeconfig and context required")
     nodes, images = args.nodes.split(","), image_map(mapping)
     node_scope(nodes)
-    client = Client(args, clock, run)
-    cloud = cloud or lifecycle.Azure(config, clock)
+    if getattr(args, "evidence_dir", None) is None:
+        raise ValueError("explicit fresh private evidence directory required")
+    evidence = Evidence(args.evidence_dir, run=run)
+    client = Client(args, clock, evidence.command, evidence)
+    result, primary = {"status": "failed"}, None
+    try:
+        verify_source(args.source, run=lambda argv, *, timeout: client.call(*argv, limit=timeout))
+        if bundle is None:
+            bundle = render(args.source, mapping, nodes, verify=False)
+        proof = install_runtime(args, bundle, images, nodes, client, config, cloud or lifecycle.Azure(config, clock, run=evidence.command), sleep)
+        result = {"status": "passed"}
+        return proof
+    except BaseException as error:
+        primary = error
+        result["errorType"] = type(error).__name__
+        raise
+    finally:
+        states = [a["status"] for a in client.cleanup_state.values()]
+        cleanup_status = "failed" if "failed" in states else "passed" if "passed" in states else "notReached"
+        client.save("cleanup.json", {"status": cleanup_status, "actions": list(client.cleanup_state.values())})
+        client.save("native-result.json", client.native_result)
+        if evidence.write_failed and primary is None:
+            result = {"status": "failed", "errorType": "EvidenceWriteError"}
+        client.save("install-result.json", result)
+        evidence.close()
+        if evidence.write_failed and primary is None:
+            raise cleanup.CloudError("installer evidence writing failed")
+
+
+def install_runtime(args, bundle, images, nodes, client, config, cloud, sleep):
+    clock = client.clock
     verify_tools(client)
     preflight(config, cloud, client, bundle, nodes)
     docs = bundle["manifests"]
@@ -415,6 +484,7 @@ def install(args, bundle, mapping, env, *, run=lifecycle.command, cloud=None, cl
             client.k("exec", "-i", "-n", "ate-system", "postgres-0", "-c", "postgres", "--", "psql", "--no-psqlrc", "--set=ON_ERROR_STOP=1", "--username", "postgres", "--dbname", "atepg",
                      *("--set=substrate_" + key + "=" + value for key, value in variables.items()), input=sql.encode())
     pools = [d for d in docs if d["kind"] == "WorkerPool"]
+    primary = None
     try:
         for pool in pools:
             client.create(pool)
@@ -422,15 +492,13 @@ def install(args, bundle, mapping, env, *, run=lifecycle.command, cloud=None, cl
             client.k("wait", "--for=jsonpath={.status.readyReplicas}=1", "workerpool/" + pool["metadata"]["name"],
                      "-n", pool["metadata"]["namespace"], "--timeout=180s", limit=185)
         return smoke(client, bundle, images, nodes)
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        failed = False
-        for resource in ("workerpool/" + SMOKE, "namespace/" + SMOKE):
-            try:
-                client.k("delete", resource, "-n", SMOKE, "--ignore-not-found", "--wait=true", "--timeout=30s")
-            except (cleanup.CloudError, ValueError):
-                failed = True
-        if failed:
-            raise cleanup.CloudError("smoke Kubernetes cleanup incomplete")
+        actions = [(kind, lambda kind=kind: client.k("delete", kind + "/" + SMOKE, "-n", SMOKE, "--ignore-not-found", "--wait=true", "--timeout=30s"))
+                   for kind in ("workerpool", "namespace")]
+        run_smoke_cleanup(client, actions, primary)
 
 
 def main(argv=None):
@@ -439,6 +507,7 @@ def main(argv=None):
     parser.add_argument("--image-map", required=True, type=Path)
     parser.add_argument("--nodes", required=True, help="comma-separated approved existing Linux amd64 nodes")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--evidence-dir", type=Path, help="new private evidence directory (required with --apply; parent must exist)")
     parser.add_argument("--kubeconfig", type=Path)
     parser.add_argument("--context")
     parser.add_argument("--ate-setup", type=Path)
@@ -447,11 +516,10 @@ def main(argv=None):
     previous_term = signal.signal(signal.SIGTERM, lifecycle.interrupt)
     try:
         mapping = decode(args.image_map.read_bytes())
-        bundle = render(args.source, mapping, args.nodes.split(","))
         if args.apply:
-            result = install(args, bundle, mapping, os.environ)
+            result = install(args, None, mapping, os.environ)
         else:
-            result = bundle
+            result = render(args.source, mapping, args.nodes.split(","))
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
     except (ValueError, KeyError, TypeError, OSError, yaml.YAMLError, cleanup.CloudError, KeyboardInterrupt):

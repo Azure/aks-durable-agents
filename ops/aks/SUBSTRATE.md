@@ -195,20 +195,28 @@ permissions), with an explicit context. Preserve `AKS_STARTED_EPOCH` from
 variables, creating roles or restoring an expired tenant is not done by this tool.
 An operator must separately approve those changes if needed.
 
+Choose `SUBSTRATE_EVIDENCE` as a **new** directory under an existing private
+operator directory, outside the checkout. Apply now requires `--evidence-dir`;
+existing directories and symlink paths are refused rather than adopted. The tool
+creates it with mode `0700` and writes atomic `0600` files. It resolves the path
+before upstream setup changes the working directory.
+
 Only after the target and exact change list are approved, use:
 
 ```sh
 python3 -B ops/aks/substrate.py --source "$SUBSTRATE_SOURCE" \
   --image-map "$SUBSTRATE_IMAGES" --nodes "$SUBSTRATE_NODES" \
-  --apply --kubeconfig "$KUBECONFIG" --context "$AKS_CONTEXT" \
+  --apply --evidence-dir "$SUBSTRATE_EVIDENCE" \
+  --kubeconfig "$KUBECONFIG" --context "$AKS_CONTEXT" \
   --ate-setup "$SUBSTRATE_TOOLS/ate-setup" --ate "$SUBSTRATE_TOOLS/kubectl-ate"
 ```
 
 The preflight must bind the selected kubeconfig server to the Azure target and
 validate repository/purpose/run ownership, API discovery, selected nodes and fresh
 runtime names before mutation. Tool subprocesses inherit the explicit context and
-the same deadline. A fixed proof is emitted only after the actor check succeeds;
-no source stdout, bearer tokens or counter payloads are forwarded to the console.
+the same deadline. The console success summary is emitted only after the actor
+check and smoke cleanup succeed; no source stdout, bearer tokens or counter
+payloads are forwarded to the console.
 
 ## Failure, evidence and cleanup
 
@@ -219,12 +227,41 @@ the owning disposable-cluster lifecycle's exact-target teardown and verify clust
 managed node group and any owned federation are gone. The existing expiry sweeper
 is only a backstop, not proof of successful teardown.
 
+The smoke probe exits on SIGTERM and has a five-second termination grace period;
+its existing 30-second deletion wait is unchanged. This does not alter worker or
+runtime workload grace periods, resource requests or the overall budget.
+
+Evidence separates verification from cleanup:
+
+- `native-proof.json` is saved **before any smoke deletion**, only after two
+  counter responses advance memory/file counts from 1 to 2 and the actor/worker
+  identity remains stable. Its `nativePassed` status does **not** claim cleanup
+  or overall success. A cleanup failure cannot erase this receipt.
+- `native-result.json` records `nativePassed`, a failed error category, or
+  `notReached`; it never contains raw actor or response payloads.
+- `cleanup.json` records each owned smoke deletion as passed, failed or not
+  reached. Ordinary cleanup failures do not skip remaining deletes or replace a
+  primary verification error. Cancellation during verification still attempts
+  owned cleanup. An interrupt during cleanup stops further cleanup commands and
+  records the remaining actions as not reached.
+- `install-result.json` records the overall result. Cleanup or evidence-storage
+  failure remains a failed install with a nonzero exit, even if native proof passed.
+- `steps.json` indexes commands using safe tool/operation labels and outcome
+  categories. Each numbered `*.stderr.txt` retains stderr, including an empty
+  file when the command emitted none. Failed and timed-out steps are included.
+  Credentials are scrubbed **before** retaining a bounded 64 KiB tail. Redaction
+  is best effort: keep these files private, review before sharing, and never
+  publish them as CI artifacts. Stdin, stdout, arguments and environment dumps
+  are not retained. Evidence-storage errors stop normal work but do not prevent
+  remaining owned cleanup commands.
+
 The smoke check removes only its exact Control objects and probe where possible.
 It leaves the runtime for the owning cluster teardown. S3 credentials are generated
 for this disposable install and referenced through a Secret; the dedicated upstream
 setup commands create their own CA/JWT/config state. Never upload those secrets,
 kubeconfigs, raw command output, runtime logs or actor payloads as public artifacts.
-Only the fixed proof summary is suitable for collection.
+Only the fixed proof summaries are suitable for collection; a saved native proof
+must always be interpreted alongside the separate cleanup and overall results.
 
 Offline tests use synthetic image maps and mocked external commands. A render
 against the exact upstream source can verify manifest adaptation, not image
