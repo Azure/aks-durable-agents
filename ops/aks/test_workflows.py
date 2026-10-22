@@ -12,16 +12,74 @@ class WorkflowTests(unittest.TestCase):
     def workflow(self, name):
         return yaml.safe_load((ROOT / ".github/workflows" / name).read_text())
 
-    def test_dispatch_has_no_scenario_schedule_and_defaults_to_read_only(self):
+    def test_daily_schedule_and_read_only_manual_default(self):
         workflow = self.workflow("aks-e2e.yml")
         events = workflow.get("on", workflow.get(True))
-        self.assertEqual(set(events), {"workflow_dispatch"})
+        self.assertEqual(set(events), {"workflow_dispatch", "schedule"})
+        self.assertEqual(events["schedule"], [{"cron": "43 5 * * *"}])
         text = (ROOT / ".github/workflows/aks-e2e.yml").read_text()
         self.assertFalse(events["workflow_dispatch"]["inputs"]["run_scenario"]["default"])
         self.assertIn("cleanup.py validate", text)
         self.assertNotIn("pull_request_target", text)
         self.assertNotIn("make demo", text)
-        self.assertIn("!inputs.run_scenario", workflow["jobs"]["validate"]["if"])
+        self.assertIn("needs.config.outputs.scenario == 'false'", workflow["jobs"]["validate"]["if"])
+
+    def test_schedule_intent_reaches_cleanup_and_failure_paths(self):
+        jobs = self.workflow("aks-e2e.yml")["jobs"]
+        intent = "github.event_name == 'schedule' || inputs.run_scenario"
+        config = next(s for s in jobs["config"]["steps"] if s.get("id") == "config")
+        self.assertEqual(config["env"]["RUN_SCENARIO"], "${{ " + intent + " }}")
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.run_scenario", jobs["config"]["if"])
+        for name in ("teardown", "finalize", "report"):
+            condition = jobs[name]["if"]
+            self.assertIn("always()", condition)
+            self.assertIn("(" + intent + ")", condition)
+            self.assertNotIn("needs.config.outputs", condition)
+        self.assertIn("needs.create.outputs.started != ''", jobs["teardown"]["if"])
+        for name in ("preflight", "create", "wait", "federate", "scenario"):
+            self.assertIn("needs.config.outputs.scenario == 'true'", jobs[name]["if"])
+        self.assertEqual(jobs["scenario"]["timeout-minutes"], 30)
+        self.assertEqual(jobs["teardown"]["timeout-minutes"], 10)
+        exercise = next(s["run"] for s in jobs["scenario"]["steps"] if s.get("id") == "exercise")
+        self.assertIn("AKS_STARTED_EPOCH + 1800", exercise)
+        self.assertIn("AKS_STARTED_EPOCH + 2700", exercise)
+
+    def test_scheduled_and_manual_scenarios_keep_operator_boolean_gates(self):
+        import itertools
+        import tempfile
+        jobs = self.workflow("aks-e2e.yml")["jobs"]
+        config = next(s for s in jobs["config"]["steps"] if s.get("id") == "config")
+        # Execute the actual shell gate; fake only its local configuration reader.
+        script = "python3() { printf 'configured=true\\n'; }\n" + config["run"]
+        keys = ("AKS_BOOTSTRAP_ENABLED", "AKS_SCENARIO_ENABLED", "AKS_BUDGET_CONFIRMED")
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "outputs"
+            for event, requested in (("schedule", False), ("workflow_dispatch", True), ("workflow_dispatch", False)):
+                intent = event == "schedule" or requested
+                for values in itertools.product(("", "false", "true"), repeat=3):
+                    with self.subTest(event=event, requested=requested, values=values):
+                        output.write_text("")
+                        env = dict(zip(keys, values), GITHUB_OUTPUT=str(output), RUN_SCENARIO=str(intent).lower())
+                        result = subprocess.run(["bash", "-euo", "pipefail", "-c", script], env=env,
+                                                capture_output=True, text=True)
+                        allowed = not intent or all(v == "true" for v in values)
+                        self.assertEqual(result.returncode == 0, allowed)
+                        lines = output.read_text().splitlines()
+                        if allowed:
+                            self.assertIn("scenario=" + str(intent).lower(), lines)
+                        else:
+                            self.assertFalse(any(line.startswith("scenario=") for line in lines))
+
+    def test_finalize_preserves_scheduled_config_failure_and_skips(self):
+        job = self.workflow("aks-e2e.yml")["jobs"]["finalize"]
+        script = job["steps"][0]["run"]
+        keys = ("CONFIG", "PREFLIGHT", "CREATE", "WAIT", "FEDERATE", "SCENARIO", "TEARDOWN")
+        for config in ("failure", "skipped", "cancelled"):
+            env = {key + "_RESULT": "skipped" for key in keys}
+            env["CONFIG_RESULT"] = config
+            with self.subTest(config=config):
+                result = subprocess.run(["bash", "-euo", "pipefail", "-c", script], env=env, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
 
     def test_scenario_gates_short_locks_and_always_teardown(self):
         workflow = self.workflow("aks-e2e.yml")
