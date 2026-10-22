@@ -42,6 +42,10 @@ tenant's organization, applications, service principals, users, groups and app
 assignments; and repository metadata, environments, policies, variables and secret
 **names**. No secret value endpoint is used. A permission error is unknown state,
 not an empty environment. Read access does not establish write authority.
+Environment names are matched case-insensitively. Detailed inventory URL-encodes
+names as single path segments, including spaces, slashes and Unicode, up to
+GitHub's 255-character limit; unrelated environment names do not change the
+expected `nightly-aks` dependency.
 
 ## Results and limits
 

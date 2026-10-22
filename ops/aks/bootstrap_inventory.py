@@ -3,7 +3,7 @@ import json
 import os
 import re
 import subprocess
-from urllib.parse import parse_qsl, quote, urlencode, urlsplit
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
 
 GUID = r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}"
 COMPONENTS = ("nightly", "shared-model", "human-identity", "persistent-cluster")
@@ -60,6 +60,17 @@ def graph_url(collection):
     return GRAPH + "/" + collection + "?" + urlencode(query)
 
 
+def environment_segment(name):
+    if not isinstance(name, str) or not 1 <= len(name) <= 255 or any(ord(c) < 32 or ord(c) == 127 for c in name):
+        raise InventoryError("inventory: invalid environment name")
+    try:
+        segment = quote(name, safe="")
+    except UnicodeEncodeError:
+        raise InventoryError("inventory: invalid environment name") from None
+    # quote preserves unreserved dots, but a whole dot segment must stay data.
+    return segment.replace(".", "%2E") if segment in (".", "..") else segment
+
+
 class ReadOnly:
     def __init__(self, config):
         self.config = config
@@ -71,7 +82,9 @@ class ReadOnly:
         if not isinstance(url, str) or len(url) > 16384:
             raise InventoryError("request: invalid target")
         p = urlsplit(url)
-        if p.fragment or p.username or p.password or "%" in p.path or ".." in p.path or "\\" in url:
+        if p.fragment or p.username or p.password or "\\" in url:
+            raise InventoryError("request: invalid target")
+        if service in ("arm", "graph") and ("%" in p.path or ".." in p.path):
             raise InventoryError("request: invalid target")
         pairs = parse_qsl(p.query, keep_blank_values=True)
         q = dict(pairs)
@@ -95,7 +108,15 @@ class ReadOnly:
         elif service == "github":
             suffix = p.path[len(self.repo):] if p.path.startswith(self.repo) else None
             allowed = ("", "/actions/oidc/customization/sub", "/environments", "/actions/variables", "/actions/secrets", "/actions/organization-secrets")
-            environment = suffix is not None and re.fullmatch(r"/environments/[A-Za-z0-9_.-]+/(deployment-branch-policies|secrets|variables)", suffix)
+            match = re.fullmatch(r"/environments/([^/]+)/(deployment-branch-policies|secrets|variables)", suffix or "")
+            environment = False
+            if match:
+                try:
+                    # Only a canonical encoded single segment is allowed; decoding
+                    # a slash in a name must not create another route component.
+                    environment = environment_segment(unquote(match[1], errors="strict")) == match[1]
+                except (InventoryError, UnicodeDecodeError):
+                    environment = False
             if (p.scheme or p.netloc or suffix is None or not (suffix in allowed or environment)
                     or set(q) - {"page", "per_page"} or (q and (q.get("per_page") != "100" or not re.fullmatch(r"[1-9][0-9]{0,2}", q.get("page", ""))))):
                 raise InventoryError("request: unpinned GitHub target")
@@ -272,11 +293,14 @@ def collect(config, reader=None):
                                      ("organizationSecrets", "/actions/organization-secrets", "secrets")):
         inventory[key] = reader.paginated("github", repo_path + suffix + "?per_page=100&page=1", collection)
     inventory["environmentDetails"] = []
+    names = set()
     for env in inventory["environments"]:
         name = env.get("name")
-        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", name):
-            raise InventoryError("inventory: unsupported environment name")
-        path = repo_path + "/environments/" + quote(name, safe="")
+        segment = environment_segment(name)
+        if name.casefold() in names:
+            raise InventoryError("inventory: duplicate environment name")
+        names.add(name.casefold())
+        path = repo_path + "/environments/" + segment
         if "deployment_branch_policy" not in env:
             raise InventoryError("inventory: missing environment policy metadata")
         policy = env["deployment_branch_policy"]

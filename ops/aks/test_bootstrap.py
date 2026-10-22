@@ -287,6 +287,68 @@ class BootstrapTests(unittest.TestCase):
                     self.assertEqual(kw["env"]["GH_HOST"], "github.com")
                     self.assertIn("--hostname", args)
 
+    def test_target_environment_name_is_case_insensitive(self):
+        # GitHub treats these Unicode case variants as aliases, not distinct targets.
+        from urllib.parse import quote
+        for name in ("Nightly-AKS", "nightly-aKs", "nightly-akſ"):
+            for command in ("plan", "check"):
+                wire = Wire()
+                wire.overrides["/repos/example/agents/environments"] = {"total_count": 1, "environments": [
+                    {"id": 17, "name": name, "deployment_branch_policy": {
+                        "protected_branches": False, "custom_branch_policies": True}, "protection_rules": []}]}
+                code, out, err = self.run_cli(wire, command)
+                with self.subTest(name=name, command=command):
+                    self.assertEqual(code, 0, err + out)
+                    self.assertFalse(any(d["dependency"] == "github:environment" and d["action"] == "create"
+                                         for d in json.loads(out)["dependencies"]))
+                    self.assertTrue(any("/environments/" + quote(name, safe="") + "/deployment-branch-policies" in str(args)
+                                        for args, _ in wire.calls))
+
+    def test_valid_unrelated_environment_names_are_encoded_and_inventoried(self):
+        from urllib.parse import quote
+        for name in ("Staging West", "preview/pr-1", "x" * 101, "x" * 255, "Préproduction", "query?part#fragment%", ".."):
+            for command in ("plan", "check"):
+                wire = Wire()
+                wire.overrides["/repos/example/agents/environments"] = {"total_count": 2, "environments": [
+                    {"id": 17, "name": "nightly-aks", "deployment_branch_policy": {
+                        "protected_branches": False, "custom_branch_policies": True}, "protection_rules": []},
+                    {"id": 18, "name": name, "deployment_branch_policy": None, "protection_rules": []}]}
+                code, out, err = self.run_cli(wire, command)
+                with self.subTest(name=name, command=command):
+                    self.assertEqual(code, 0, err + out)
+                    self.assertIn(name, [e["name"] for e in json.loads(out)["inventory"]["environments"]])
+                    segment = "%2E%2E" if name == ".." else quote(name, safe="")
+                    self.assertTrue(any("/environments/" + segment + "/secrets?" in str(args)
+                                        for args, _ in wire.calls))
+
+    def test_invalid_or_case_duplicate_environment_names_fail_closed(self):
+        for name in ("", "x" * 256, "bad\nname", "Nightly-AKS"):
+            wire = Wire()
+            wire.overrides["/repos/example/agents/environments"] = {"total_count": 2, "environments": [
+                {"id": 17, "name": "nightly-aks", "deployment_branch_policy": None, "protection_rules": []},
+                {"id": 18, "name": name, "deployment_branch_policy": None, "protection_rules": []}]}
+            code, out, err = self.run_cli(wire)
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("environment name", err)
+
+    def test_environment_path_encoding_does_not_relax_request_pinning(self):
+        cfg = self.load()
+        paths = ["/repos/example/agents/environments/preview/pr-1/secrets",
+                 "/repos/example/agents/environments/../actions/secrets",
+                 "/repos/example/agents/environments/Staging West/secrets",
+                 "/repos/example/agents/environments/%FF/secrets",
+                 "/repos/example/agents/environments/%ZZ/secrets",
+                 "/repos/example/agents/environments/preview%2Fpr-1/dispatches",
+                 "https://attacker.invalid/repos/example/agents/environments/preview%2Fpr-1/secrets",
+                 "/repos/example/other/environments/preview%2Fpr-1/secrets"]
+        with mock.patch("subprocess.run") as run:
+            reader = bi.ReadOnly(cfg)
+            for path in paths:
+                with self.subTest(path=path), self.assertRaises(bi.InventoryError):
+                    reader.get("github", path)
+            run.assert_not_called()
+
     def test_environment_without_custom_policy_does_not_query_missing_policy_endpoint(self):
         wire = Wire()
         wire.overrides["/repos/example/agents/environments"] = {"total_count": 2, "environments": [

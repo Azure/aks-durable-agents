@@ -224,8 +224,8 @@ def assess(config, inventory, command="plan"):
     drift("human:domain", any(d.get("name") == h["domain"] for d in i["organization"][0].get("verifiedDomains", [])))
     drift("github:default-branch", i["repository"].get("default_branch") == "main")
     drift("github:oidc", i["oidc"].get("use_default") is True and i["oidc"].get("use_immutable_subject") is True)
-    environment = [e for e in i["environments"] if e["name"] == "nightly-aks"]
-    details = [e for e in i["environmentDetails"] if e["name"] == "nightly-aks"]
+    environment = [e for e in i["environments"] if e["name"].casefold() == "nightly-aks"]
+    details = [e for e in i["environmentDetails"] if e["name"].casefold() == "nightly-aks"]
     if not environment:
         record("github:environment", "create", "reference", "missing")
     else:
