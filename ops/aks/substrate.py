@@ -81,7 +81,28 @@ def env_set(container, name, value=None, secret=None):
     env.append({"name": name, **({"valueFrom": {"secretKeyRef": {"name": "substrate-s3", "key": secret}}} if secret else {"value": value})})
 
 
-def render(source, mapping, nodes, *, verify=True):
+def restrict_router(docs, host):
+    # Replace the upstream allow-all rule in the owned render, so reapplication
+    # cannot undo an imperative post-install patch. Namespace AND pod must match.
+    keys = {"app.kubernetes.io/name", "app.kubernetes.io/instance", "app.kubernetes.io/component"}
+    def dns(value):
+        return isinstance(value, str) and len(value) <= 63 and bool(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", value))
+    if not isinstance(host, dict) or set(host) != {"namespace", "labels"} or not dns(host["namespace"]) or host["namespace"] in ("ate-system", SMOKE, "kube-system", "podcertificate-controller-system"):
+        raise ValueError("exact separate host namespace required for router policy")
+    labels = host["labels"]
+    if not isinstance(labels, dict) or set(labels) != keys or labels["app.kubernetes.io/name"] != "aks-durable-agents" or labels["app.kubernetes.io/component"] != "host" or not dns(labels["app.kubernetes.io/instance"]):
+        raise ValueError("exact host-only labels required for router policy")
+    policies = [d for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"].get("namespace") == "ate-system" and d["metadata"]["name"] == "atenet-router"]
+    ports = [{"protocol": "TCP", "port": port} for port in ("http", "https", "connect", "connect-tls")]
+    if len(policies) != 1 or policies[0]["spec"] != {"podSelector": {"matchLabels": {"app": "atenet-router"}}, "policyTypes": ["Ingress"], "ingress": [{"ports": ports}]}:
+        raise ValueError("pinned router ingress policy changed")
+    policies[0]["spec"]["ingress"][0]["from"] = [
+        {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": host["namespace"]}}, "podSelector": {"matchLabels": dict(labels)}},
+        {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": SMOKE}}, "podSelector": {"matchLabels": {"substrate.aks/probe": "counter"}}},
+    ]
+
+
+def render(source, mapping, nodes, *, verify=True, router_host=None):
     source = Path(source).resolve()
     if verify:
         verify_source(source)
@@ -90,6 +111,8 @@ def render(source, mapping, nodes, *, verify=True):
     docs: list[dict[str, Any]] = []
     for path in [*sorted((base / "generated").glob("*.yaml")), *(base / p for p in FILES)]:
         docs.extend(d for d in yaml.safe_load_all(path.read_text()) if d)
+    if router_host is not None:
+        restrict_router(docs, router_host)
     docs.append({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "ate-otel-config", "namespace": "ate-system"},
                  "data": {"OTEL_TRACES_EXPORTER": "none", "OTEL_METRICS_EXPORTER": "none", "OTEL_LOGS_EXPORTER": "none", "OTEL_SDK_DISABLED": "true"}})
     docs.append({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": SMOKE}})
@@ -334,7 +357,7 @@ def counter_response(raw):
 
 
 def probe_pod(images, nodes):
-    return {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "counter-probe", "namespace": SMOKE},
+    return {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "counter-probe", "namespace": SMOKE, "labels": {"substrate.aks/probe": "counter"}},
             "spec": {"automountServiceAccountToken": False, "restartPolicy": "Never", "terminationGracePeriodSeconds": 5,
                      "nodeSelector": {"kubernetes.io/os": "linux", "kubernetes.io/arch": "amd64"},
                      "affinity": {"nodeAffinity": node_scope(nodes)}, "containers": [{"name": "probe", "image": images["probe"],
