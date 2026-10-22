@@ -3,11 +3,14 @@ import contextlib
 import copy
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from urllib.parse import quote
 
 import substrate_images as images
 
@@ -389,6 +392,63 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(set(values), {"context", "file", "image", "epoch"})
         self.assertEqual(values["image"], PREFIX + "ateapi:sha-" + REV)
         self.assertTrue(Path(values["file"]).is_file())
+
+    def test_cli_scan_failure_reports_operation_status_and_redacted_bounded_diagnostics(self):
+        external = Executables()
+        secret = "private-token+value/with=padding"
+        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJlLWJ5dGVz"
+
+        def run(argv, **kwargs):
+            if argv[0] == "govulncheck":
+                output = "padding " * 1000 + "\nGO-2026-9999 affects example.org/module/pkg\n" + secret + " " + quote(secret, safe="")
+                error = "Bearer opaque-bearer-credential https://user:password@registry.example/v2/?access_token=query-credential " + jwt + " ::error::untrusted\x1b[31m"
+                raise subprocess.CalledProcessError(3, argv, output=output, stderr=error)
+            return external(argv, **kwargs)
+
+        stderr = io.StringIO()
+        with (
+            patch.dict(os.environ, {"GITHUB_TOKEN": secret, "UNRELATED_ENV": "not-an-output-field"}),
+            self.assertRaises(SystemExit) as result, contextlib.redirect_stderr(stderr),
+        ):
+            images.main(["smoke", "--role", "ateapi", "--image", PREFIX + "ateapi:sha-" + REV], run=run)
+        self.assertEqual(result.exception.code, 1)
+        payload = stderr.getvalue().split("Substrate images: ", 1)[1]
+        self.assertTrue(payload.startswith("{"), payload)
+        report = json.loads(payload)
+        self.assertEqual(report["operation"], "govulncheck")
+        self.assertEqual(report["exitStatus"], 3)
+        self.assertIn("GO-2026-9999", report["stdout"])
+        self.assertIn("example.org/module/pkg", report["stdout"])
+        self.assertLessEqual(len(report["stdout"]), 4150)
+        for value in (secret, quote(secret, safe=""), jwt, "opaque-bearer-credential", "user:password", "query-credential", "not-an-output-field", "::error::", "\x1b"):
+            self.assertNotIn(value, stderr.getvalue())
+
+    def test_cli_compile_timeout_reports_operation_duration_and_redacts_byte_output(self):
+        source, external = self.source(), Executables()
+        secret = "synthetic-oidc-request-token"
+
+        def run(argv, **kwargs):
+            if argv[:2] == ["go", "build"]:
+                raise subprocess.TimeoutExpired(argv, 17, output=b"compiler diagnostic", stderr=secret.encode())
+            return external(argv, **kwargs)
+
+        stderr = io.StringIO()
+        with (
+            patch.dict(os.environ, {"ACTIONS_ID_TOKEN_REQUEST_TOKEN": secret}),
+            self.assertRaises(SystemExit) as result, contextlib.redirect_stderr(stderr),
+        ):
+            images.main(["prepare", "--role", "ateapi", "--source", str(source),
+                         "--pause-source", str(self.root / "unused"), "--output", str(self.root / "contexts"),
+                         "--revision", REV, "--github-output", str(self.root / "github-output")], run=run)
+        self.assertEqual(result.exception.code, 1)
+        payload = stderr.getvalue().split("Substrate images: ", 1)[1]
+        self.assertTrue(payload.startswith("{"), payload)
+        report = json.loads(payload)
+        self.assertEqual(report["operation"], "go build")
+        self.assertEqual(report["timeoutSeconds"], 17)
+        self.assertNotIn("exitStatus", report)
+        self.assertIn("compiler diagnostic", report["stdout"])
+        self.assertNotIn(secret, stderr.getvalue())
 
     def test_executable_boundary_enforces_timeout_and_does_not_log_token_environment(self):
         result = images.command([sys.executable, "-c", "import os; print(os.environ['TOKEN'])"],

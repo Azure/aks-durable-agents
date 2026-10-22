@@ -9,7 +9,7 @@ import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, quote_plus, urlsplit
 
 import yaml
 from update_pins import load_json, unique_object
@@ -39,9 +39,43 @@ PROBE = "docker.io/library/python@sha256:79e7a9b9ff1cbceff819f856fb374477792a596
 
 
 def command(argv, *, timeout, cwd=None, env=None):
-    # Never echo subprocess output: the inherited OIDC environment can contain tokens.
+    # Capture raw output here; only the CLI's bounded redactor may report it.
     return subprocess.run(argv, timeout=timeout, cwd=cwd, env=env, check=True,
                           capture_output=True, text=True).stdout
+
+
+def command_diagnostic(error):
+    """Keep actionable tool failures, without arguments, credentials or workflow commands."""
+    argv = error.cmd if isinstance(getattr(error, "cmd", None), (list, tuple)) else []
+    tool = Path(str(argv[0])).name if argv else "external"
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", tool):
+        tool = "external"
+    operations = {"go": {"build", "version"}, "docker": {"pull", "create", "start", "inspect", "cp", "rm", "buildx"},
+                  "cosign": {"sign", "verify"}, "git": {"rev-parse", "status", "show"}}
+    operation = next((arg for arg in argv[1:] if isinstance(arg, str) and arg in operations.get(tool, set())), None)
+    report = {"operation": tool + (" " + operation if operation else "")}
+    if isinstance(error, subprocess.TimeoutExpired):
+        report["timeoutSeconds"] = error.timeout
+    elif isinstance(error, subprocess.CalledProcessError):
+        report["exitStatus"] = error.returncode
+    secrets = {value for key, value in os.environ.items() if value and re.search(r"TOKEN|SECRET|PASSWORD|CREDENTIAL|KEY", key, re.IGNORECASE)}
+
+    def scrub(value):
+        text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
+        for secret in sorted(secrets, key=len, reverse=True):
+            for form in (secret, quote(secret, safe=""), quote_plus(secret)):
+                text = text.replace(form, "[REDACTED]")
+        text = re.sub(r'''(?i)(?:\bauthorization\s*[:=]\s*(?:bearer|basic)|\bbearer)\s+[^\s"'<>]+''', "Authorization [REDACTED]", text)
+        text = re.sub(r"(?i)(https?://)[^\s/@]+@", r"\1[REDACTED]@", text)
+        text = re.sub(r'''(?i)(\b(?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|password|secret|credential|(?:api|access|private)[_-]?key)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)''', r"\1[REDACTED]", text)
+        text = re.sub(r"\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b", "[REDACTED]", text)
+        text = re.sub(r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,}\b", "[REDACTED]", text)
+        text = text.replace("::", ": :")
+        return ("[truncated]\n" + text[-4096:]) if len(text) > 4096 else text
+
+    report["stdout"] = scrub(getattr(error, "stdout", None))
+    report["stderr"] = scrub(getattr(error, "stderr", None))
+    return json.dumps(report, ensure_ascii=True)
 
 
 def role_check(role):
@@ -337,7 +371,7 @@ def main(argv=None, *, run=command):
                 for role, ref in refs(publication, mapping):
                     print(role + "\t" + ref)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        detail = "external command failed" if isinstance(error, subprocess.SubprocessError) else str(error)
+        detail = command_diagnostic(error) if isinstance(error, subprocess.SubprocessError) else str(error)
         parser.exit(1, "Substrate images: " + detail + "\n")
 
 
