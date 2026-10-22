@@ -3,7 +3,7 @@
 [Embedded host](host.md) · [Preview 0 gates](preview-0.md)
 
 This is development wiring for **one host and one stateless-replay harness**.
-It is not a released-dependency assembly or recovery qualification. The default
+It uses released dependencies, but is not an AKS or recovery qualification. The default
 remote harness mode and the fixture-only Helm chart are unchanged. Install
 Substrate separately; this application does not own its CRDs, signers, node
 agents, routers, worker pools, database or snapshot store.
@@ -11,18 +11,19 @@ agents, routers, worker pools, database or snapshot store.
 ## Version set
 
 Build with **Go 1.27.3**, including remote-only builds. Sessions core and the
-separately versioned adapter use the same canonical upstream commit, without
-fork replacements:
+separately versioned adapter use canonical upstream releases, without fork
+replacements:
 
-| Component | Development version |
+| Component | Pinned version |
 |---|---|
-| Sessions root | `github.com/agent-primitives/sessions v0.2.1-0.20261019224537-f18a2cb1454d` |
-| Sessions Substrate adapter | `v0.0.0-20261019224537-f18a2cb1454d` |
-| Substrate client and server | `v0.4.1-0.20261013053953-96dffb287919` |
+| Sessions root | `github.com/agent-primitives/sessions v0.3.0` |
+| Sessions Substrate adapter | `github.com/agent-primitives/sessions/integrations/substrate v0.3.0` |
+| Substrate client and separately installed server | `v0.5.0` |
 
-The adapter has no release tag. Root sessions tags do not release that nested
-module. These pins are for the development slice, not permission to omit the
-[Preview 0 release gates](preview-0.md#2-no-unreleased-dependencies--blocked).
+The root tag resolves to `bcbd4d9`; the adapter's separate tag resolves to
+`d74eec3`, one commit later, updating its dependency to the released root. A root
+tag alone does not release a nested module. These compatible released pins do
+not complete the [Preview 0 release gates](preview-0.md#2-no-unreleased-dependencies--blocked).
 Check the **selected** graph, not just direct requirements:
 
 ```sh
@@ -32,12 +33,20 @@ go mod graph
 go mod verify
 ```
 
-Keep the Substrate server/client pin: it is the upstream adapter's compatible
-runtime requirement, not a fork awaiting a Sessions merge. Do not float it
-independently. Newer Substrate defaults suspend to asynchronous upload; using
-such a server requires an explicit synchronous request and newest-generation
-durability checks, not this old-client assembly.
-A pre-1.0 minor upgrade may require reinstall and a compatible recovery set.
+Keep the client and server at the adapter's exact compatible **v0.5.0** runtime
+version. The module test checks the client graph, not the installed server.
+At v0.5.0, `SuspendActor` is synchronous and has no durability-option field. The
+adapter inspects the highest native snapshot generation and refuses pending or
+local-only evidence rather than using an older completed snapshot. Later servers
+add asynchronous defaults/options; do not float the server independently or
+copy newer-main API assumptions into this assembly.
+
+Use a **fresh, compatible state set** for this runtime upgrade: host journal,
+Substrate catalog, objects and actors. Swapping images does not migrate old
+runtime catalogs or snapshot references. Sessions can migrate its journal schema;
+that is not a qualified migration of the complete recovery set. Downgrading an
+image is not a data rollback. See the separate
+[install-only operator guide](../ops/aks/SUBSTRATE.md).
 
 ## Prerequisites
 
@@ -98,17 +107,21 @@ Substrate does not replace them.
 
 The [two Preview 0 paths](preview-0.md#1-proof-on-real-aks--blocked) are conditional:
 **“single host; recovery authority not yet boot-scoped”** with Substrate, or
-**“no sandbox isolation yet”** without it. The Substrate path still needs released
-fidelity and held-checkpoint validation, compatible adapter/runtime/Blob releases,
-and actual AKS lifecycle/network/backup proof. This wiring alone closes none of
-those gates; do not use it as an unqualified park/recovery demonstration.
-Public Suspend/Resume and approval parks still invoke Substrate snapshot/restore
-paths in the current pin. They remain unqualified: the host keeps default
-stateless-replay policy, without opting into `WithVolumesOnly()` enforcement.
-The pin includes [observed fidelity (#181)](https://github.com/agent-primitives/sessions/pull/181),
-not the pending [exact-held/newest-generation validation (#195)](https://github.com/agent-primitives/sessions/pull/195)
-or [effective restore-source validation (#192)](https://github.com/agent-primitives/sessions/issues/192).
-Declaring the harness stateless does not disable snapshot/restore RPC paths.
+**“no sandbox isolation yet”** without it. Released libraries do not establish
+AKS lifecycle/network/backup proof or a released Blob recovery configuration.
+Do not use this wiring as an unqualified park/recovery demonstration.
+Public Suspend/Resume and approval parks still invoke Substrate snapshot/restore.
+The stateless host explicitly uses `WithVolumesOnly()`: it validates observed,
+completed **VOLUMES** results with a durable URI and disables memory-snapshot
+admission. It does not configure the template; keep the prerequisites above.
+Tests exercise the real TLS adapter and refuse wrong fidelity, missing URI,
+newest-pending evidence and invalid held checkpoints before Resume. The release
+includes [observed fidelity (#181)](https://github.com/agent-primitives/sessions/pull/181),
+[held/newest-generation validation (#195)](https://github.com/agent-primitives/sessions/pull/195)
+and the [v0.5.0 adapter (#201)](https://github.com/agent-primitives/sessions/pull/201).
+These offline checks do not qualify the assembled approval/recovery scenario or
+[effective restore-source behavior (#192)](https://github.com/agent-primitives/sessions/issues/192).
+Declaring the harness stateless alone is not VOLUMES enforcement.
 
 Client-side checkpoint validation is not atomic with Resume. One host reduces
 competition but does not fence router auto-resume or operator lifecycle calls.
