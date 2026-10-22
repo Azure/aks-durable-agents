@@ -47,6 +47,7 @@ def local_module(name, path):
 
 
 node_profile = local_module("aks_node_profile", HERE / "profile.py")
+rollout_schema = local_module("aks_rollout_schema", HERE / "proof.py")
 # Existing modules import their adjacent helpers by name. Pin search paths to
 # this checkout; no pip install, package discovery, or downloaded implementation.
 _search_path = sys.path[:]
@@ -91,6 +92,99 @@ def require(condition, message="scenario invariant failed"):
 
 def strict_json(raw):
     return json.loads(raw, object_pairs_hook=update_pins.unique_object)
+
+
+def rollout_fallback(kind, name):
+    if (type(kind) is not str or type(name) is not str
+            or (kind, name) not in rollout_schema.ROLLOUT_CONTROLLERS):
+        kind, name = "other", "other"
+    return {"version": 1, "controllerKind": kind, "controllerName": name,
+            "podReasons": ["other"], "readyNodes": None, "desiredNodes": None}
+
+
+def controller_uid(obj, kind, name):
+    require(obj["apiVersion"] == "apps/v1" and obj["kind"] == kind and obj["metadata"]["name"] == name)
+    uid = obj["metadata"]["uid"]
+    require(type(uid) is str and bool(uid))
+    return uid
+
+
+def controlled_by(obj, kind, owners):
+    references = obj["metadata"].get("ownerReferences", [])
+    require(type(references) is list)
+    controllers = [ref for ref in references if ref.get("controller") is True]
+    require(len(controllers) <= 1)
+    if not controllers:
+        return False
+    ref = controllers[0]
+    return (ref.get("apiVersion") == "apps/v1" and ref.get("kind") == kind
+            and type(ref.get("name")) is str and type(ref.get("uid")) is str
+            and ref["name"] in owners and ref["uid"] == owners[ref["name"]])
+
+
+def pod_reason_codes(pod):
+    # Only literal structured reason fields. Running/not Ready does not prove a
+    # probe-specific cause; the schema's readiness label is reserved, not emitted.
+    status, reasons = pod.get("status", {}), set()
+    conditions = status.get("conditions", [])
+    require(type(conditions) is list)
+    if any(c.get("type") == "PodScheduled" and c.get("status") == "False"
+           and c.get("reason") == "Unschedulable" for c in conditions):
+        reasons.add("Unschedulable")
+    choices = rollout_schema.POD_REASONS - {"readiness probe failing"}
+    for field in ("containerStatuses", "initContainerStatuses"):
+        containers = status.get(field, [])
+        require(type(containers) is list)
+        for container in containers:
+            state, last = container.get("state", {}), container.get("lastState", {})
+            for source, state_kind in ((state, "waiting"), (state, "terminated"), (last, "terminated")):
+                if state_kind in source:
+                    reason = source[state_kind].get("reason")
+                    reasons.add(reason if type(reason) is str and reason in choices else "other")
+    return reasons or {"other"}
+
+
+def project_rollout(kind, name, labels, controller, pods, replicasets=None):
+    if controller.get("kind") != kind or controller.get("metadata", {}).get("name") != name:
+        return rollout_schema.validate_rollout_status(rollout_fallback("other", "other"))
+    uid = controller_uid(controller, kind, name)
+    # Selectors are trusted constants/chart labels, never taken from the API.
+    require(controller["spec"]["selector"] == {"matchLabels": labels})
+    owners, owner_kind = {name: uid}, kind
+    if kind == "Deployment":
+        if type(replicasets) is not dict:
+            raise SafeFailure("invariant-failed", "invalid ReplicaSet list")
+        require((replicasets["apiVersion"], replicasets["kind"]) in (("apps/v1", "ReplicaSetList"), ("v1", "List")))
+        require(type(replicasets["items"]) is list)
+        owners, owner_kind = {}, "ReplicaSet"
+        for replica in replicasets["items"]:
+            if controlled_by(replica, "Deployment", {name: uid}):
+                rs_name = replica["metadata"]["name"]
+                require(type(rs_name) is str and bool(rs_name))
+                owners[rs_name] = controller_uid(replica, "ReplicaSet", rs_name)
+        # RS selectors contain private pod-template-hash labels in addition to
+        # the Deployment core selector. Ownership, not selector equality, binds.
+    require(pods["apiVersion"] == "v1" and pods["kind"] in ("PodList", "List"))
+    require(type(pods["items"]) is list)
+    reasons = set()
+    for pod in pods["items"]:
+        require(pod["apiVersion"] == "v1" and pod["kind"] == "Pod")
+        metadata = pod["metadata"]
+        if metadata.get("deletionTimestamp"):
+            continue
+        pod_labels = metadata.get("labels", {})
+        require(type(pod_labels) is dict)
+        if (all(pod_labels.get(key) == value for key, value in labels.items())
+                and controlled_by(pod, owner_kind, owners)):
+            reasons.update(pod_reason_codes(pod))
+    report = rollout_fallback(kind, name)
+    report["podReasons"] = sorted(reasons or {"other"})
+    if kind == "DaemonSet":
+        status = controller.get("status", {})
+        for key, source in (("readyNodes", "numberReady"), ("desiredNodes", "desiredNumberScheduled")):
+            count = status.get(source)
+            report[key] = count if type(count) is int and 0 <= count <= 2147483647 else None
+    return rollout_schema.validate_rollout_status(report)
 
 
 def json_records(raw):
@@ -464,6 +558,7 @@ class Scenario:
         write_json(self.values_path, self.values)
         self.phase_name, self.phase_started, self.started = "preflight", time.monotonic(), time.monotonic()
         self.operation, self.diagnostics, self.cleanup_status = "phase", None, "not-run"
+        self.rollout_status = None
         self.phases = {}
         self.deployments, self.labels = {}, {}
         self.owned = False
@@ -485,9 +580,69 @@ class Scenario:
         phases[self.phase_name] = phases.get(self.phase_name, 0) + now - self.phase_started
         return {"version": 1, "phases": phases, "totalSeconds": now - self.started}
 
-    def kube(self, *args, data=None, cleanup=False, namespace=None):
+    def kube(self, *args, data=None, cleanup=False, namespace=None, limit=None):
         prefix = self.prefix if namespace is None else [*self.prefix[:-1], namespace]
-        return self.executor.run([*prefix, *args], data=data, cleanup=cleanup)
+        options = {"limit": limit} if limit is not None else {}
+        return self.executor.run([*prefix, *args], data=data, cleanup=cleanup, **options)
+
+    def rollout(self, kind, name, namespace=None):
+        previous = self.operation
+        if kind in ("DaemonSet", "Deployment"):
+            self.operation = "profile-rollout" if kind == "DaemonSet" else "deployment-rollout"
+        try:
+            self.kube("rollout", "status", kind.lower() + "/" + name, "--timeout=180s", namespace=namespace)
+        except (Exception, KeyboardInterrupt) as error:
+            # Save the full safe fallback before any optional reads or cleanup.
+            self.rollout_status = rollout_fallback(kind, name)
+            if isinstance(error, SafeFailure) and error.reason == "command-failed":
+                try:
+                    self.capture_rollout(kind, name, namespace)
+                except (Exception, KeyboardInterrupt):
+                    # A secondary cancellation stops ALL capture. Bare raise
+                    # below retains the active rollout failure and finally fence.
+                    pass
+            raise
+        self.operation = previous
+
+    def capture_rollout(self, kind, name, namespace):
+        if self.rollout_status is None or self.rollout_status["controllerKind"] == "other":
+            return
+        if kind == "DaemonSet":
+            require(namespace == node_profile.NAMESPACE)
+            labels = {"nightly-profile": "installer"}
+        else:
+            require(namespace in (None, NAMESPACE))
+            roles = [role for role, deployment in self.deployments.items() if deployment == name]
+            require(len(roles) == 1)
+            labels = self.labels[roles[0]]
+        end = time.monotonic() + min(5, self.deadlines.remaining())
+
+        def remaining():
+            seconds = min(self.deadlines.remaining(), end - time.monotonic())
+            require(seconds >= .001)
+            return seconds
+
+        def read(resource, *args):
+            seconds = remaining()
+            # Round down, never let kubectl's request timeout exceed authority.
+            timeout = int(seconds * 1000) / 1000
+            raw = self.kube("get", resource, *args, "-o", "json", f"--request-timeout={timeout:.3f}s",
+                            namespace=namespace, limit=seconds)
+            remaining()
+            require(len(raw) <= 16 * 1024 * 1024)
+            value = strict_json(raw)
+            remaining()
+            return value
+
+        selector = ",".join(key + "=" + value for key, value in labels.items())
+        controller = read(kind.lower() + "/" + name)
+        replicasets = read("replicasets", "-l", selector) if kind == "Deployment" else None
+        pods = read("pods", "-l", selector)
+        remaining()
+        report = project_rollout(kind, name, labels, controller, pods, replicasets)
+        remaining()
+        # No partial counts survive errors, expired work or cancellation.
+        self.rollout_status = report
 
     def get(self, kind, *args, namespace=None):
         return strict_json(self.kube("get", kind, *args, "-o", "json", namespace=namespace))
@@ -544,7 +699,7 @@ class Scenario:
         for obj in node_profile.manifests(raw):
             self.create(obj, namespace=node_profile.NAMESPACE)
         self.operation = "profile-rollout"
-        self.kube("rollout", "status", "daemonset/" + node_profile.NAME, "--timeout=180s", namespace=node_profile.NAMESPACE)
+        self.rollout("DaemonSet", node_profile.NAME, namespace=node_profile.NAMESPACE)
         self.operation = "profile-verify"
         pods = self.get("pods", "-l", "nightly-profile=installer", namespace=node_profile.NAMESPACE)["items"]
         require(len(pods) == 2 and {p["spec"]["nodeName"] for p in pods} == self.nodes and all(ready(p) for p in pods))
@@ -647,7 +802,7 @@ class Scenario:
         self.kube("delete", "pod/nightly-credential", "--wait=true", "--timeout=120s")
         for role in ("harness", "host"):
             self.kube("scale", "deployment/" + self.deployments[role], "--replicas=1")
-            self.kube("rollout", "status", "deployment/" + self.deployments[role], "--timeout=180s")
+            self.rollout("Deployment", self.deployments[role])
         self.marker()
 
     def evidence(self):
@@ -877,6 +1032,14 @@ def main(argv=None):
                 validator = local_module("aks_safe_proof", HERE / "proof.py")
                 diagnostics = getattr(api, "diagnostics", None) or failure_diagnostics(api, error)
                 write_json(args.public_dir / "diagnostics.json", validator.validate_diagnostics(diagnostics))
+        except (Exception, KeyboardInterrupt):
+            pass
+        # Independent best effort: neither optional writer can suppress the
+        # original diagnostic or change the failed return status.
+        try:
+            if public_ready and api is not None and api.rollout_status is not None:
+                validator = local_module("aks_safe_proof", HERE / "proof.py")
+                write_json(args.public_dir / "rollout-status.json", validator.validate_rollout_status(api.rollout_status))
         except (Exception, KeyboardInterrupt):
             pass
         return 1
