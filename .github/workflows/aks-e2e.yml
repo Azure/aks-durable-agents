@@ -1,6 +1,8 @@
 name: Nightly AKS e2e
 
 on:
+  schedule:
+    - cron: '43 5 * * *'
   workflow_dispatch:
     inputs:
       run_scenario:
@@ -43,7 +45,7 @@ jobs:
     if: >-
       ${{ github.repository == 'Azure/aks-durable-agents' &&
           (github.ref == 'refs/heads/main' ||
-           (inputs.run_scenario && github.ref == 'refs/heads/feat/aks-e2e-scenario')) }}
+           (github.event_name == 'workflow_dispatch' && inputs.run_scenario && github.ref == 'refs/heads/feat/aks-e2e-scenario')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     permissions:
@@ -62,7 +64,7 @@ jobs:
       - name: Check configuration before any environment login
         id: config
         env:
-          RUN_SCENARIO: ${{ inputs.run_scenario }}
+          RUN_SCENARIO: ${{ github.event_name == 'schedule' || inputs.run_scenario }}
         run: |
           python3 -B ops/aks/cleanup.py config | tee -a "$GITHUB_OUTPUT"
           if [[ "$RUN_SCENARIO" == true ]]; then
@@ -77,7 +79,7 @@ jobs:
 
   validate:
     needs: config
-    if: ${{ needs.config.outputs.configured == 'true' && !inputs.run_scenario }}
+    if: ${{ needs.config.outputs.configured == 'true' && needs.config.outputs.scenario == 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment: nightly-aks
@@ -317,7 +319,7 @@ jobs:
 
   teardown:
     needs: [config, preflight, create, wait, federate, scenario]
-    if: ${{ always() && inputs.run_scenario && needs.create.outputs.started != '' }}
+    if: ${{ always() && (github.event_name == 'schedule' || inputs.run_scenario) && needs.create.outputs.started != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: nightly-aks
@@ -349,7 +351,7 @@ jobs:
 
   finalize:
     needs: [config, preflight, create, wait, federate, scenario, teardown]
-    if: ${{ always() && inputs.run_scenario && github.repository == 'Azure/aks-durable-agents' }}
+    if: ${{ always() && (github.event_name == 'schedule' || inputs.run_scenario) && github.repository == 'Azure/aks-durable-agents' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     permissions:
@@ -375,7 +377,7 @@ jobs:
   report:
     needs: [config, preflight, create, wait, federate, scenario, teardown, finalize]
     if: >-
-      ${{ always() && inputs.run_scenario && vars.AKS_SCENARIO_ENABLED == 'true' &&
+      ${{ always() && (github.event_name == 'schedule' || inputs.run_scenario) && vars.AKS_SCENARIO_ENABLED == 'true' &&
           github.repository == 'Azure/aks-durable-agents' &&
           (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/aks-e2e-scenario') &&
           needs.finalize.result != 'success' }}

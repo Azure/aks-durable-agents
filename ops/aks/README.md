@@ -1,14 +1,15 @@
-# Manual AKS e2e and independent expiry cleanup
+# Daily AKS e2e and independent expiry cleanup
 
-The dispatch-only **Nightly AKS e2e** workflow defaults to read-only identity/RG
-validation. Its optional real-model scenario is separately operator-gated and has
-**no schedule**. Offline tests do not qualify a live AKS deployment. The existing
-kind workflow and its fake-model assertions are unchanged.
+The **Nightly AKS e2e** workflow requests the operator-gated no-sandbox real-model
+scenario daily at **05:43 UTC**. Manual dispatch still defaults to read-only
+identity/RG validation. This is the simulated-approval/trusted-network profile,
+not delegated Entra/TLS acceptance. Offline tests do not qualify a live AKS
+deployment. The existing kind workflow and its fake-model assertions are unchanged.
 
 Keep the scenario disabled until the separate required-auth qualification has
 passed Continue and strict replay, the helper publication is reviewed, and the
-operator approves a manual scenario run. A schedule is a separate later change,
-only after an accepted manual pass; this workflow cannot turn it on.
+operator approves execution after an accepted manual pass. Scheduled runs retain
+all the same opt-in, budget-confirmation and lifecycle checks.
 
 Read-only validation and independent cleanup always load trusted `main` code.
 Scenario jobs pin checkout to the dispatch's immutable `github.sha`. Only `main`
@@ -173,8 +174,8 @@ Setting bootstrap alone never enables provisioning.
 
 | Variable | Required assertion/input |
 | --- | --- |
-| `AKS_SCENARIO_ENABLED` | `true` only after qualification and explicit manual-run approval |
-| `AKS_BUDGET_CONFIRMED` | `true` after confirming the existing subscription budget/recipient is active |
+| `AKS_SCENARIO_ENABLED` | `true` only after qualification and explicit operator approval for manual/daily execution |
+| `AKS_BUDGET_CONFIRMED` | `true` only after the operator confirms budget headroom and the existing budget/recipient is active; not a live spending check |
 | `MODEL_ENDPOINT` | Reviewed HTTPS endpoint ending `/openai/v1/`, no query or credentials |
 | `MODEL_DEPLOYMENT` | Operator-verified available bounded model deployment |
 | `MODEL_PRICE_INPUT`, `MODEL_PRICE_OUTPUT` | Positive integer microUSD per million tokens |
@@ -199,10 +200,34 @@ gh workflow run aks-e2e.yml -R Azure/aks-durable-agents \
   --ref feat/aks-e2e-scenario -f run_scenario=true
 ```
 
-The default without `run_scenario=true` stays read-only. A requested scenario with
+A manual dispatch without `run_scenario=true` stays read-only. A schedule event
+requests the scenario without needing a manual input. Either scenario path with
 missing opt-in/budget approval fails before any environment/Azure login.
 
-### What a manual scenario attempts
+### Daily operation and operator budget confirmation
+
+The `43 5 * * *` cron is UTC and runs only on the default branch; actual starts
+can be delayed by GitHub scheduling. Existing `nightly-aks` environment rules still
+apply. Revoking `AKS_SCENARIO_ENABLED` or `AKS_BUDGET_CONFIRMED` blocks provisioning.
+The latter is an **operator confirmation**, backed by the existing
+`ada-nightly-guard` budget alerts and independent expiry sweeper, **not a live
+spending/headroom query or an Azure-enforced spending cap**. Alerts can lag and the
+sweeper is a cleanup backstop, not guaranteed deletion. No new billing read grant,
+IAM role, notification recipient or paging integration is added.
+
+Caps remain two model attempts, 8192 input / 4096 completion tokens per attempt,
+a USD2 model reservation, 30 minutes of work within one 45-minute resource clock,
+a 15-minute cleanup reserve and a 10-minute teardown job. Reservation is not actual
+cost. Operators must review shared-subscription headroom and refresh prices only
+after rate verification; the existing 30-day price-age check still fails closed.
+
+Failures remain red in Actions and update the existing separate AKS regression
+tracker without explicit mentions or pages; ordinary GitHub notification settings
+still apply. Disabling `AKS_SCENARIO_ENABLED` also suppresses tracker updates, but
+blocked scheduled runs remain visibly failed in Actions. The independent cleanup
+cron, ownership checks, teardown and seven-day safe artifact policy are unchanged.
+
+### What a scenario attempts
 
 1. Refuse remaining clusters, model FICs or managed node RGs; check providers,
    stable AKS 1.37.0 availability, regional/family quota including one surge node,
