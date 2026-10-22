@@ -25,7 +25,7 @@ cross-store checks performed by SQLite. D2 emergency holds must be honored by
 that same gate, including at Commit. Separate databases are not an atomic
 multi-store transaction.
 
-The shared DTO-only [`decisionrecord` package](../decisionrecord/types.go) defines
+The shared DTO-only [`internal/decisionrecord` package](../internal/decisionrecord/types.go) defines
 non-executing historical evidence for both E1 and G1. G1 aliases these types rather
 than declaring a consumer copy. Constructing a DTO authenticates nobody and grants
 no authority; verification, policy, subject binding and persistence remain with
@@ -40,15 +40,18 @@ copy under g1-copied-decision-record-v1; **this is not an E1 record encoder**.
 The copied evidence domain follows the producer: workspace/subject/store/lineage,
 policy/grant identifiers and recorded roles accept noncontrol UTF-8 up to 256
 bytes, while request keys retain the producer's 128-byte printable-ASCII limit.
-Actor issuer/subject retain the producer's exact nonempty identity pair. Never
+Actor issuer/subject, including Authorization.Actor, must also be noncontrol
+UTF-8 of 1–256 bytes; invalid Go string bytes must not be normalized by JSON
+persistence after fingerprinting. Retain the exact valid identity pair. Never
 truncate identifiers or rewrite a policy-selected role into `Agent.Approver`.
 Recorded and current policy-selected role strings are retained as evidence;
 role meaning and scoped permission are checked by the trusted policy adapter,
 not inferred from a hard-coded label here. Action/actor/subject/operation equality
-checks remain mandatory. Local shared-type tests exercise actual store
-Begin/Reserve/Commit and reopen without a producer runtime import. Sharing the
-record types does not establish retained-subject authentication or current
-authority.
+checks remain mandatory. This package depends on the shared types supplied by
+[the decision ledger](decision-ledger.md), which must land first. The ordinary
+conformance test uses the real ledger Service and shared types through
+Begin/Reserve/Commit and reopen, without a build tag. Sharing types does not
+establish retained-subject authentication or current authority.
 
 E1 v1 suite activation maps activate to accept. Rollback, recover and
 abandon_activation records in this unwired package are synthetic future-input
@@ -73,17 +76,29 @@ OperationRevision and Phase explicitly; substitutions refuse.
 Create exclusively initializes schema 1. Open requires an existing, nonempty
 database and the exact expected StoreID. It never initializes, repairs, migrates
 or adopts a missing Sessions store. Future schema versions refuse without
-conversion. IDs are opaque, not paths. RegisterTarget creates an ordinary,
+conversion. Shared record types are persisted as JSON and re-encoded during
+CAS and verification. Changing their serialized fields/order/types/JSON tags,
+including `internal/decisionrecord` structs, requires an explicit store schema
+bump and reviewed migration/refusal plan, not just a package update. The frozen
+schema-1 SQLite fixture must keep opening unchanged; do not regenerate it to
+hide incompatible type changes. Moving an unchanged type between packages does
+not change its serialized schema. IDs are opaque, not paths. RegisterTarget creates an ordinary,
 unavailable genesis at revision 1 with no active version.
 
 Use an absolute clean filename under a private 0700 directory. Existing path
 components and SQLite sidecars must not be symlinks. The main database is
 owner-checked, regular, single-link and 0600; sidecars are checked for regular
-file type and 0600 mode, not link count. The final directory can be created, but existing operator
-permissions are never chmodded. These checks follow the private Linux/POSIX
+file type and 0600 mode, not link count. Create syncs the private directory's
+containing directory as well as the database's containing directory. A failed
+Create removes only the database inode it exclusively created; it never removes
+a pre-existing or subsequently replaced file. Process termination may still leave
+partial initialization requiring operator reconciliation, not automatic adoption.
+Existing operator permissions are never chmodded. These checks follow the private Linux/POSIX
 store convention, not OS containment against another same-user writer.
 
-SQLite uses DELETE journaling and FULL synchronization. FULL, foreign_keys and
+SQLite uses DELETE journaling and EXTRA synchronization. Unlike FULL in DELETE
+mode, EXTRA also syncs the journal directory after unlinking a committed journal.
+EXTRA, foreign_keys and
 busy_timeout are configured through DSN pragmas for **every** connection,
 including replacement connections. New databases default to DELETE; Open
 checks this persistent mode without changing an unsupported database's mode.
@@ -195,10 +210,15 @@ page size are 100. Verify and Open check SQLite integrity/expected table schema,
 legal transitions, exact projections, immutable snapshots, qualifications, keys,
 decision claims (including operator claims), links and tombstones. Extra views or
 triggers are not checked; this is not protection from an administrator changing
-SQLite behavior. An integrity failure in Verify latches that Store handle against
-further mutation; transient SQLite contention returns ErrBusy without latching.
-Unknown target/operation references and mismatched receipt bindings return
-ErrConflict. All public refusal paths return fixed sentinel/context messages,
+SQLite behavior. A detected verification mismatch latches that Store handle
+before releasing its connection, even if the request is cancelled after detection.
+A failed or cancelled read alone is not proof of a mismatch. Lock contention
+returns ErrBusy; operational storage failures such as SQLITE_FULL/IOERR or a
+closed handle return ErrUnavailable, without latching corruption. Neither says
+whether an uncertain commit completed: reconcile the same request/operation.
+ErrOccupied means a target already has a pending operation, not SQLite lock
+contention. Unknown target/operation references and mismatched receipt bindings
+return ErrConflict. All public refusal paths return fixed sentinel/context messages,
 without raw parser, SQL, path or stored-identity diagnostics in their error chains.
 Neither Open nor Verify repairs corrupt state.
 

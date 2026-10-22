@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Azure/aks-durable-agents/decisionrecord"
+	"github.com/Azure/aks-durable-agents/internal/decisionrecord"
 )
 
 func abandonRequest(s *Store, o Operation, key string) AbandonRequest {

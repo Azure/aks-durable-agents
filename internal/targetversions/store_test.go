@@ -23,9 +23,17 @@ func must[T any](t *testing.T, v T, err error) T {
 	return v
 }
 func clone[T any](v T) T { b, _ := json.Marshal(v); var c T; _ = json.Unmarshal(b, &c); return c }
+func privateTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
 func newStore(t *testing.T) (*Store, string) {
 	t.Helper()
-	dir := filepath.Join(t.TempDir(), "private")
+	dir := filepath.Join(privateTempDir(t), "private")
 	p := filepath.Join(dir, "versions.db")
 	s, e := Create(p)
 	if e != nil {
@@ -65,7 +73,7 @@ func TestStoreCreateOpenIntegrity(t *testing.T) {
 		if i == 1 {
 			s.db.SetMaxIdleConns(0)
 		}
-		for pragma, want := range map[string]string{"foreign_keys": "1", "synchronous": "2", "journal_mode": "delete"} {
+		for pragma, want := range map[string]string{"foreign_keys": "1", "synchronous": "3", "journal_mode": "delete"} {
 			var got string
 			if e := s.db.QueryRow("PRAGMA " + pragma).Scan(&got); e != nil || got != want {
 				t.Fatalf("replacement %d %s=%s (%v)", i, pragma, got, e)
@@ -147,7 +155,7 @@ func TestBeginExactKeyAndConflict(t *testing.T) {
 		t.Fatal("restart allocated another op")
 	}
 }
-func TestBeginTargetCASAndBusy(t *testing.T) {
+func TestBeginTargetCASAndOccupied(t *testing.T) {
 	s, _ := newStore(t)
 	target := register(t, s, "agent")
 	stale := request(target, "stale")
@@ -157,8 +165,8 @@ func TestBeginTargetCASAndBusy(t *testing.T) {
 	}
 	r := request(target, "a")
 	begin(t, s, r)
-	if _, e := s.Begin(ctx, request(target, "b")); !errors.Is(e, ErrBusy) {
-		t.Fatalf("busy: %v", e)
+	if _, e := s.Begin(ctx, request(target, "b")); !errors.Is(e, ErrOccupied) {
+		t.Fatalf("occupied: %v", e)
 	}
 	other := register(t, s, "other")
 	reuse := request(other, "c")

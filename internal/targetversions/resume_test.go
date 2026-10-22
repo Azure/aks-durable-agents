@@ -68,7 +68,7 @@ func TestVerificationCancellationDoesNotLatch(t *testing.T) {
 }
 
 func TestPathOwnershipUsesActualLstatUID(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateTempDir(t)
 	file := filepath.Join(dir, "sidecar")
 	if err := os.WriteFile(file, []byte("fixture"), 0600); err != nil {
 		t.Fatal(err)

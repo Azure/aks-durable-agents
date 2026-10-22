@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Azure/aks-durable-agents/decisionrecord"
+	"github.com/Azure/aks-durable-agents/internal/decisionrecord"
 )
 
 // Shared DTOs must cross the real store boundary without conversion or rewriting

@@ -3,6 +3,7 @@ package targetversions
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
@@ -30,7 +31,7 @@ func (s *Store) History(ctx context.Context, targetID string, after uint64, limi
 			return nil, normalizeError(ctx, e)
 		}
 		if e = json.Unmarshal(b, &ev); e != nil {
-			return nil, normalizeError(ctx, e)
+			return nil, ErrIntegrity
 		}
 		out = append(out, ev)
 	}
@@ -42,6 +43,15 @@ func (s *Store) History(ctx context.Context, targetID string, after uint64, limi
 // A failed check latches this handle against further mutation; it never repairs.
 func (s *Store) Verify(ctx context.Context) error {
 	return s.transaction(ctx, true, func(q query) error { return s.verify(ctx, q) })
+}
+
+// Missing or malformed retained references are proof of a mismatch; failures to
+// read them are not. Keep that distinction until the transaction publishes its latch.
+func verificationReadError(err error) error {
+	if errors.Is(err, ErrIntegrity) || errors.Is(err, ErrConflict) {
+		return errVerificationMismatch
+	}
+	return err
 }
 
 type factRows struct {
@@ -61,19 +71,27 @@ func (s *Store) verify(ctx context.Context, q query) error {
 	if e := s.basicVerify(ctx, q); e != nil {
 		return e
 	}
-	var version, count int
+	var count int
+	var rawVersion any
 	var id, backend string
-	if e := q.QueryRowContext(ctx, "SELECT schema_version,store_id,backend_id FROM metadata WHERE singleton=1").Scan(&version, &id, &backend); e != nil {
+	if e := q.QueryRowContext(ctx, "SELECT schema_version,store_id,backend_id FROM metadata WHERE singleton=1").Scan(&rawVersion, &id, &backend); e != nil {
 		return e
+	}
+	version, validVersion := rawVersion.(int64)
+	if !validVersion {
+		return errVerificationMismatch
 	}
 	if version != 1 {
 		return ErrUnsupported
 	}
 	if id != s.ID || backend != s.BackendLineageID || !keyOK(id) || !keyOK(backend) {
-		return ErrIntegrity
+		return errVerificationMismatch
 	}
-	if e := q.QueryRowContext(ctx, "SELECT count(*) FROM metadata").Scan(&count); e != nil || count != 1 {
-		return ErrIntegrity
+	if e := q.QueryRowContext(ctx, "SELECT count(*) FROM metadata").Scan(&count); e != nil {
+		return e
+	}
+	if count != 1 {
+		return errVerificationMismatch
 	}
 	expectedSchema := map[string]string{}
 	for _, stmt := range schema {
@@ -89,7 +107,7 @@ func (s *Store) verify(ctx context.Context, q query) error {
 			break
 		}
 		if expectedSchema[name] != strings.Join(strings.Fields(stmt), " ") {
-			e = ErrIntegrity
+			e = errVerificationMismatch
 			break
 		}
 		delete(expectedSchema, name)
@@ -103,7 +121,7 @@ func (s *Store) verify(ctx context.Context, q query) error {
 		return readErr
 	}
 	if len(expectedSchema) != 0 {
-		return ErrIntegrity
+		return errVerificationMismatch
 	}
 	facts := map[string]*factRows{}
 	for name, selectSQL := range map[string]string{
@@ -124,15 +142,21 @@ func (s *Store) verify(ctx context.Context, q query) error {
 		var b []byte
 		var ev Event
 		var targetID string
-		var sequence uint64
-		if e = rows.Scan(&targetID, &sequence, &b); e != nil {
+		var rawSequence any
+		if e = rows.Scan(&targetID, &rawSequence, &b); e != nil {
+			break
+		}
+		sequence, validSequence := rawSequence.(int64)
+		if !validSequence || sequence <= 0 {
+			e = errVerificationMismatch
 			break
 		}
 		if e = json.Unmarshal(b, &ev); e != nil {
+			e = errVerificationMismatch
 			break
 		}
-		if ev.TargetID != targetID || ev.Sequence != sequence {
-			e = ErrIntegrity
+		if ev.TargetID != targetID || ev.Sequence != uint64(sequence) {
+			e = errVerificationMismatch
 			break
 		}
 		events = append(events, ev)
@@ -150,18 +174,18 @@ func (s *Store) verify(ctx context.Context, q query) error {
 	for _, ev := range events {
 		previous := targets[ev.TargetID]
 		if ev.Sequence != previous.Revision+1 || ev.Target.ID != ev.TargetID || ev.Target.StoreID != s.ID || ev.BackendLineageID != s.BackendLineageID || ev.At.IsZero() {
-			return ErrIntegrity
+			return errVerificationMismatch
 		}
 		if previous.Revision == 0 {
 			t := Target{ID: ev.TargetID, Kind: "ordinary", StoreID: s.ID, GenesisID: ev.Target.GenesisID, Predecessor: PredecessorRef{"genesis", ev.Target.GenesisID}, Revision: 1, Availability: "unavailable"}
 			if !keyOK(t.ID) || !keyOK(t.GenesisID) || !same(t, ev.Target) || ev.Operation != nil || ev.OperationID != "" || ev.FromPhase != "" || ev.ToPhase != "" || len(ev.Links) != 0 || ev.Tombstone != "" {
-				return ErrIntegrity
+				return errVerificationMismatch
 			}
 			targets[t.ID] = t
 			continue
 		}
 		if ev.Operation == nil {
-			return ErrIntegrity
+			return errVerificationMismatch
 		}
 		o := *ev.Operation
 		old, exists := ops[o.ID]
@@ -173,11 +197,11 @@ func (s *Store) verify(ctx context.Context, q query) error {
 			r := o.Request
 			v := o.Version
 			if !r.valid() || r.TargetID != previous.ID || r.Predecessor != previous.Predecessor || r.ExpectedRevision != previous.Revision || previous.OperationID != "" || !keyOK(o.ID) || !keyOK(v.ID) || !keyOK(v.ExecutionContextID) || v.TargetID != r.TargetID || v.OperationID != o.ID || v.CreatedAt.IsZero() || !same(v.Candidate, r.Candidate) {
-				return ErrIntegrity
+				return errVerificationMismatch
 			}
 			source, e := s.source(ctx, q, previous, r)
 			if e != nil {
-				return ErrIntegrity
+				return verificationReadError(e)
 			}
 			want = Operation{ID: o.ID, Fingerprint: r.fingerprint(), Phase: "preparing", Revision: 1, Generation: previous.Generation + 1, Request: r, Version: v, FrozenSource: source}
 			t = previous
@@ -191,33 +215,33 @@ func (s *Store) verify(ctx context.Context, q query) error {
 				links = append(links, pair("source", r.SourceVersionID, v.ID)...)
 			}
 			if ev.FromPhase != "" || !facts["operations"].add(o.ID, encoded(want)) || !facts["versions"].add(v.ID, encoded(v)) || !facts["request_keys"].add(rowKey(r.TargetID, r.Key), encoded([]string{"begin", o.ID, r.fingerprint()})) || !facts["decision_claims"].add(rowKey(r.DecisionRecord.StoreID, r.DecisionRecord.ID), encoded([]string{o.ID, "begin"})) || !facts["qualifications"].add(rowKey(r.Candidate.Qualification.StoreID, r.Candidate.Qualification.ID), encoded(r.Candidate.Qualification)) {
-				return ErrIntegrity
+				return errVerificationMismatch
 			}
 		} else {
 			if previous.OperationID != o.ID || previous.Generation != o.Generation || ev.FromPhase != old.Phase {
-				return ErrIntegrity
+				return errVerificationMismatch
 			}
 			var e error
 			want, t, links, tomb, e = s.replayStep(ctx, q, previous, old, o)
 			if e != nil {
-				return ErrIntegrity
+				return verificationReadError(e)
 			}
 		}
 		t.Revision++
 		if !same(want, o) || !same(t, ev.Target) || ev.OperationID != o.ID || ev.ToPhase != o.Phase || !sameLinks(links, ev.Links) || ev.Tombstone != tomb {
-			return ErrIntegrity
+			return errVerificationMismatch
 		}
 		targets[t.ID] = t
 		ops[o.ID] = o
 		for _, l := range links {
 			if !facts["links"].add(rowKey(l.Kind, l.FromID, l.ToID), []byte("1")) {
-				return ErrIntegrity
+				return errVerificationMismatch
 			}
 		}
 		if o.Phase == "abandoning" && old.Abandonment == nil {
 			a := o.Abandonment
 			if !facts["abandonments"].add(a.ID, encoded(*a)) || !facts["request_keys"].add(rowKey(t.ID, a.Key), encoded([]string{"abandon", o.ID, a.Fingerprint})) || !facts["decision_claims"].add(rowKey(a.Authority.DecisionRecord.StoreID, a.Authority.DecisionRecord.ID), encoded([]string{o.ID, "abandon"})) || !facts["tombstones"].add(o.ID, []byte(a.IntentID)) {
-				return ErrIntegrity
+				return errVerificationMismatch
 			}
 		}
 	}
@@ -241,7 +265,7 @@ func (s *Store) verify(ctx context.Context, q query) error {
 			}
 			expected, ok := f.rows[key]
 			if !ok || string(expected) != string(value) {
-				e = ErrIntegrity
+				e = errVerificationMismatch
 				break
 			}
 			seen++
@@ -255,13 +279,16 @@ func (s *Store) verify(ctx context.Context, q query) error {
 			return readErr
 		}
 		if seen != len(f.rows) {
-			return ErrIntegrity
+			return errVerificationMismatch
 		}
 	}
 	// Scalar FK columns must agree with their immutable snapshots as well.
 	for _, stmt := range []string{`SELECT count(*) FROM operations WHERE id!=json_extract(data,'$.ID') OR target!=json_extract(data,'$.Request.TargetID') OR decision_store!=json_extract(data,'$.Request.DecisionRecord.StoreID') OR decision_id!=json_extract(data,'$.Request.DecisionRecord.ID')`, `SELECT count(*) FROM versions WHERE id!=json_extract(data,'$.ID') OR target!=json_extract(data,'$.TargetID') OR operation!=json_extract(data,'$.OperationID')`, `SELECT count(*) FROM abandonments WHERE operation!=(SELECT id FROM operation_state WHERE json_extract(operation_state.data,'$.Abandonment.ID')=abandonments.id)`} {
-		if e = q.QueryRowContext(ctx, stmt).Scan(&count); e != nil || count != 0 {
-			return ErrIntegrity
+		if e = q.QueryRowContext(ctx, stmt).Scan(&count); e != nil {
+			return e
+		}
+		if count != 0 {
+			return errVerificationMismatch
 		}
 	}
 	return nil
@@ -284,7 +311,7 @@ func (s *Store) replayStep(ctx context.Context, q query, t Target, old, o Operat
 	want.Phase = o.Phase
 	var links []Link
 	var tomb string
-	bad := func() (Operation, Target, []Link, string, error) { return want, t, nil, "", ErrIntegrity }
+	bad := func() (Operation, Target, []Link, string, error) { return want, t, nil, "", errVerificationMismatch }
 	receipt := func(kind string) *Receipt {
 		if len(o.Receipts) != len(old.Receipts)+1 || !sameReceipts(o.Receipts[:len(old.Receipts)], old.Receipts) {
 			return nil
@@ -312,8 +339,11 @@ func (s *Store) replayStep(ctx context.Context, q query, t Target, old, o Operat
 			return bad()
 		}
 		r := o.Receipts[len(o.Receipts)-1]
-		if receipt(r.Kind) == nil || s.retirementProof(ctx, q, old, r, false) != nil {
+		if receipt(r.Kind) == nil {
 			return bad()
+		}
+		if e := s.retirementProof(ctx, q, old, r, false); e != nil {
+			return want, t, nil, "", verificationReadError(e)
 		}
 	case "committed":
 		r := receipt("commit")
@@ -360,8 +390,11 @@ func (s *Store) replayStep(ctx context.Context, q query, t Target, old, o Operat
 			return bad()
 		}
 		p, n := o.Receipts[len(old.Receipts)], o.Receipts[len(old.Receipts)+1]
-		if s.retirementProof(ctx, q, old, p, true) != nil || !s.validReceipt(old, n, "successor_disabled", old.Abandonment.IntentID) {
+		if !s.validReceipt(old, n, "successor_disabled", old.Abandonment.IntentID) {
 			return bad()
+		}
+		if e := s.retirementProof(ctx, q, old, p, true); e != nil {
+			return want, t, nil, "", verificationReadError(e)
 		}
 		want.Receipts = o.Receipts
 		t.OperationID = ""

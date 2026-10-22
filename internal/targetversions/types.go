@@ -16,12 +16,14 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/Azure/aks-durable-agents/decisionrecord"
+	"github.com/Azure/aks-durable-agents/internal/decisionrecord"
 )
 
 var (
 	ErrConflict    = errors.New("target version conflict")
-	ErrBusy        = errors.New("target or version store is busy")
+	ErrBusy        = errors.New("target version store lock contention")
+	ErrOccupied    = errors.New("target has a pending version operation")
+	ErrUnavailable = errors.New("target version store unavailable; reconcile exact request")
 	ErrIntegrity   = errors.New("target version integrity failure; reconcile retained state")
 	ErrUnsupported = errors.New("unsupported target version schema or kind")
 	ErrInvalid     = errors.New("invalid target version input")
@@ -250,7 +252,7 @@ func copiedDecisionDigest(d DecisionRecord) string {
 }
 func validDecisionRecord(d DecisionRecord, ref SubjectRef, act string) bool {
 	a := d.Authorization
-	return evidenceText(d.ID, 256) && evidenceText(d.StoreID, 256) && evidenceText(d.HostLineageID, 256) && keyOK(d.Request.Key) && d.Request.Workspace == ref.Workspace && d.Request.Subject == ref && validSubjectRef(ref) && string(d.Request.Action) == act && evidenceFeedback(d.Request.Feedback) && digestOK(d.RequestDigest) && d.Actor.Valid() && d.Outcome == "recorded" && d.RefusalCode == "" && d.Mode == decisionrecord.NonExecutingMode && !d.CommittedAt.IsZero() && a != nil && a.Actor == d.Actor && a.Subject == ref && string(a.Action) == act && evidenceText(a.PolicyVersion, 256) && grantsOK(a.GrantIDs) && evidenceText(a.Role, 256)
+	return evidenceText(d.ID, 256) && evidenceText(d.StoreID, 256) && evidenceText(d.HostLineageID, 256) && keyOK(d.Request.Key) && d.Request.Workspace == ref.Workspace && d.Request.Subject == ref && validSubjectRef(ref) && string(d.Request.Action) == act && evidenceFeedback(d.Request.Feedback) && digestOK(d.RequestDigest) && evidenceText(d.Actor.Issuer, 256) && evidenceText(d.Actor.Subject, 256) && d.Outcome == "recorded" && d.RefusalCode == "" && d.Mode == decisionrecord.NonExecutingMode && !d.CommittedAt.IsZero() && a != nil && evidenceText(a.Actor.Issuer, 256) && evidenceText(a.Actor.Subject, 256) && a.Actor == d.Actor && a.Subject == ref && string(a.Action) == act && evidenceText(a.PolicyVersion, 256) && grantsOK(a.GrantIDs) && evidenceText(a.Role, 256)
 }
 func (r Request) fingerprint() string {
 	f := []string{r.TargetID, r.Key, r.Intent, r.SourceVersionID, number(r.ExpectedRevision), r.Predecessor.Kind, r.Predecessor.ID}

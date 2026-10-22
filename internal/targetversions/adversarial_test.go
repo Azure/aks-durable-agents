@@ -75,7 +75,7 @@ func TestRefusalPrivacy(t *testing.T) {
 		}
 	})
 	t.Run("PrivateDirectoryCreation", func(t *testing.T) {
-		base := filepath.Join(t.TempDir(), "no-write")
+		base := filepath.Join(privateTempDir(t), "no-write")
 		if err := os.Mkdir(base, 0500); err != nil {
 			t.Fatal(err)
 		}
@@ -85,7 +85,9 @@ func TestRefusalPrivacy(t *testing.T) {
 		if s != nil {
 			defer s.Close()
 		}
-		fixedIntegrity(t, err)
+		if err != ErrUnavailable {
+			t.Fatalf("directory creation refusal: got %v, want %v", err, ErrUnavailable)
+		}
 		if err != nil && strings.Contains(err.Error(), marker) {
 			t.Error("private path component was copied to refusal")
 		}
@@ -93,7 +95,7 @@ func TestRefusalPrivacy(t *testing.T) {
 }
 
 func TestTransactionRefusalsAreFixed(t *testing.T) {
-	for _, want := range []error{ErrInvalid, ErrConflict, ErrBusy, ErrIntegrity, ErrUnsupported, context.Canceled, context.DeadlineExceeded} {
+	for _, want := range []error{ErrInvalid, ErrConflict, ErrBusy, ErrOccupied, ErrUnavailable, ErrIntegrity, ErrUnsupported, context.Canceled, context.DeadlineExceeded} {
 		t.Run(want.Error(), func(t *testing.T) {
 			s, _ := newStore(t)
 			err := s.transact(ctx, func(query) error { return fmt.Errorf("%w: private diagnostic", want) })
@@ -130,7 +132,9 @@ func TestClosedStoreRefusalsAreFixed(t *testing.T) {
 			case "StartAbort":
 				_, err = s.StartAbort(ctx, step(o), "cancel")
 			}
-			fixedIntegrity(t, err)
+			if err != ErrUnavailable {
+				t.Fatalf("closed-store refusal: got %v, want %v", err, ErrUnavailable)
+			}
 		})
 	}
 }

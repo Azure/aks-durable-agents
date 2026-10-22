@@ -17,6 +17,10 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
+// errVerificationMismatch records an observed invariant failure, unlike a query
+// that could not complete. Cancellation cannot revoke that observation.
+var errVerificationMismatch = errors.New("target version verification mismatch")
+
 type Store struct {
 	db                   *sql.DB
 	bad                  atomic.Bool
@@ -53,8 +57,31 @@ func ownedBy(path string, uid uint32) error {
 }
 
 func privatePath(path string, create bool) error {
+	cleanup, err := preparePath(path, create, syncDirectory)
+	if err != nil && cleanup != nil {
+		cleanup()
+	}
+	return normalizeError(context.Background(), err)
+}
+
+func syncDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	err = dir.Sync()
+	closeErr := dir.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
+}
+
+// preparePath returns cleanup ownership only after an exclusive creation. The
+// caller retains it through SQLite initialization, not just path validation.
+func preparePath(path string, create bool, syncDir func(string) error) (func(), error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
-		return ErrInvalid
+		return nil, ErrInvalid
 	}
 	parent := filepath.Dir(path)
 	for p := parent; ; p = filepath.Dir(p) {
@@ -63,10 +90,10 @@ func privatePath(path string, create bool) error {
 			if p == parent && create && os.IsNotExist(e) {
 				continue
 			}
-			return ErrIntegrity
+			return nil, e
 		}
 		if !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
-			return ErrIntegrity
+			return nil, ErrIntegrity
 		}
 		if p == filepath.Dir(p) {
 			break
@@ -74,26 +101,39 @@ func privatePath(path string, create bool) error {
 	}
 	if create {
 		if e := os.Mkdir(parent, 0700); e != nil && !os.IsExist(e) {
-			return e
+			return nil, e
 		}
 	}
 	st, e := os.Lstat(parent)
-	if e != nil || st.Mode().Perm() != 0700 {
-		return ErrIntegrity
+	if e != nil {
+		return nil, e
+	}
+	if !st.IsDir() || st.Mode()&os.ModeSymlink != 0 || st.Mode().Perm() != 0700 {
+		return nil, ErrIntegrity
 	}
 	if err := ownedBy(parent, uint32(os.Getuid())); err != nil {
-		return err
+		return nil, err
+	}
+	// Sync even when Mkdir found an existing directory: an earlier failed
+	// initializer may have created it without persisting its containing entry.
+	if create {
+		if e := syncDir(filepath.Dir(parent)); e != nil {
+			return nil, e
+		}
 	}
 	for _, suffix := range []string{"-journal", "-wal", "-shm"} {
 		st, e := os.Lstat(path + suffix)
 		if os.IsNotExist(e) {
 			continue
 		}
-		if e != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 {
-			return ErrIntegrity
+		if e != nil {
+			return nil, e
+		}
+		if !st.Mode().IsRegular() || st.Mode().Perm() != 0600 {
+			return nil, ErrIntegrity
 		}
 		if err := ownedBy(path+suffix, uint32(os.Getuid())); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if !create {
@@ -102,43 +142,43 @@ func privatePath(path string, create bool) error {
 		// Inspect existing files without opening/closing an extra descriptor.
 		var stat unix.Stat_t
 		if err := unix.Lstat(path, &stat); err != nil {
-			return err
+			return nil, err
 		}
 		if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Mode&0777 != 0600 || stat.Size == 0 || int(stat.Uid) != os.Getuid() || stat.Nlink != 1 {
-			return ErrIntegrity
+			return nil, ErrIntegrity
 		}
-		return nil
+		return nil, nil
 	}
-	flags := unix.O_RDWR | unix.O_NOFOLLOW | unix.O_CLOEXEC
-	if create {
-		flags |= unix.O_CREAT | unix.O_EXCL
-	}
-	fd, e := unix.Open(path, flags, 0600)
+	fd, e := unix.Open(path, unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_CREAT|unix.O_EXCL, 0600)
 	if e != nil {
-		return e
+		return nil, e
 	}
 	f := os.NewFile(uintptr(fd), path)
 	defer f.Close()
 	st, e = f.Stat()
-	if e != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || (!create && st.Size() == 0) {
-		return ErrIntegrity
+	if e != nil {
+		return nil, e
+	}
+	cleanup := func() {
+		// Do not unlink a replacement or any sidecar that we did not create.
+		if current, err := os.Lstat(path); err == nil && os.SameFile(st, current) {
+			_ = os.Remove(path)
+		}
+	}
+	if !st.Mode().IsRegular() || st.Mode().Perm() != 0600 {
+		return cleanup, ErrIntegrity
 	}
 	var stat unix.Stat_t
-	if e = unix.Fstat(fd, &stat); e != nil || int(stat.Uid) != os.Getuid() || stat.Nlink != 1 {
-		return ErrIntegrity
+	if e = unix.Fstat(fd, &stat); e != nil {
+		return cleanup, e
 	}
-	if create {
-		if e = f.Sync(); e != nil {
-			return e
-		}
-		dir, e := os.Open(parent)
-		if e != nil {
-			return e
-		}
-		defer dir.Close()
-		return dir.Sync()
+	if int(stat.Uid) != os.Getuid() || stat.Nlink != 1 {
+		return cleanup, ErrIntegrity
 	}
-	return nil
+	if e = f.Sync(); e != nil {
+		return cleanup, e
+	}
+	return cleanup, syncDir(parent)
 }
 func Create(path string) (*Store, error) { return openStore(path, "", true) }
 func Open(path, expectedStoreID string) (*Store, error) {
@@ -148,12 +188,23 @@ func Open(path, expectedStoreID string) (*Store, error) {
 	return openStore(path, expectedStoreID, false)
 }
 func openStore(path, expected string, create bool) (*Store, error) {
-	if e := privatePath(path, create); e != nil {
-		return nil, ErrIntegrity
+	return openStoreWithSync(path, expected, create, syncDirectory)
+}
+
+func openStoreWithSync(path, expected string, create bool, syncDir func(string) error) (_ *Store, err error) {
+	cleanup, e := preparePath(path, create, syncDir)
+	defer func() {
+		if err != nil && cleanup != nil {
+			cleanup()
+		}
+		err = normalizeError(context.Background(), err)
+	}()
+	if e != nil {
+		return nil, e
 	}
 	// DELETE is SQLite's initial persistent mode. Open checks it without changing
 	// it, so an unsupported schema is never converted from a different journal mode.
-	params := url.Values{"mode": {"rw"}, "_pragma": {"busy_timeout(5000)", "synchronous(FULL)", "foreign_keys(1)"}}
+	params := url.Values{"mode": {"rw"}, "_pragma": {"busy_timeout(5000)", "synchronous(EXTRA)", "foreign_keys(1)"}}
 	u := url.URL{Scheme: "file", Path: path, RawQuery: params.Encode()}
 	db, e := sql.Open("sqlite", u.String())
 	if e != nil {
@@ -175,9 +226,13 @@ func openStore(path, expected string, create bool) (*Store, error) {
 			_, e := q.ExecContext(context.Background(), "INSERT INTO metadata VALUES(1,1,?,?)", s.ID, s.BackendLineageID)
 			return e
 		}
-		var v int
-		if e := q.QueryRowContext(context.Background(), "SELECT schema_version,store_id,backend_id FROM metadata WHERE singleton=1").Scan(&v, &s.ID, &s.BackendLineageID); e != nil {
+		var rawVersion any
+		if e := q.QueryRowContext(context.Background(), "SELECT schema_version,store_id,backend_id FROM metadata WHERE singleton=1").Scan(&rawVersion, &s.ID, &s.BackendLineageID); e != nil {
 			return e
+		}
+		v, validVersion := rawVersion.(int64)
+		if !validVersion {
+			return errVerificationMismatch
 		}
 		if v != 1 {
 			return ErrUnsupported
@@ -200,6 +255,15 @@ func normalizeError(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
 	}
+	if errors.Is(err, errVerificationMismatch) {
+		return ErrIntegrity
+	}
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	var timeErr *time.ParseError
+	if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) || errors.As(err, &timeErr) {
+		return ErrIntegrity
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -209,15 +273,24 @@ func normalizeError(ctx context.Context, err error) error {
 		}
 	}
 	var sqliteErr *sqlite.Error
-	if errors.As(err, &sqliteErr) && (sqliteErr.Code()&255 == sqlite3.SQLITE_BUSY || sqliteErr.Code()&255 == sqlite3.SQLITE_LOCKED) {
-		return ErrBusy
+	if errors.As(err, &sqliteErr) {
+		switch sqliteErr.Code() & 255 {
+		case sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED:
+			return ErrBusy
+		case sqlite3.SQLITE_ERROR, sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB, sqlite3.SQLITE_SCHEMA, sqlite3.SQLITE_CONSTRAINT:
+			// Internal SQL is fixed; schema/constraint failures are not an
+			// unavailable disk or connection. Do not expose driver diagnostics.
+			return ErrIntegrity
+		default:
+			return ErrUnavailable
+		}
 	}
-	for _, class := range []error{ErrConflict, ErrBusy, ErrIntegrity, ErrUnsupported, ErrInvalid} {
+	for _, class := range []error{ErrConflict, ErrBusy, ErrOccupied, ErrUnavailable, ErrIntegrity, ErrUnsupported, ErrInvalid} {
 		if errors.Is(err, class) {
 			return class
 		}
 	}
-	return ErrIntegrity
+	return ErrUnavailable
 }
 
 func (s *Store) transact(ctx context.Context, fn func(query) error) error {
@@ -233,7 +306,7 @@ func (s *Store) transaction(ctx context.Context, verifying bool, fn func(query) 
 			defer c.Close()
 		}
 		err = normalizeError(ctx, err)
-		if verifying && err != nil && err != ErrBusy && err != context.Canceled && err != context.DeadlineExceeded {
+		if verifying && err != nil && err != ErrUnavailable && err != ErrBusy && err != context.Canceled && err != context.DeadlineExceeded {
 			s.bad.Store(true)
 		}
 	}()
@@ -269,10 +342,15 @@ func load[T any](ctx context.Context, q query, stmt string, args ...any) (T, err
 		// Internal callers distinguish missing facts from failed reads.
 		return v, e
 	}
-	if e == nil {
-		e = json.Unmarshal(b, &v)
+	if e != nil {
+		return v, normalizeError(ctx, e)
 	}
-	return v, normalizeError(ctx, e)
+	if e = json.Unmarshal(b, &v); e != nil {
+		// All decoder failures concern retained data, including custom field
+		// decoders that do not return a json.SyntaxError or UnmarshalTypeError.
+		return v, ErrIntegrity
+	}
+	return v, nil
 }
 func target(ctx context.Context, q query, id string) (Target, error) {
 	t, err := load[Target](ctx, q, "SELECT data FROM targets WHERE id=?", id)
@@ -393,7 +471,7 @@ func (s *Store) Begin(ctx context.Context, r Request) (out Operation, err error)
 			return ErrUnsupported
 		}
 		if t.OperationID != "" {
-			return ErrBusy
+			return ErrOccupied
 		}
 		if t.Revision != r.ExpectedRevision || t.Generation >= uint64(1<<63-1) || t.Predecessor != r.Predecessor {
 			return ErrConflict
@@ -536,11 +614,17 @@ func terminal(ctx context.Context, q query, id string) (Operation, error) {
 }
 func (s *Store) basicVerify(ctx context.Context, q query) error {
 	var check, mode string
-	if e := q.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&check); e != nil || check != "ok" {
-		return ErrIntegrity
+	if e := q.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&check); e != nil {
+		return e
 	}
-	if e := q.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); e != nil || mode != "delete" {
-		return ErrIntegrity
+	if check != "ok" {
+		return errVerificationMismatch
+	}
+	if e := q.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); e != nil {
+		return e
+	}
+	if mode != "delete" {
+		return errVerificationMismatch
 	}
 	rows, e := q.QueryContext(ctx, "PRAGMA foreign_key_check")
 	if e != nil {
@@ -548,7 +632,7 @@ func (s *Store) basicVerify(ctx context.Context, q query) error {
 	}
 	defer rows.Close()
 	if rows.Next() {
-		return ErrIntegrity
+		return errVerificationMismatch
 	}
 	return rows.Err()
 }
