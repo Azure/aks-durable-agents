@@ -227,8 +227,7 @@ func (a *application) Close() {
 	})
 }
 
-// Run owns both listeners and all host resources until cancellation. Health is
-// always loopback; private Sessions exposure requires the explicit TLS opt-in.
+// Run owns both loopback listeners and all host resources until cancellation.
 func Run(ctx context.Context, c Config, logger *slog.Logger) error {
 	if logger == nil {
 		logger = slog.Default()
@@ -239,11 +238,7 @@ func Run(ctx context.Context, c Config, logger *slog.Logger) error {
 	if c.ModelPolicy == "" {
 		return errors.New("host requires explicit -model-policy: unknown price or unbounded model calls are refused")
 	}
-	network := "tcp"
-	if c.TrustedNetworkSessions {
-		network = "tcp4"
-	}
-	lis, err := net.Listen(network, c.Addr)
+	lis, err := net.Listen("tcp", c.Addr)
 	if err != nil {
 		return fmt.Errorf("sessions listener: %w", err)
 	}
@@ -260,9 +255,6 @@ func Run(ctx context.Context, c Config, logger *slog.Logger) error {
 	defer a.Close()
 	if c.Mode == authn.Off {
 		logger.Warn("authentication off: anyone who can reach the host can act on and approve sessions; trusted-network development only")
-		if c.TrustedNetworkSessions {
-			logger.Warn("private TLS Sessions listener: identity not exercised; network isolation must be enforced")
-		}
 	}
 	logger.Warn("experimental proof only: host-RPC authorization in required mode, not journal-wide enforcement or verified approval attribution; no public exposure", "auth_mode", string(c.Mode))
 	logger.Info("host listening", "sessions", lis.Addr().String(), "health", ops.Addr().String())

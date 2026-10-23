@@ -44,8 +44,7 @@ It targets **AKS 1.37**, Linux amd64, OpenID Connect (OIDC) and workload identit
 Cilium enforcement and Azure Disk CSI. Reviewed probe-capable image digests,
 prepared private storage, and identity/TLS/model-policy inputs are required;
 bare defaults cannot run. The root Dockerfile alone lacks the **legacy fixture
-profile's** probe binary; the native profile uses `/host health-probe` and
-requires its own reviewed producer image and prepared archives.
+profile's** probe binary; the Substrate profile uses `/host health-probe`.
 Workloads start dormant until the operator verifies policy enforcement.
 Read the [backup and restore recipe](../ops/backup/README.md) before opening retained data.
 
@@ -110,11 +109,10 @@ session/key; false or omitted declarations refuse without another tool call. A s
 explicit `AzureCLICredential`, no retries, and at most three calls; missing RBAC
 must be reported, not assigned.
 
-Run the backup and native producer unit tests separately:
+Run the backup and AKS unit tests separately:
 
 ```sh
 python3 -B -m unittest discover -s ops/backup -p 'test_*.py'
-python3 -B -m unittest discover -s ops/canvas -p 'test_*.py'
 python3 -B -m unittest discover -s ops/aks -p 'test_*.py'
 ```
 

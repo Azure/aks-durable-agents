@@ -95,8 +95,6 @@ jobs:
         run: python3 -B -m unittest discover -s ops/aks -p 'test_*.py'
       - name: Backup unit tests
         run: python3 -B -m unittest discover -s ops/backup -p 'test_*.py'
-      - name: Native producer unit tests
-        run: python3 -B -m unittest discover -s ops/canvas -p 'test_*.py'
       - name: Lint, template, golden and refusal tests
         run: python3 -B charts/aks-durable-agents/tests/test_chart.py
 

@@ -43,7 +43,6 @@ interpreting any deployment or recovery claim.
 | [`internal/`](../internal/) | Host assembly, approver policy and Unix-socket executor client. |
 | [`charts/`](../charts/) | Digest-pinned two-pod packaging, retained single-writer storage and NetworkPolicies. |
 | [`ops/backup/`](../ops/backup/) | Stopped-writer backup and isolated, socket-denied replay restore. |
-| [`ops/canvas/`](../ops/canvas/) | Native producer offline checks and optional external-input kind qualification. |
 
 ## Develop and qualify a preview release
 
