@@ -259,11 +259,15 @@ actor capability and native-tool checks still run before the provisioning epoch.
 Missing, expired or mismatched evidence fails Actions and updates the **same AKS
 regression tracker** at stage `substrate-inputs`, with fixed recovery guidance:
 re-run the original Images push run for the source pinned in `PUBLISHED_IMAGES`
-while within GitHub's 30-day re-run window, then wait for successful Verified
-image pins. If only verification is missing and publication is retained, dispatch
-Verified image pins with that `publish_run_id`. If too old, publish/verify a
-reviewed replacement and refresh the chart pins, `PUBLISHED_IMAGES` and matching
-helper configuration/receipt; never select latest as a fallback. Evidence is
+within GitHub's 30-day re-run window and wait for successful Verified image pins
+**only if its current-main stale-source check still accepts that source**. If only
+verification is missing and publication is retained, dispatch Verified image pins
+with that `publish_run_id`, subject to the same check. Code or workflow changes
+on main can make the pinned publication stale even inside the re-run window;
+those recovery runs then skip exporting verified evidence. For a stale source
+or evidence too old to restore, publish/verify a reviewed replacement and refresh
+the chart pins, `PUBLISHED_IMAGES` and matching helper configuration/receipt;
+never select latest as a fallback. Evidence is
 retained 30 days, so pin/evidence maintenance is required. No automatic publication,
 new IAM, billing read, retry or notification recipient is added. The seven-day
 scenario proof retention, original 30+15-minute resource clock and teardown stay

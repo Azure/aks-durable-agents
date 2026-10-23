@@ -397,7 +397,7 @@ class AksTrackerTests(unittest.TestCase):
         self.track(api, stage="substrate-inputs")
         self.assertEqual(len(api.issues), 1)
         body = api.issues[0]["body"]
-        for text in ("human note", "Stage: substrate-inputs", "Re-run", "Images", "PUBLISHED_IMAGES", "30-day", "refresh", "publish_run_id"):
+        for text in ("human note", "Stage: substrate-inputs", "Re-run", "Images", "PUBLISHED_IMAGES", "30-day", "stale-source check", "stale", "refresh", "publish_run_id"):
             self.assertIn(text, body)
         self.assertEqual([c[0] for c in api.writes()], ["PATCH"])
         self.assertEqual(api.issues[0]["title"], AKS_TITLE)

@@ -33,7 +33,7 @@ class InputGateTests(unittest.TestCase):
             env = dict(os.environ, RUNNER_TEMP=temp, PUBLISHED_IMAGES="")
             result = subprocess.run([sys.executable, "-B", script, "prepare", "--scheduled", "--source", temp, "--output", str(Path(temp)/"output")], env=env, capture_output=True, check=False, text=True)
             self.assertEqual(result.returncode, 1)
-            for text in ("Re-run", "Images", "PUBLISHED_IMAGES", "30-day", "refresh", "No provisioning authorized"):
+            for text in ("Re-run", "Images", "PUBLISHED_IMAGES", "30-day", "stale-source check", "stale", "refresh", "No provisioning authorized"):
                 self.assertIn(text, result.stderr)
             self.assertNotIn("Traceback", result.stderr)
             self.assertFalse((Path(temp)/"output/prepared.tar.gz").exists())

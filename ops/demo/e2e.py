@@ -27,9 +27,11 @@ AKS_START, AKS_END = "<!-- aks-e2e-status:start -->", "<!-- aks-e2e-status:end -
 AKS_STAGES = ("config", "preflight", "substrate-inputs", "create", "wait", "federate", "scenario", "teardown", "finalize")
 SUBSTRATE_EVIDENCE_RECOVERY = (
     "For unavailable, expired or mismatched Substrate image evidence: "
-    "Re-run the Images run for the source pinned in PUBLISHED_IMAGES while within GitHub\'s 30-day re-run window, "
-    "then wait for successful Verified image pins. If only verification is missing, re-run Verified image pins with that publish_run_id. "
-    "If the evidence is too old, refresh the reviewed chart image pins, PUBLISHED_IMAGES and matching backup-helper receipt."
+    "Re-run the Images run for the source pinned in PUBLISHED_IMAGES within GitHub\'s 30-day re-run window "
+    "and wait for Verified image pins only if its current-main stale-source check still accepts that source. "
+    "If only verification is missing, dispatch Verified image pins with that publish_run_id, subject to the same check. "
+    "For a stale source or evidence too old to restore, publish and verify a reviewed replacement, then refresh "
+    "the chart image pins, PUBLISHED_IMAGES and matching backup-helper receipt."
 )
 
 
