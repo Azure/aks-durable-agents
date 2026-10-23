@@ -1,5 +1,3 @@
-//go:build qualification_workspace_conformance
-
 package qualification
 
 import (

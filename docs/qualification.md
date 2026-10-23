@@ -160,16 +160,15 @@ cannot make an unactivated suite eligible on the running host.
 
 ## Workspace conformance test
 
-The opt-in `qualification_workspace_conformance` test uses the real decision
-ledger to record a synthetic decision, then admits a qualification plan in the
-same workspace. It checks namespace compatibility only, not a qualification-to-
-decision adapter or activation authority. When both packages are present in a
-combined source checkout, run:
+`TestQualificationWorkspaceJoin` uses the real decision ledger to record a
+synthetic decision, then admits a qualification plan in the same workspace.
+Both packages are now in the same source tree, so the test runs in ordinary CI
+without a build tag. It checks namespace compatibility only, not an adapter or
+activation authority. To run it directly:
 
 ```sh
-go test -race -tags qualification_workspace_conformance ./internal/qualification -run '^TestQualificationWorkspaceJoin$' -count=1
+go test -race ./internal/qualification -run '^TestQualificationWorkspaceJoin$' -count=1
 ```
 
-The test is excluded from ordinary CI until the decision ledger is available in
-the same source tree. Ordinary qualification tests cover the UTF-8/byte-length
-boundaries and exact workspace round-trip independently.
+Other qualification tests cover the UTF-8/byte-length boundaries and exact
+workspace round-trip independently.
