@@ -17,14 +17,7 @@ python3 -B -m unittest discover -s ops/backup -p 'test_*.py'
 ```
 
 These exercise components with fake credentials and local test servers, not a
-cluster workflow. The
-[local team proof](../proofs/squadbackend/README.md) is a separate non-shipping
-Go module. From `proofs/squadbackend/`, `go test -race ./...` tests admission,
-scoped executor and receipt-gated queues. Its optional `squadproof` tag enables
-local runtime fixtures using production's Sessions components;
-`go test -race -tags squadproof ./...` in that module tests those explicitly.
-The production host and model limits are unchanged. Neither suite starts a
-cluster or supplies an automatic team coordinator.
+cluster workflow.
 For the self-contained fake-model kind workflow, use
 [`make demo`](../ops/demo/README.md); it builds its own client inside Docker.
 
@@ -74,22 +67,6 @@ go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
 staticcheck ./...
 go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
 govulncheck ./...
-(
-  cd proofs/squadbackend
-  go mod download
-  go mod verify
-  go mod tidy -diff
-  go build ./...
-  go vet ./...
-  go test -race ./...
-  go test -tags squadproof -list '^TestProofBuildBoundary$' ./internal/squadproof | grep -x TestProofBuildBoundary
-  go test -race -tags squadproof ./...
-  go vet -tags squadproof ./...
-  go build -tags squadproof -o .build/squad-proof ./cmd/squad-proof
-  staticcheck -tags squadproof ./...
-  govulncheck ./...
-  govulncheck -tags squadproof ./...
-)
 ```
 
 Image validation additionally runs `bash ops/images/vulncheck.sh` after

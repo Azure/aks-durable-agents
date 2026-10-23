@@ -11,12 +11,8 @@ permissions:
 jobs:
   go:
     name: Go checks
-    needs: proof
-    if: ${{ always() }}
     runs-on: ubuntu-24.04
     steps:
-      - name: Require successful proof checks
-        run: test '${{ needs.proof.result }}' = 'success'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -43,52 +39,6 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           govulncheck ./...
-
-  proof:
-    name: SquadBackend proof checks
-    runs-on: ubuntu-24.04
-    defaults:
-      run:
-        working-directory: proofs/squadbackend
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: proofs/squadbackend/go.mod
-          cache-dependency-path: |
-            go.sum
-            proofs/squadbackend/go.sum
-      - name: Verify proof toolchain and dependencies
-        run: |
-          test "$(go env GOVERSION)" = "$(awk '$1 == "toolchain" {print $2}' go.mod)"
-          go mod download
-          go mod verify
-          go mod tidy -diff
-      - name: Module boundary, aligned pins and default proof tests
-        run: |
-          go build ./...
-          go vet ./...
-          go test -race ./...
-      - name: Tagged proof fixtures and default-command refusal
-        run: |
-          go test -tags squadproof -list '^TestProofBuildBoundary$' ./internal/squadproof | grep -x TestProofBuildBoundary
-          go test -race -tags squadproof ./...
-          go vet -tags squadproof ./...
-          go build -tags squadproof -o "$RUNNER_TEMP/squad-proof" ./cmd/squad-proof
-          if go build -o "$RUNNER_TEMP/unexpected-proof" ./cmd/squad-proof 2> "$RUNNER_TEMP/proof-default.log"; then
-            echo 'proof command compiled without its explicit build tag' >&2
-            exit 1
-          fi
-          grep -q 'build constraints exclude all Go files' "$RUNNER_TEMP/proof-default.log"
-      - name: Proof static and vulnerability checks
-        run: |
-          go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
-          staticcheck -tags squadproof ./...
-          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
-          govulncheck ./...
-          govulncheck -tags squadproof ./...
 
   runner_tools:
     name: AKS runner tool report
