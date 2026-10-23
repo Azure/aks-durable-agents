@@ -50,13 +50,54 @@ class WorkflowTests(unittest.TestCase):
         workflow = self.workflow("aks-e2e.yml")
         events = workflow.get("on", workflow.get(True))
         self.assertEqual(set(events), {"workflow_dispatch", "schedule"})
-        self.assertEqual(events["schedule"], [{"cron": "43 5 * * *"}])
+        self.assertEqual(events["schedule"], [{"cron": "43 5 * * *"}, {"cron": "17 8 * * 1,3,5"}])
         text = (ROOT / ".github/workflows/aks-e2e.yml").read_text()
         self.assertFalse(events["workflow_dispatch"]["inputs"]["run_scenario"]["default"])
         self.assertIn("cleanup.py validate", text)
         self.assertNotIn("pull_request_target", text)
         self.assertNotIn("make demo", text)
         self.assertIn("needs.config.outputs.scenario == 'false'", workflow["jobs"]["validate"]["if"])
+
+    def test_scheduled_mode_is_decided_once_and_prepaid_step_selects_correct_flags(self):
+        import tempfile
+        jobs = self.workflow("aks-e2e.yml")["jobs"]
+        config = next(s for s in jobs["config"]["steps"] if s.get("id") == "config")
+        self.assertEqual(config["env"]["EVENT_SCHEDULE"], "${{ github.event.schedule }}")
+        self.assertEqual(jobs["config"]["outputs"]["scheduled_substrate"], "${{ steps.config.outputs.scheduled_substrate }}")
+        step = next(s for s in jobs["substrate-inputs"]["steps"] if "substrate_inputs.py prepare" in s.get("run", ""))
+        self.assertEqual(step["env"]["SCHEDULED_SUBSTRATE"], "${{ needs.config.outputs.scheduled_substrate }}")
+        with tempfile.TemporaryDirectory() as temp:
+            capture = Path(temp) / "args"
+            for scheduled in ("true", "false"):
+                env = {"SCHEDULED_SUBSTRATE": scheduled, "PUBLISH_RUN_ID": "123", "VERIFY_RUN_ID": "456", "RUNNER_TEMP": temp, "GITHUB_WORKSPACE": temp, "CAPTURE": str(capture)}
+                script = 'python3() { printf "%s\\n" "$@" > "$CAPTURE"; }\n' + step["run"]
+                result = subprocess.run(["bash", "-euo", "pipefail", "-c", script], env=env, capture_output=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                args = capture.read_text().splitlines()
+                self.assertEqual("--scheduled" in args, scheduled == "true")
+                self.assertEqual("--publish-run-id" in args, scheduled == "false")
+                self.assertEqual("--verify-run-id" in args, scheduled == "false")
+
+    def test_native_input_reporting_preserves_daily_stages_and_teardown_precedence(self):
+        import tempfile
+        job = self.workflow("aks-e2e.yml")["jobs"]["report"]
+        self.assertIn("substrate-inputs", job["needs"])
+        step = next(s for s in job["steps"] if "ops/demo/e2e.py track" in s.get("run", ""))
+        base = {name + "_RESULT": "success" for name in ("CONFIG", "PREFLIGHT", "CREATE", "WAIT", "FEDERATE", "SCENARIO", "TEARDOWN")}
+        base.update(INPUTS_RESULT="skipped", VARIANT="no-sandbox", STARTED="", GITHUB_REPOSITORY="Azure/aks-durable-agents", GITHUB_RUN_ID="123", GITHUB_SHA="a"*40, RUN_URL="https://github.com/Azure/aks-durable-agents/actions/runs/123")
+        cases = [({"VARIANT":"substrate-gvisor","INPUTS_RESULT":"failure","CREATE_RESULT":"skipped"}, "substrate-inputs"),
+                 ({"VARIANT":"substrate-gvisor","INPUTS_RESULT":"failure","PREFLIGHT_RESULT":"failure"}, "preflight"),
+                 ({"VARIANT":"substrate-gvisor","INPUTS_RESULT":"failure","STARTED":"123","TEARDOWN_RESULT":"failure"}, "teardown"),
+                 ({"SCENARIO_RESULT":"failure"}, "scenario"), ({"CREATE_RESULT":"failure"}, "create")]
+        with tempfile.TemporaryDirectory() as temp:
+            capture = Path(temp) / "args"
+            for changes, expected in cases:
+                script = 'python3() { printf "%s\\n" "$@" > "$CAPTURE"; }\n' + step["run"]
+                result = subprocess.run(["bash", "-euo", "pipefail", "-c", script], env=dict(base, CAPTURE=str(capture), **changes), capture_output=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                args = capture.read_text().splitlines()
+                self.assertEqual(args[args.index("--stage")+1], expected)
+                self.assertEqual(args[args.index("--profile")+1], "aks")
 
     def test_schedule_intent_reaches_cleanup_and_failure_paths(self):
         jobs = self.workflow("aks-e2e.yml")["jobs"]
