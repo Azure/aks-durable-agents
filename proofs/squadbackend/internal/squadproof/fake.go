@@ -93,6 +93,11 @@ func (f *fakeModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "off-package proof role", 400)
 		return
 	}
+	if phase == "finish" {
+		if err := f.ledger.hit(r.Context(), "host.finish."+role); err != nil {
+			return
+		}
+	}
 	plan := fakePlan(role, phase, input)
 	content, _ := json.Marshal(plan)
 	usage := map[string]int{"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}

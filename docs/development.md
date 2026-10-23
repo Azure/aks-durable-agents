@@ -21,10 +21,13 @@ cluster workflow. The
 [local team proof](../proofs/squadbackend/README.md) is a separate non-shipping
 Go module. From `proofs/squadbackend/`, `go test -race ./...` tests admission,
 scoped executor and receipt-gated queues. Its optional `squadproof` tag enables
-local runtime fixtures using production's Sessions components;
-`go test -race -tags squadproof ./...` in that module tests those explicitly.
-The production host and model limits are unchanged. Neither suite starts a
-cluster or supplies an automatic team coordinator.
+local fixtures and a bounded synthetic broker using production's Sessions
+components. `go test -race -tags squadproof ./...` in that module runs the offline
+actual-process crash matrix and builds its tagged CLI locally.
+Retained-ledger reopen requires quiescent writers: hot broker-only restart and
+online ledger reopening are not proven. The production host and model limits
+are unchanged. Neither suite starts a cluster or supplies a production team
+coordinator. See the proof README for bounded scenario and copy-only replay commands.
 For the self-contained fake-model kind workflow, use
 [`make demo`](../ops/demo/README.md); it builds its own client inside Docker.
 

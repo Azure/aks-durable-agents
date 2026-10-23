@@ -100,7 +100,15 @@ func serveTool(ctx context.Context, conn net.Conn, l *Ledger) {
 		if req.Tool == "publish" || req.Tool == "checkpoint" {
 			mediation = api.MediationRequiresApproval
 		}
+		if err := l.hit(ctx, "executor.before-"+req.Tool); err != nil {
+			return
+		}
 		result, err = (&Executor{Ledger: l}).Execute(ctx, controller.ToolCallContext{SessionUID: req.SessionUID}, api.ToolCall{ID: req.CallID, Tool: req.Tool, Args: req.Arguments, IdempotencyKey: req.Key, Mediation: mediation})
+	}
+	if err == nil {
+		if cutErr := l.hit(ctx, "executor.after-"+req.Tool); cutErr != nil {
+			return
+		}
 	}
 	response := toolResponse{Version: 1, CallID: req.CallID, IsError: err != nil, Output: result.Output}
 	if err != nil {
