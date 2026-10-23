@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manual selection and verified input preparation BEFORE a provisioning epoch."""
+"""Closed scenario selection and verified input preparation BEFORE provisioning."""
 import argparse
 import json
 import os
@@ -17,7 +17,11 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def selection(env):
     if env.get("EVENT_NAME") == "schedule":
-        return "no-sandbox"
+        if env.get("EVENT_SCHEDULE") == "43 5 * * *":
+            return "no-sandbox"
+        if env.get("EVENT_SCHEDULE") != "17 8 * * 1,3,5" or env.get("AKS_SUBSTRATE_ENABLED") != "true":
+            raise ValueError("unknown or disabled scheduled variant")
+        return "substrate-gvisor"
     variant = env.get("VARIANT") or "no-sandbox"
     if variant not in ("no-sandbox", "substrate-gvisor"):
         raise ValueError("unknown scenario variant")
@@ -41,15 +45,18 @@ def capability_command(image):
     return ["docker", "run", "--rm", "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--entrypoint", "/session-fixture", image, "actor-harness", "--check"]
 
 
-def prepare(output, source, publish_id, verify_id):
+def prepare(output, source, publish_id, verify_id, *, scheduled=False):
     # Imports stay lazy: config selection needs only stdlib and no credentials.
     sys.path[:0] = [str(ROOT), str(ROOT / "ops/images"), str(ROOT / "ops/aks")]
     import lifecycle
     import tool_audit
+    from substrate_schedule import EvidenceError, resolve
 
-    from ops.images import substrate_images
+    from ops.images import substrate_images, update_pins
 
-    if any(not re.fullmatch(r"[1-9][0-9]{0,19}", value) for value in (publish_id, verify_id)):
+    if scheduled and (publish_id or verify_id):
+        raise ValueError("scheduled evidence cannot override the reviewed source")
+    if not scheduled and any(not re.fullmatch(r"[1-9][0-9]{0,19}", value) for value in (publish_id, verify_id)):
         raise ValueError("explicit image run IDs required")
     if not source.is_absolute() or source.resolve() != source or not source.is_dir() or not output.is_absolute() or output.parent.resolve() != output.parent:
         raise ValueError("explicit clean source/output paths required")
@@ -58,27 +65,37 @@ def prepare(output, source, publish_id, verify_id):
     env = dict(os.environ, DOCKER_CONFIG=str(output / "anonymous-docker"), GOTOOLCHAIN="go1.27.3")
     Path(env["DOCKER_CONFIG"]).mkdir(mode=0o700)
 
-    def command(args, *, cwd=None):
+    def command(args, *, cwd=None, limit=300):
         left = end - time.monotonic()
         if left <= 0:
             raise ValueError("preparation deadline exhausted before provisioning")
-        result = subprocess.run([str(v) for v in args], cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=min(300, left), check=False)
+        result = subprocess.run([str(v) for v in args], cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=min(limit, left), check=False)
         if result.returncode or len(result.stdout) > 4 * 1024 * 1024:
             raise ValueError("prepaid input command failed")
         return result.stdout
 
-    publication_run = json.loads(command(["gh", "api", "repos/" + REPO + "/actions/runs/" + publish_id]))
-    verification_run = json.loads(command(["gh", "api", "repos/" + REPO + "/actions/runs/" + verify_id]))
-    verified_run(verification_run, verify_id)
-    for run, artifact, folder in ((publish_id, "published-substrate-images", "published"), (verify_id, "verified-substrate-images", "verified")):
-        command(["gh", "run", "download", run, "--repo", REPO, "--name", artifact, "--dir", output / folder])
-    def read(folder, filename):
-        return json.loads((output / folder / filename).read_bytes())
-    publication, mapping = read("published", "substrate-publication.json"), read("published", "substrate-images.json")
-    substrate_images.validate_publication(publication)
-    substrate_images.validate_run(publication, mapping, publication_run)
-    if publication != read("verified", "substrate-publication.json") or mapping != read("verified", "substrate-images.json"):
-        raise ValueError("verified artifact differs from exact publishing run")
+    expected_source = None
+    try:
+        if scheduled:
+            manifest = json.loads(env.get("PUBLISHED_IMAGES", ""), object_pairs_hook=update_pins.unique_object)
+            publish_id, verify_id, expected_source = resolve(manifest, command, end)
+        publication_run = json.loads(command(["gh", "api", "repos/" + REPO + "/actions/runs/" + publish_id]))
+        verification_run = json.loads(command(["gh", "api", "repos/" + REPO + "/actions/runs/" + verify_id]))
+        verified_run(verification_run, verify_id)
+        for run, artifact, folder in ((publish_id, "published-substrate-images", "published"), (verify_id, "verified-substrate-images", "verified")):
+            command(["gh", "run", "download", run, "--repo", REPO, "--name", artifact, "--dir", output / folder])
+        def read(folder, filename):
+            return json.loads((output / folder / filename).read_bytes())
+        publication, mapping = read("published", "substrate-publication.json"), read("published", "substrate-images.json")
+        substrate_images.validate_publication(publication)
+        substrate_images.validate_run(publication, mapping, publication_run)
+        if (publication != read("verified", "substrate-publication.json") or mapping != read("verified", "substrate-images.json")
+                or scheduled and publication["workflowCommit"] != expected_source):
+            raise ValueError("verified artifact differs from exact publishing run or reviewed source")
+    except (ValueError, OSError, subprocess.TimeoutExpired):
+        if scheduled:
+            raise EvidenceError() from None
+        raise
     for role, ref in substrate_images.refs(publication, mapping):
         command(["docker", "pull", "--platform", "linux/amd64", ref])
         if role.startswith("upstream-"):
@@ -132,17 +149,26 @@ def main():
     for option in ("output", "source"):
         prep.add_argument("--" + option, type=Path, required=True)
     for option in ("publish-run-id", "verify-run-id"):
-        prep.add_argument("--" + option, required=True)
+        prep.add_argument("--" + option, default="")
+    prep.add_argument("--scheduled", action="store_true")
     args = parser.parse_args()
     if args.command == "select":
-        print("variant=" + selection(os.environ))
+        variant = selection(os.environ)
+        print("variant=" + variant)
+        print("scheduled_substrate=" + str(os.environ.get("EVENT_NAME") == "schedule" and variant == "substrate-gvisor").lower())
     else:
-        prepare(args.output, args.source, args.publish_run_id, args.verify_run_id)
+        from substrate_schedule import EvidenceError
+        try:
+            prepare(args.output, args.source, args.publish_run_id, args.verify_run_id, scheduled=args.scheduled)
+        except EvidenceError as error:
+            print(str(error) + " No provisioning authorized.", file=sys.stderr)
+            return 1
+    return 0
 
 
 if __name__ == "__main__":
     try:
-        main()
+        raise SystemExit(main())
     except (ValueError, OSError, subprocess.TimeoutExpired):
         print("Substrate input preparation failed closed; no provisioning authorized.", file=sys.stderr)
         raise SystemExit(1) from None

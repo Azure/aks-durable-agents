@@ -3,6 +3,7 @@ name: Nightly AKS e2e
 on:
   schedule:
     - cron: '43 5 * * *'
+    - cron: '17 8 * * 1,3,5'
   workflow_dispatch:
     inputs:
       run_scenario:
@@ -10,7 +11,7 @@ on:
         type: boolean
         default: false
       variant:
-        description: 'Manual scenario variant; schedule always uses no-sandbox'
+        description: 'Manual scenario variant; the 05:43 UTC daily run stays no-sandbox'
         type: choice
         default: no-sandbox
         options: [no-sandbox, substrate-gvisor]
@@ -68,6 +69,7 @@ jobs:
       configured: ${{ steps.config.outputs.configured }}
       scenario: ${{ steps.config.outputs.scenario }}
       variant: ${{ steps.config.outputs.variant }}
+      scheduled_substrate: ${{ steps.config.outputs.scheduled_substrate }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -81,6 +83,7 @@ jobs:
         env:
           RUN_SCENARIO: ${{ github.event_name == 'schedule' || inputs.run_scenario }}
           EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
           VARIANT: ${{ inputs.variant }}
           PUBLISH_RUN_ID: ${{ inputs.substrate_publish_run_id }}
           VERIFY_RUN_ID: ${{ inputs.substrate_verify_run_id }}
@@ -200,10 +203,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PUBLISH_RUN_ID: ${{ inputs.substrate_publish_run_id }}
           VERIFY_RUN_ID: ${{ inputs.substrate_verify_run_id }}
+          SCHEDULED_SUBSTRATE: ${{ needs.config.outputs.scheduled_substrate }}
         run: |
+          args=(--publish-run-id "$PUBLISH_RUN_ID" --verify-run-id "$VERIFY_RUN_ID")
+          if [[ "$SCHEDULED_SUBSTRATE" == true ]]; then args=(--scheduled); fi
           python3 -B ops/aks/substrate_inputs.py prepare --output "$RUNNER_TEMP/substrate-prepared" \
-            --source "$GITHUB_WORKSPACE/.substrate-source" \
-            --publish-run-id "$PUBLISH_RUN_ID" --verify-run-id "$VERIFY_RUN_ID"
+            --source "$GITHUB_WORKSPACE/.substrate-source" "${args[@]}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: prepared-substrate-scenario
@@ -485,7 +490,7 @@ jobs:
           done
 
   report:
-    needs: [config, preflight, create, wait, federate, scenario, teardown, finalize]
+    needs: [config, preflight, substrate-inputs, create, wait, federate, scenario, teardown, finalize]
     if: >-
       ${{ always() && (github.event_name == 'schedule' || inputs.run_scenario) && vars.AKS_SCENARIO_ENABLED == 'true' &&
           github.repository == 'Azure/aks-durable-agents' &&
@@ -513,6 +518,8 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CONFIG_RESULT: ${{ needs.config.result }}
           STARTED: ${{ needs.create.outputs.started }}
+          VARIANT: ${{ needs.config.outputs.variant }}
+          INPUTS_RESULT: ${{ needs.substrate-inputs.result }}
           PREFLIGHT_RESULT: ${{ needs.preflight.result }}
           CREATE_RESULT: ${{ needs.create.result }}
           WAIT_RESULT: ${{ needs.wait.result }}
@@ -523,6 +530,8 @@ jobs:
           stage=finalize
           if [[ -n "$STARTED" && "$TEARDOWN_RESULT" != success ]]; then
             stage=teardown
+          elif [[ "$CONFIG_RESULT" == success && "$PREFLIGHT_RESULT" == success && "$VARIANT" == substrate-gvisor && "$INPUTS_RESULT" != success ]]; then
+            stage=substrate-inputs
           else
             for item in config preflight create wait federate scenario teardown; do
               key="${item^^}_RESULT"
