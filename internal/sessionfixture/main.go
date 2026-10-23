@@ -30,7 +30,7 @@ func RunCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
 }
 func runCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("commands: init, harness, actor-harness, fake, executor, placement-evidence, evidence, verify-replay, verify-loop, storage-proof, network-probe, resolve-intent")
+		return errors.New("commands: init, harness, actor-harness, fake, executor, placement-evidence, evidence, verify-replay, verify-loop, storage-proof, network-probe, resolve-intent, agent-file-prepare, agent-file-inspect")
 	}
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	fs.SetOutput(errOut)
@@ -44,6 +44,28 @@ func runCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
 		return nil
 	}
 	switch args[0] {
+	case "agent-file-prepare":
+		data := fs.String("data", "", "existing empty absolute private data directory")
+		projection := fs.String("projection", "", "absolute private pinned-parser projection file")
+		target := fs.String("target-model", "", "explicit different target deployment; no model call")
+		if err := parse(); err != nil {
+			return err
+		}
+		summary, err := prepareAgentFile(*data, *projection, *target)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(summary)
+	case "agent-file-inspect":
+		data := fs.String("data", "", "absolute private prepared agent-file directory")
+		if err := parse(); err != nil {
+			return err
+		}
+		_, summary, err := loadAgentFile(*data)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(summary)
 	case "init":
 		scenario := fs.String("scenario", "v1", "v1 frozen or explicit v2 real-model scenario")
 		data := fs.String("data", "", "absolute private data directory")

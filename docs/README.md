@@ -9,6 +9,8 @@ Start with the [project overview](../README.md) and [current validation status](
 
 - [Offline getting started](../README.md#getting-started): run local checks without
   Azure credentials or model keys.
+- [Frozen release-writer source projection](agent-file.md): offline preparation
+  and content-free inspection only; different-model profile, examples not run.
 - [Helm chart prerequisites and policy-first installation](../charts/aks-durable-agents/README.md):
   AKS requirements, image inputs, retained storage and NetworkPolicy limits.
 - [Stopped-writer backup and isolated restore](../ops/backup/README.md): operator
