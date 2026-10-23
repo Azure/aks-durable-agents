@@ -11,12 +11,15 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/agent-primitives/suite/oci"
-	"github.com/distribution/reference"
+	godigest "github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"oras.land/oras-go/v2/content"
+	"oras.land/oras-go/v2/registry/remote"
+	"oras.land/oras-go/v2/registry/remote/auth"
 )
 
 const (
@@ -27,128 +30,119 @@ const (
 	maxEntries  = 128
 )
 
-// Policy is operator configuration, never a package-supplied registry exception.
-// Repositories are exact host[:port]/path names. HTTPRegistry, if set, permits
-// plaintext only to that exact development registry authority; all others use TLS.
+// Policy is operator configuration, never package-supplied. Credentials are
+// explicit pull-scoped registry credentials keyed by exact allowed repository;
+// absent entries use anonymous bearer authentication, never ambient identity.
+// HTTPRegistry permits plaintext only to that development authority, without
+// configured credentials. OAuth refresh/login flows are not supported.
 type Policy struct {
 	Repositories []string
 	HTTPRegistry string
+	Credentials  map[string]auth.Credential `json:"-"`
 }
 
-// Puller performs anonymous, bounded reads. It never follows redirects or
-// registry authentication challenges, uses ambient credentials, or retries writes.
-type Puller struct {
-	policy Policy
-	client *http.Client
-}
+type Puller struct{ repositories map[string]*remote.Repository }
 
-// New accepts a trusted transport for host TLS policy or local tests. Nil uses
-// the standard transport without ambient proxies or HTTP decompression.
+// New accepts a trusted transport for host TLS policy or tests. Nil disables
+// ambient proxies. ORAS handles bearer challenges and strips Authorization
+// when redirects cross origins, including different ports on the same host.
 func New(policy Policy, transport http.RoundTripper) (*Puller, error) {
 	if len(policy.Repositories) == 0 {
 		return nil, errors.New("registry repositories required")
 	}
-	foundHTTP := policy.HTTPRegistry == ""
-	for _, repo := range policy.Repositories {
-		named, err := reference.ParseNamed(repo)
-		u, urlErr := url.Parse("https://" + repo)
-		if err != nil || named.Name() != repo || urlErr != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" || u.Host != strings.ToLower(u.Host) || !strings.Contains(repo, "/") {
-			return nil, errors.New("invalid registry repository")
-		}
-		if _, ok := named.(reference.Tagged); ok {
-			return nil, errors.New("repository must not contain a tag")
-		}
-		if _, ok := named.(reference.Digested); ok {
-			return nil, errors.New("repository must not contain a digest")
-		}
-		if u.Host == policy.HTTPRegistry {
-			foundHTTP = true
-		}
-	}
-	if !foundHTTP {
-		return nil, errors.New("HTTP registry must match an allowed repository authority")
-	}
-	policy.Repositories = append([]string(nil), policy.Repositories...)
 	if transport == nil {
 		t := http.DefaultTransport.(*http.Transport).Clone()
 		t.Proxy = nil
 		t.DisableCompression = true
 		transport = t
 	}
-	return &Puller{policy: policy, client: &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+	client := &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		// auth.Client installs CheckRedirect, so preserve Go's usual ten-hop bound.
+		if len(via) >= 10 || (req.URL.Scheme != "https" && (req.URL.Scheme != "http" || policy.HTTPRegistry == "" || req.URL.Host != policy.HTTPRegistry)) {
+			return errors.New("registry redirect refused")
+		}
+		return nil
+	}}
+	p := &Puller{repositories: make(map[string]*remote.Repository)}
+	foundHTTP := policy.HTTPRegistry == ""
+	for _, name := range policy.Repositories {
+		r, err := remote.NewRepository(name)
+		if err != nil || r.Reference.Reference != "" || r.Reference.Registry+"/"+r.Reference.Repository != name {
+			return nil, errors.New("invalid registry repository")
+		}
+		r.PlainHTTP = r.Reference.Registry == policy.HTTPRegistry
+		foundHTTP = foundHTTP || r.PlainHTTP
+		r.ManifestMediaTypes = []string{ocispec.MediaTypeImageManifest}
+		r.MaxMetadataBytes = maxManifest
+		r.Client = &auth.Client{Client: client, Credential: auth.StaticCredential(r.Reference.Registry, policy.Credentials[name]), Cache: auth.NewCache()}
+		p.repositories[name] = r
+	}
+	if !foundHTTP {
+		return nil, errors.New("HTTP registry must match an allowed repository authority")
+	}
+	for name, cred := range policy.Credentials {
+		r := p.repositories[name]
+		if r == nil || cred.RefreshToken != "" || (r.PlainHTTP && cred != auth.EmptyCredential) {
+			return nil, errors.New("invalid scoped registry credential")
+		}
+	}
+	return p, nil
 }
 
-// Pull accepts only an allowlisted explicit repository@sha256 digest. The
-// returned package owns its bytes; temporary validation trees never escape.
-func (p *Puller) Pull(ctx context.Context, ref string) (*Package, error) {
+// Pull resolves only an allowlisted repository@sha256 digest. ORAS performs
+// registry I/O; all descriptor bytes are verified before extraction or Suite.
+func (p *Puller) Pull(ctx context.Context, ref string) (pkg *Package, err error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	defer func() {
+		if cause := ctx.Err(); cause != nil {
+			pkg, err = nil, cause
+		}
+	}()
 	repo, dig, ok := strings.Cut(ref, "@")
 	if !ok || !validDigest(dig) {
 		return nil, errors.New("package requires a lowercase sha256 digest reference")
 	}
-	allowed := false
-	for _, r := range p.policy.Repositories {
-		if repo == r {
-			allowed = true
-		}
-	}
-	if !allowed {
+	r := p.repositories[repo]
+	if r == nil {
 		return nil, errors.New("package repository not allowed")
 	}
-	authority, name, _ := strings.Cut(repo, "/")
-	scheme := "https"
-	if authority == p.policy.HTTPRegistry {
-		scheme = "http"
+	desc, body, err := r.FetchReference(ctx, dig)
+	if err != nil {
+		return nil, errors.New("registry manifest read failed")
 	}
-	base := scheme + "://" + authority + "/v2/" + name
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	manifest, err := p.fetch(ctx, base+"/manifests/"+dig, maxManifest)
+	if desc.Digest.String() != dig || desc.Size < 0 || desc.Size > maxManifest {
+		body.Close()
+		return nil, errors.New("invalid manifest descriptor")
+	}
+	manifest, err := readDescriptor(body, desc)
 	if err != nil {
 		return nil, err
-	}
-	if hash(manifest) != dig {
-		return nil, errors.New("manifest digest mismatch")
 	}
 	m, err := parseManifest(manifest)
 	if err != nil {
 		return nil, err
 	}
-	config, err := p.fetch(ctx, base+"/blobs/"+m.Config.Digest, 2)
-	if err != nil {
-		return nil, err
-	}
-	layer, err := p.fetch(ctx, base+"/blobs/"+m.Layers[0].Digest, m.Layers[0].Size)
-	if err != nil {
-		return nil, err
-	}
-	return Verify(ctx, manifest, config, layer)
-}
-func (p *Puller) fetch(ctx context.Context, address string, limit int64) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
-	if err != nil {
-		return nil, errors.New("registry request invalid")
-	}
-	req.Header.Set("Accept", "application/vnd.oci.image.manifest.v1+json, application/octet-stream")
-	resp, err := p.client.Do(req)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+	blobs := make([][]byte, 0, 2)
+	for _, d := range []blobDescriptor{m.Config, m.Layers[0]} {
+		target := ocispec.Descriptor{MediaType: d.MediaType, Digest: godigest.Digest(d.Digest), Size: d.Size}
+		rc, err := r.Fetch(ctx, target)
+		if err != nil {
+			return nil, errors.New("registry blob read failed")
 		}
-		return nil, errors.New("registry read failed")
+		b, err := readDescriptor(rc, target)
+		if err != nil {
+			return nil, err
+		}
+		blobs = append(blobs, b)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, errors.New("registry refused read")
-	}
-	if resp.ContentLength > limit {
-		return nil, errors.New("registry response exceeds limit")
-	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
-	if err != nil || int64(len(b)) > limit {
-		return nil, errors.New("registry response incomplete or oversized")
+	return Verify(ctx, manifest, blobs[0], blobs[1])
+}
+func readDescriptor(body io.ReadCloser, desc ocispec.Descriptor) ([]byte, error) {
+	defer body.Close()
+	b, err := content.ReadAll(body, desc)
+	if err != nil {
+		return nil, errors.New("package descriptor integrity mismatch")
 	}
 	return b, nil
 }
@@ -190,14 +184,6 @@ func parseManifest(b []byte) (manifest, error) {
 	return m, nil
 }
 func validDigest(s string) bool {
-	if len(s) != 71 || !strings.HasPrefix(s, "sha256:") {
-		return false
-	}
-	for _, c := range s[7:] {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
-			return false
-		}
-	}
-	return true
+	return strings.HasPrefix(s, "sha256:") && godigest.Digest(s).Validate() == nil
 }
 func hash(b []byte) string { h := sha256.Sum256(b); return "sha256:" + hex.EncodeToString(h[:]) }
