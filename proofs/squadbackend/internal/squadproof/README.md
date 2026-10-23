@@ -1,5 +1,8 @@
 # Local team proof state
 
+This is a proof, not a product. Run the commands below from the separate
+`proofs/squadbackend/` module directory, not the repository root.
+
 The default build contains unwired synthetic ledger, executor and queue code.
 The optional `squadproof` build tag adds local serving fixtures using real Sessions
 components; it does not add an automatic team coordinator. Production commands
