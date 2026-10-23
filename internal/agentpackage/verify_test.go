@@ -11,6 +11,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -128,6 +130,20 @@ func TestVerifyRejectsArchiveEntry(t *testing.T) {
 		})
 	}
 }
+func TestExtractionCannotFollowSymlinkOutsideRoot(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "redirect")); err != nil {
+		t.Fatal(err)
+	}
+	layer := archive(t, map[string][]byte{"redirect/escape": []byte("untrusted")}, nil)
+	if _, err := extract(t.Context(), root, layer); err == nil {
+		t.Fatal("extraction followed a symlink outside its root")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "escape")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("extraction wrote outside its root: %v", err)
+	}
+}
+
 func TestVerifyResourceLimits(t *testing.T) {
 	t.Run("manifest", func(t *testing.T) {
 		f := makeFixture(t)

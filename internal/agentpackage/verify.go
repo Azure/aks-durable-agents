@@ -131,6 +131,13 @@ func safeName(name string) bool {
 	return fs.ValidPath(name) && name != "." && path.Clean(name) == name && !strings.Contains(name, "\\") && utf8.ValidString(name)
 }
 func extract(ctx context.Context, root string, layer []byte) (map[string][]byte, error) {
+	// Root enforces containment even if a filesystem component is replaced by a
+	// symlink; lexical archive-name checks alone cannot protect that boundary.
+	dir, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, errors.New("package scratch unavailable")
+	}
+	defer dir.Close()
 	compressed := bytes.NewReader(layer)
 	gz, err := gzip.NewReader(compressed)
 	if err != nil {
@@ -158,10 +165,10 @@ func extract(ctx context.Context, root string, layer []byte) (map[string][]byte,
 			return nil, errors.New("unsupported package archive entry")
 		}
 		seen[name] = true
-		dest := filepath.Join(root, filepath.FromSlash(name))
+		dest := filepath.FromSlash(name)
 		switch h.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(dest, 0700); err != nil {
+			if err := dir.MkdirAll(dest, 0700); err != nil {
 				return nil, errors.New("package directory invalid")
 			}
 		case tar.TypeReg:
@@ -169,10 +176,10 @@ func extract(ctx context.Context, root string, layer []byte) (map[string][]byte,
 			if err != nil || int64(len(b)) != h.Size {
 				return nil, errors.New("incomplete package file")
 			}
-			if err := os.MkdirAll(filepath.Dir(dest), 0700); err != nil {
+			if err := dir.MkdirAll(filepath.Dir(dest), 0700); err != nil {
 				return nil, errors.New("package directory invalid")
 			}
-			if err := os.WriteFile(dest, b, fs.FileMode(h.Mode&0777)); err != nil {
+			if err := dir.WriteFile(dest, b, fs.FileMode(h.Mode&0777)); err != nil {
 				return nil, errors.New("package file write failed")
 			}
 			files[name] = b
