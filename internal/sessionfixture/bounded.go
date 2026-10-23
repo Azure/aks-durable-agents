@@ -117,7 +117,11 @@ func decodeExecutorRequestScenario(raw []byte, scenario string) (req executorReq
 	if err != nil {
 		return req, err
 	}
-	if req.Version != 1 || req.Harness != "release-notes" {
+	harness := "release-notes"
+	if scenario == bridgeScenario {
+		harness = bridgeHarnessID
+	}
+	if req.Version != 1 || req.Harness != harness {
 		return req, errors.New("unsupported version or route")
 	}
 	c := api.ToolCall{ID: req.CallID, Tool: req.Tool, Args: req.Arguments, IdempotencyKey: req.Key, Mediation: api.MediationRequiresApproval}

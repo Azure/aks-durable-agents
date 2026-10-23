@@ -107,15 +107,21 @@ func newExecutor(dir string) (*executor, error) {
 }
 func openExecutor(path string) (*executor, error) { return openExecutorScenario(path, "v1") }
 func openExecutorScenario(path, scenario string) (*executor, error) {
-	if err := validScenario(scenario); err != nil {
+	if scenario == bridgeScenario {
+		if err := checkBridgeData(filepath.Dir(path)); err != nil {
+			return nil, err
+		}
+	} else if err := validScenario(scenario); err != nil {
 		return nil, err
 	}
 	if scenario == "v2" {
 		if err := checkScenario(filepath.Dir(path), scenario); err != nil {
 			return nil, err
 		}
-	} else if _, err := os.Lstat(filepath.Join(filepath.Dir(path), "scenario.json")); !errors.Is(err, os.ErrNotExist) {
-		return nil, errors.New("v1 executor cannot consume marked scenario data")
+	} else if scenario != bridgeScenario {
+		if _, err := os.Lstat(filepath.Join(filepath.Dir(path), "scenario.json")); !errors.Is(err, os.ErrNotExist) {
+			return nil, errors.New("v1 executor cannot consume marked scenario data")
+		}
 	}
 	created, err := privateFile(path)
 	if err != nil {
@@ -237,6 +243,9 @@ func (e *executor) execute(ctx context.Context, scope controller.ToolCallContext
 	id := sha256.Sum256(tuple)
 	artifact := fmt.Sprintf("%x.json", id)
 	out := map[string]any{"simulated": true, "artifact": artifact, "draft": c.Args["draft"], "destination": "release-notes-demo"}
+	if e.scenario == bridgeScenario {
+		out = map[string]any{"local_demo": true, "artifact": artifact, "draft": c.Args["draft"], "destination": "release-notes-demo", "config_sha256": c.Args["config_sha256"]}
+	}
 	output, err = json.Marshal(out)
 	if err != nil {
 		return api.ToolResult{}, err

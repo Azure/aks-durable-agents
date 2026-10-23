@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -29,6 +30,9 @@ func RunCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
 	return runCLI(ctx, args, out, errOut)
 }
 func runCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
+	if len(args) > 0 && strings.HasPrefix(args[0], "bridge-") {
+		return runBridgeCLI(ctx, args, out, errOut)
+	}
 	if len(args) == 0 {
 		return errors.New("commands: init, harness, actor-harness, fake, executor, placement-evidence, evidence, verify-replay, verify-loop, storage-proof, network-probe, resolve-intent")
 	}

@@ -49,6 +49,9 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 	if err != nil {
 		return nil, err
 	}
+	if err := validateDemoBridge(harnesses, tools); err != nil {
+		return nil, err
+	}
 	var transport grpc.ServerOption
 	if c.TLSCert != "" {
 		cert, e := tls.LoadX509KeyPair(c.TLSCert, c.TLSKey)
@@ -154,7 +157,8 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 		if tool, ok := tools[name]; ok {
 			opts = append(opts, placement.WithToolExecutor(tool.Execute), placement.WithDurableDedup(tool.DurableDedup))
 		}
-		placers[name] = placement.New(backend, modelFn, opts...)
+		routeModel, opts := demoBridgeOptions(name, c.Deployment, modelFn, streamFn, opts)
+		placers[name] = placement.New(backend, routeModel, opts...)
 		names = append(names, name)
 	}
 	sort.Strings(names)

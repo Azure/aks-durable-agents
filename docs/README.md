@@ -22,6 +22,8 @@ Start with the [project overview](../README.md) and [current validation status](
   owner/approver permissions, new-journal rollout, local build and remaining limits.
 - [Opt-in Substrate host wiring](substrate.md): current development pins, one
   stateless harness, private runtime prerequisites and single-host recovery limits.
+- [Labelled source-file demo bridge](demo-bridge.md): isolated execution Config,
+  host approval minimum, local receipt and strict replay; not package deployment.
 - [Entra caller authentication](entraauth.md): delegated token verification,
   trust/lifetime contract and real-tenant prerequisites.
 - [Keyless model transport and Go wiring](modeltransport.md): workload identity,
