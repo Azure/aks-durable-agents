@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 
-	"github.com/Azure/aks-durable-agents/internal/demobridge"
 	"github.com/Azure/aks-durable-agents/internal/socketexec"
 	"github.com/agent-primitives/sessions/api"
 	"github.com/agent-primitives/sessions/controller"
@@ -35,20 +34,37 @@ func demoBridgeOptions(name, target string, model controller.ModelFunc, stream c
 		placement.WithDescriptorID(name),
 		placement.WithModelPolicy(api.ModelPolicy{Default: target, Allowed: []string{target}}),
 		placement.WithStreamingModel(checkedBridgeStreamingModel(target, stream)),
-		placement.WithDialer(approvalMinimumDialer(func(tool string) bool { return tool == "publish_release_notes" })))
+		placement.WithDialer(func(inc api.Incarnation) (api.Harness, func() error, error) {
+			harness, close, err := placement.DefaultDial(inc)
+			if err != nil {
+				return nil, close, err
+			}
+			return approvalHarness{harness}, close, nil
+		}))
 }
 
-func approvalMinimumDialer(required func(string) bool) placement.Dialer {
-	return func(inc api.Incarnation) (api.Harness, func() error, error) {
-		harness, close, err := placement.DefaultDial(inc)
-		if err != nil {
-			return nil, close, err
-		}
-		return demobridge.WithApprovalMinimum(harness, required), close, nil
+type approvalHarness struct{ api.Harness }
+
+func (h approvalHarness) Run(ctx context.Context, start *api.Start, sink api.EventSink) error {
+	return h.Harness.Run(ctx, start, approvalSink{sink})
+}
+
+type approvalSink struct{ api.EventSink }
+
+// Refuse weak proposals before controller entry; never accept harness receipts,
+// even before a proposal. Controller-produced receipts and typed parks stay intact.
+func (s approvalSink) ToolCall(ctx context.Context, call api.ToolCall) (api.ToolResult, error) {
+	if call.Tool == "publish_release_notes" && call.Mediation != api.MediationRequiresApproval {
+		return api.ToolResult{}, errors.New("demo bridge: protected tool requires explicit approval mediation")
 	}
+	return s.EventSink.ToolCall(ctx, call)
 }
 
-func checkedBridgeModel(target string, next func(context.Context, api.ModelRequest) (api.ModelResponse, error)) func(context.Context, api.ModelRequest) (api.ModelResponse, error) {
+func (s approvalSink) Report(context.Context, api.ToolResult) error {
+	return errors.New("demo bridge: all tool results must come from the controller")
+}
+
+func checkedBridgeModel(target string, next controller.ModelFunc) controller.ModelFunc {
 	return func(ctx context.Context, req api.ModelRequest) (api.ModelResponse, error) {
 		if req.Model != target {
 			return api.ModelResponse{}, errors.New("demo bridge model does not match host deployment")
@@ -57,7 +73,7 @@ func checkedBridgeModel(target string, next func(context.Context, api.ModelReque
 	}
 }
 
-func checkedBridgeStreamingModel(target string, next func(context.Context, api.ModelRequest, func(string)) (api.ModelResponse, error)) func(context.Context, api.ModelRequest, func(string)) (api.ModelResponse, error) {
+func checkedBridgeStreamingModel(target string, next controller.StreamFunc) controller.StreamFunc {
 	return func(ctx context.Context, req api.ModelRequest, chunk func(string)) (api.ModelResponse, error) {
 		if req.Model != target {
 			return api.ModelResponse{}, errors.New("demo bridge model does not match host deployment")

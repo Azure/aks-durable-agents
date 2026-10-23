@@ -56,9 +56,6 @@ func existingPrivateDirectory(path string) error {
 	return nil
 }
 func readOnlyDB(path string) (*sql.DB, error) {
-	return readOnlyDBQuery(path, "mode=ro")
-}
-func readOnlyDBQuery(path, query string) (*sql.DB, error) {
 	if err := existingPrivateDirectory(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
@@ -74,7 +71,7 @@ func readOnlyDBQuery(path, query string) (*sql.DB, error) {
 	if !info.Mode().IsRegular() || info.Size() > 64<<20 {
 		return nil, errors.New("bounded existing regular database required")
 	}
-	u := url.URL{Scheme: "file", Path: path, RawQuery: query}
+	u := url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}
 	db, err := sql.Open("sqlite", u.String())
 	if err != nil {
 		return nil, err
@@ -185,12 +182,6 @@ func readJournalRecords(ctx context.Context, path, uid string) ([]eventlog.Recor
 		return nil, err
 	}
 	defer db.Close()
-	return readJournalRecordsDB(ctx, db, uid)
-}
-func readJournalRecordsDB(ctx context.Context, db *sql.DB, uid string) ([]eventlog.Record, error) {
-	if !identity(uid, 256) {
-		return nil, errors.New("bounded session UID required")
-	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err

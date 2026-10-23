@@ -11,10 +11,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
+	"github.com/agent-primitives/sessions/api"
 	v1 "github.com/agent-primitives/sessions/api/genpb"
 	"github.com/agent-primitives/sessions/harnesswire"
 	"google.golang.org/grpc"
@@ -30,11 +30,8 @@ func RunCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
 	return runCLI(ctx, args, out, errOut)
 }
 func runCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
-	if len(args) > 0 && strings.HasPrefix(args[0], "bridge-") {
-		return runBridgeCLI(ctx, args, out, errOut)
-	}
 	if len(args) == 0 {
-		return errors.New("commands: init, harness, actor-harness, fake, executor, placement-evidence, evidence, verify-replay, verify-loop, storage-proof, network-probe, resolve-intent")
+		return errors.New("commands: init, harness, actor-harness, fake, executor, placement-evidence, evidence, verify-replay, verify-loop, storage-proof, network-probe, resolve-intent, bridge-init, bridge-harness, bridge-verify")
 	}
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	fs.SetOutput(errOut)
@@ -48,12 +45,18 @@ func runCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
 		return nil
 	}
 	switch args[0] {
-	case "init":
+	case "init", "bridge-init":
 		scenario := fs.String("scenario", "v1", "v1 frozen or explicit v2 real-model scenario")
 		data := fs.String("data", "", "absolute private data directory")
 		socket := fs.String("socket", "", "executor socket (v1 /run/reference/publish.sock; v2 DATA/publish.sock)")
 		if err := parse(); err != nil {
 			return err
+		}
+		if args[0] == "bridge-init" {
+			if *scenario != "v1" || *socket != "" {
+				return errors.New("bridge-init uses its fixed local socket and lineage")
+			}
+			return initBridgeData(*data)
 		}
 		if *socket == "" {
 			*socket = "/run/reference/publish.sock"
@@ -69,12 +72,16 @@ func runCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
 			return err
 		}
 		return json.NewEncoder(out).Encode(map[string]any{"initialized": true, "data": *data, "uid": os.Getuid(), "gid": os.Getgid(), "mode": info.Mode})
-	case "harness":
+	case "harness", "bridge-harness":
 		scenario := fs.String("scenario", "v1", "v1 frozen or explicit v2 real-model scenario")
 		addr := fs.String("addr", "127.0.0.1:9000", "loopback gRPC address; v2 explicitly allows 0.0.0.0:9000")
 		instructions := fs.String("instructions", "", "frozen instructions file")
 		node := fs.String("node-name", "", "v2 fixture pod node name")
 		pod := fs.String("pod-uid", "", "v2 fixture pod UID")
+		var model string
+		if args[0] == "bridge-harness" {
+			fs.StringVar(&model, "model", "", "explicit demo bridge target model")
+		}
 		if err := parse(); err != nil {
 			return err
 		}
@@ -84,11 +91,28 @@ func runCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
 				explicitAddr = true
 			}
 		})
-		if err := harnessAddress(*addr, *scenario, explicitAddr); err != nil {
-			return err
-		}
-		if _, err := instructionBytesScenario(*instructions, *scenario); err != nil {
-			return err
+		var h api.Harness = newHarnessScenario(*scenario)
+		name, version := "release-notes", hostVersion
+		if args[0] == "bridge-harness" {
+			if *instructions != "" || *node != "" || *pod != "" || *scenario != "v1" {
+				return errors.New("bridge uses execution Config, not frozen fixture flags")
+			}
+			h = newBridgeHarness(model)
+			desc, err := h.Describe(ctx)
+			if err != nil {
+				return err
+			}
+			name, version = desc.ID, desc.Version
+			if err := harnessAddress(*addr, "v2", explicitAddr); err != nil {
+				return err
+			}
+		} else {
+			if err := harnessAddress(*addr, *scenario, explicitAddr); err != nil {
+				return err
+			}
+			if _, err := instructionBytesScenario(*instructions, *scenario); err != nil {
+				return err
+			}
 		}
 		if *scenario == "v2" {
 			if err := writePlacement(filepath.Dir(*instructions), *node, *pod); err != nil {
@@ -104,13 +128,11 @@ func runCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
 		defer listener.Close()
 		server := grpc.NewServer()
 		defer server.Stop()
-		h := newHarnessScenario(*scenario)
 		v1.RegisterHarnessServer(server, harnesswire.NewServer(h))
-		version := hostVersion
 		if *scenario == "v2" {
 			version = v2HostVersion
 		}
-		if err = json.NewEncoder(out).Encode(map[string]any{"addr": listener.Addr().String(), "harness": "release-notes", "hostVersion": version, "resumability": "STATELESS_REPLAY"}); err != nil {
+		if err = json.NewEncoder(out).Encode(map[string]any{"addr": listener.Addr().String(), "harness": name, "hostVersion": version, "resumability": "STATELESS_REPLAY"}); err != nil {
 			return err
 		}
 		return serveGRPC(ctx, server, listener)
@@ -173,7 +195,7 @@ func runCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
 		if err := parse(); err != nil {
 			return err
 		}
-		if *scenario == "v2" {
+		if *scenario == "v2" || *scenario == bridgeScenario {
 			shared := filepath.Join(filepath.Dir(*database), "publish.sock")
 			if *socket == "" {
 				*socket = shared
@@ -217,13 +239,32 @@ func runCLI(ctx context.Context, args []string, out, errOut io.Writer) error {
 			return err
 		}
 		return encodeEvidence(out, ev, *scenario)
-	case "verify-replay":
+	case "verify-replay", "bridge-verify":
 		scenario := fs.String("scenario", "v1", "v1 frozen or explicit v2 real-model scenario")
 		journal := fs.String("journal", "", "existing journal DB")
 		instructions := fs.String("instructions", "", "frozen instructions file")
 		uid := fs.String("session", "", "session UID")
+		var model, hash string
+		if args[0] == "bridge-verify" {
+			fs.StringVar(&model, "model", "", "original target model")
+			fs.StringVar(&hash, "config-sha256", "", "original exact Config digest")
+		}
 		if err := parse(); err != nil {
 			return err
+		}
+		if args[0] == "bridge-verify" {
+			if *scenario != "v1" || *instructions != "" {
+				return errors.New("bridge-verify uses recorded Config, not frozen fixture flags")
+			}
+			proof, replayErr := verifyBridgeJournal(ctx, *journal, *uid, model, hash)
+			if err := json.NewEncoder(out).Encode(struct {
+				replayProof
+				BridgeOnly bool   `json:"bridge_only"`
+				Examples   string `json:"target_examples"`
+			}{proof, true, "not_run"}); err != nil {
+				return err
+			}
+			return replayErr
 		}
 		proof, replayErr := verifyJournalScenario(ctx, *journal, *instructions, *uid, *scenario)
 		if err := json.NewEncoder(out).Encode(proof); err != nil {
