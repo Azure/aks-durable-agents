@@ -12,8 +12,8 @@ production-ready agent or a self-contained demo.
 
 Harness, executor and fake containers share the fixture image. No third executor
 image is needed. The production host still requires workload identity for model
-access. Neither existing `ops/backup/drillhost` nor `ops/canvas/drillhost` is built
-or published by this workflow. A future separately labelled fake-model **demo
+access. The existing `ops/backup/drillhost` is not built or published by this
+workflow. A future separately labelled fake-model **demo
 host** is not a production chart default.
 
 ## Build locally

@@ -20,14 +20,11 @@ type Config struct {
 	Addr, HealthAddr, Journal string
 	Mode                      authn.Mode
 	TLSCert, TLSKey           string
-	// TrustedNetworkSessions is an explicit auth-off private TLS listener opt-in.
-	// It never relaxes the health listener or supplies authenticated identity.
-	TrustedNetworkSessions bool
-	Identity               entraauth.Config
-	Approvers              []api.CallerIdentity
-	Harnesses              map[string]string
-	Substrate              *SubstrateConfig
-	ToolExecutors          string
+	Identity                  entraauth.Config
+	Approvers                 []api.CallerIdentity
+	Harnesses                 map[string]string
+	Substrate                 *SubstrateConfig
+	ToolExecutors             string
 	// HarnessService is an explicit exact in-cluster Service FQDN:port exception.
 	// It does not relax the loopback Sessions or health listeners.
 	HarnessService string
@@ -55,10 +52,7 @@ func (c Config) validate() error {
 			return err
 		}
 	}
-	if c.TrustedNetworkSessions && (c.Mode != authn.Off || c.TLSCert == "" || c.TLSKey == "" || !privateSessionsAddress(c.Addr)) {
-		return errors.New("trusted-network Sessions requires auth off, TLS certificate/key and an explicit IPv4 wildcard listener")
-	}
-	if (!loopback(c.Addr) && !c.TrustedNetworkSessions) || !loopback(c.HealthAddr) {
+	if !loopback(c.Addr) || !loopback(c.HealthAddr) {
 		return errors.New("sessions and health listeners must use literal loopback addresses; public exposure is unsupported")
 	}
 	_, port, _ := net.SplitHostPort(c.Addr)
@@ -111,12 +105,6 @@ func (c Config) validate() error {
 		}
 	}
 	return nil
-}
-
-func privateSessionsAddress(addr string) bool {
-	host, port, err := net.SplitHostPort(addr)
-	n, portErr := strconv.Atoi(port)
-	return err == nil && portErr == nil && host == "0.0.0.0" && n >= 0 && n <= 65535 && strconv.Itoa(n) == port
 }
 
 func loopback(addr string) bool {

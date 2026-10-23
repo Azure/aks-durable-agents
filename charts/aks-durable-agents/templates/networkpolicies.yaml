@@ -74,15 +74,8 @@ spec:
               {{- include "agents.labels" . | nindent 14 }}
               app.kubernetes.io/component: harness
       ports:
-        {{- if .Values.harness.native.enabled }}
-        {{- range .Values.harness.native.entries }}
-        - protocol: TCP
-          port: {{ .port }}
-        {{- end }}
-        {{- else }}
         - protocol: TCP
           port: 9000
-        {{- end }}
     {{- end }}
 {{- if ne .Values.runtime.mode "substrate" }}
 ---
@@ -107,14 +100,7 @@ spec:
               {{- include "agents.labels" . | nindent 14 }}
               app.kubernetes.io/component: host
       ports:
-        {{- if .Values.harness.native.enabled }}
-        {{- range .Values.harness.native.entries }}
-        - protocol: TCP
-          port: {{ .port }}
-        {{- end }}
-        {{- else }}
         - protocol: TCP
           port: 9000
-        {{- end }}
 {{- end }}
 {{- end }}
