@@ -271,6 +271,9 @@ func TestPullContextAfterHeaders(t *testing.T) {
 			}
 			defer cancel()
 			s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", manifestType)
+				w.Header().Set("Content-Length", "1")
+				w.Header().Set("Docker-Content-Digest", "sha256:"+strings.Repeat("a", 64))
 				w.WriteHeader(http.StatusOK)
 				w.(http.Flusher).Flush()
 				if !deadline {
