@@ -11,7 +11,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/Azure/aks-durable-agents/internal/squadproof"
+	"github.com/Azure/aks-durable-agents/proofs/squadbackend/internal/squadproof"
 )
 
 func main() {

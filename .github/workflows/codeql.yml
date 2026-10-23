@@ -34,6 +34,9 @@ jobs:
         with:
           languages: go
           build-mode: manual
-      - name: Build for analysis
+      - name: Build shipping module for analysis
+        run: go build -a ./...
+      - name: Build proof module for analysis
+        working-directory: proofs/squadbackend
         run: go build -a -tags squadproof ./...
       - uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
