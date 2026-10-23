@@ -9,7 +9,9 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.15.0
 	github.com/agent-primitives/sessions v0.3.0
 	github.com/agent-primitives/sessions/integrations/substrate v0.3.0
+	github.com/agent-primitives/suite v0.7.0
 	github.com/agent-substrate/substrate v0.5.0
+	github.com/distribution/reference v0.6.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/gowebpki/jcs v1.0.2
 	golang.org/x/sys v0.49.0
@@ -26,6 +28,7 @@ require (
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
+	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/crypto v0.57.0 // indirect
