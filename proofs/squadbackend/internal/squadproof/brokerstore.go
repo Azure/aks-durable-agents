@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/agent-primitives/sessions/api"
 )
@@ -30,6 +31,47 @@ func (l *Ledger) Operations(ctx context.Context) ([]Operation, error) {
 		out = append(out, op)
 	}
 	return out, rows.Err()
+}
+
+func initialInput(op Operation) Input {
+	kind := "user"
+	if op.Kind == "dispatch" {
+		kind = "task"
+	}
+	return Input{ID: "initial-" + op.ID, Target: op.ID, Kind: kind, Payload: op.Payload}
+}
+
+// Enqueue admits later lead inputs only after its immutable admitted payload.
+// Bootstrap and followup commit together; low-level fixture queue bypasses are
+// refused by Reconcile rather than renumbering an already acknowledged ordinal.
+func (w *Worker) Enqueue(ctx context.Context, in Input) (Input, error) {
+	if strings.HasPrefix(in.ID, "initial-") || strings.HasPrefix(in.ID, "result-") || in.Source != "" || in.TerminalHash != "" || (in.Kind != "user" && in.Kind != "tick") {
+		return Input{}, ErrInvalid
+	}
+	var result Input
+	err := w.Ledger.transaction(ctx, func(c *sql.Conn) error {
+		op, err := readOperation(ctx, c, in.Target)
+		if err != nil {
+			return err
+		}
+		if op.Kind != "lead" {
+			return ErrInvalid
+		}
+		initial, err := enqueue(ctx, c, initialInput(op))
+		if err != nil {
+			return err
+		}
+		var first string
+		if err = c.QueryRowContext(ctx, `SELECT id FROM inputs WHERE target=? ORDER BY ordinal LIMIT 1`, op.ID).Scan(&first); err != nil {
+			return err
+		}
+		if first != initial.ID {
+			return ErrConflict
+		}
+		result, err = enqueue(ctx, c, in)
+		return err
+	})
+	return result, err
 }
 
 func (l *Ledger) beginAllocation(ctx context.Context, id string) error {

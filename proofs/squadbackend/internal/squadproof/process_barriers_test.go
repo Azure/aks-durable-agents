@@ -40,7 +40,8 @@ func (f *processCase) finishLead() {
 func (f *processCase) queueThree() {
 	f.t.Helper()
 	f.until(func() bool { return f.op("lead").State == "awaiting-approval" })
-	if _, err := f.l.Enqueue(f.ctx, Input{ID: "queued-user", Target: "lead", Kind: "user", Payload: []byte(`{"kind":"followup"}`)}); err != nil {
+	w := &Worker{Ledger: f.l}
+	if _, err := w.Enqueue(f.ctx, Input{ID: "queued-user", Target: "lead", Kind: "user", Payload: []byte(`{"kind":"followup"}`)}); err != nil {
 		f.t.Fatal(err)
 	}
 	f.until(func() bool {
@@ -57,7 +58,7 @@ func (f *processCase) queueThree() {
 		}
 	}
 	f.until(func() bool { inputs, err := f.l.Inputs(f.ctx, "lead"); return err == nil && len(inputs) == 3 })
-	if _, err := f.l.Enqueue(f.ctx, Input{ID: "queued-tick", Target: "lead", Kind: "tick", Payload: []byte(`{"kind":"tick"}`)}); err != nil {
+	if _, err := w.Enqueue(f.ctx, Input{ID: "queued-tick", Target: "lead", Kind: "tick", Payload: []byte(`{"kind":"tick"}`)}); err != nil {
 		f.t.Fatal(err)
 	}
 	f.assertQueueHeld()

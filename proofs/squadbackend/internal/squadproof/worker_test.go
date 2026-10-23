@@ -253,22 +253,34 @@ func TestBrokerCreateIntentIsNamespacedJSON(t *testing.T) {
 	}
 }
 func TestBrokerEnsuresInitialDespiteQueuedFollowup(t *testing.T) {
-	l, _ := openTestLedger(t)
-	op := seedLead(t, l)
-	if _, err := l.Enqueue(t.Context(), Input{ID: "followup", Target: op.ID, Kind: "user", Payload: []byte(`{"text":"later"}`)}); err != nil {
+	l, path := openTestLedger(t)
+	c, _ := startProofHost(t, l, filepath.Dir(path))
+	workerLead(t, l, `{"kind":"admitted"}`)
+	w := &Worker{Ledger: l, Sessions: c}
+	if _, err := w.Enqueue(t.Context(), Input{ID: "followup", Target: "lead", Kind: "user", Payload: []byte(`{"kind":"later"}`)}); err != nil {
 		t.Fatal(err)
 	}
-	s := &brokerBoundary{log: eventlog.New()}
-	w := &Worker{Ledger: l, Sessions: dialBrokerBoundary(t, s)}
-	if err := w.Reconcile(t.Context()); err != nil {
-		t.Fatalf("sent followup before ensuring initial: %v", err)
+	for range 2 {
+		if err := w.Reconcile(t.Context()); err != nil {
+			t.Fatal(err)
+		}
 	}
-	inputs, _ := l.Inputs(t.Context(), op.ID)
-	if len(inputs) != 2 || inputs[1].ID != "initial-lead" || inputs[1].Kind != "user" || string(inputs[1].Payload) != string(op.Payload) {
-		t.Fatalf("missing initial input: %+v", inputs)
+	inputs, _ := l.Inputs(t.Context(), "lead")
+	if len(inputs) != 2 || inputs[0].ID != "initial-lead" || inputs[0].State != "delivered" || string(inputs[0].Payload) != `{"kind":"admitted"}` || inputs[1].State != "queued" {
+		t.Fatalf("admitted payload did not run first: %+v", inputs)
 	}
-	if s.execs != 0 {
-		t.Fatal("initial admission also mutated Sessions")
+	for range 3 {
+		if err := w.Reconcile(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inputs, _ = l.Inputs(t.Context(), "lead")
+	if inputs[1].State != "delivered" || inputs[0].ExecutionID == inputs[1].ExecutionID {
+		t.Fatalf("followup not delivered once after initial: %+v", inputs)
+	}
+	v, err := w.Inspect(t.Context(), "lead")
+	if err != nil || v.Evidence.EndSeq == 0 {
+		t.Fatalf("followup never completed: %+v %v", v.Evidence, err)
 	}
 }
 func TestBrokerCallbackFailureCannotAdoptJournalACK(t *testing.T) {
@@ -351,8 +363,17 @@ func TestBrokerUnknownRPCsNeverRetry(t *testing.T) {
 }
 func TestBrokerStaleResumeHeldAndHistoricalDecisionImmutable(t *testing.T) {
 	l, _ := openTestLedger(t)
-	seedLead(t, l)
-	beginExecution(t, l, "lead", "exec")
+	op := seedLead(t, l)
+	in := initialInput(op)
+	if _, err := l.Enqueue(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.NextInput(t.Context(), op.ID, op.Epoch, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.ConfirmInput(t.Context(), in.ID, "exec"); err != nil {
+		t.Fatal(err)
+	}
 	s := &brokerBoundary{log: eventlog.New()}
 	appendBrokerEvents(t, s.log, brokerGateEvents()...)
 	w := &Worker{Ledger: l, Sessions: dialBrokerBoundary(t, s)}

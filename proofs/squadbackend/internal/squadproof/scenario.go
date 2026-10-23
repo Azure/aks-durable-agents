@@ -115,12 +115,12 @@ func RunCase(ctx context.Context, name, dataDir, server string) (Proof, error) {
 				return p, e
 			}
 			if name == "queue" && op.ID == "lead" && op.Evidence.RequestSeq > 0 && !user {
-				_, err = l.Enqueue(ctx, Input{ID: "case-user", Target: "lead", Kind: "user", Payload: []byte(`{"kind":"followup"}`)})
+				_, err = w.Enqueue(ctx, Input{ID: "case-user", Target: "lead", Kind: "user", Payload: []byte(`{"kind":"followup"}`)})
 				acted = true
 				break
 			}
 			if name == "queue" && result && !tick {
-				_, err = l.Enqueue(ctx, Input{ID: "case-tick", Target: "lead", Kind: "tick", Payload: []byte(`{"kind":"tick"}`)})
+				_, err = w.Enqueue(ctx, Input{ID: "case-tick", Target: "lead", Kind: "tick", Payload: []byte(`{"kind":"tick"}`)})
 				acted = true
 				break
 			}

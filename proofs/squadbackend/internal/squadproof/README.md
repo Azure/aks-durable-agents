@@ -129,7 +129,13 @@ seals or rewrites the live store.
 
 ## Bounded broker and controlled restart
 
-`broker` performs one eligible action. Admission returns a durable member handle;
+`broker` performs one eligible action. `Worker.Enqueue` atomically seeds the
+immutable admitted initial input before accepting a later user/tick input. The
+`initial-` and `result-` namespaces are reserved at this broker boundary; member
+operations accept only their admitted initial task. Reconcile refuses misordered
+or changed-initial queues created through lower-level fixture APIs without
+renumbering durable ordinals or sending an Exec.
+Admission returns a durable member handle;
 the broker later allocates a distinct member session and queues its terminal
 result as a new lead input. Only an SDK `EXECUTION_START` acknowledgment confirms
 an input. An allocating session without a mapped UID or a delivering input without

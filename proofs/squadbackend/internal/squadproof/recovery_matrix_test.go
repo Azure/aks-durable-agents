@@ -56,12 +56,17 @@ func TestKnownAckAndPendingHostReplacement(t *testing.T) {
 		if err := f.l.ArmCut(f.ctx, "broker.after-ack", "crash"); err != nil {
 			t.Fatal(err)
 		}
+		crashed := false
 		for i := 0; i < 12; i++ {
 			out, err := f.step()
 			if err != nil {
 				requireCutExit(t, err, out)
+				crashed = true
 				break
 			}
+		}
+		if !crashed {
+			t.Fatal("armed broker.after-ack crash was not reached")
 		}
 		root := f.op("lead")
 		if root.Evidence.ExecutionID == "" {

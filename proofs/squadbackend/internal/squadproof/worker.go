@@ -47,6 +47,12 @@ func (w *Worker) Reconcile(ctx context.Context) error {
 				return errors.Join(ErrHeld, w.Ledger.MarkUncertain(ctx, op.ID, "lost-exec"))
 			}
 		}
+		if len(inputs) > 0 {
+			first, initial := inputs[0], initialInput(op)
+			if first.ID != initial.ID || first.Kind != initial.Kind || first.PayloadHash != op.PayloadHash {
+				return ErrConflict
+			}
+		}
 	}
 	actions, err := brokerActions(ctx, w.Ledger.db)
 	if err != nil {
@@ -72,11 +78,7 @@ func (w *Worker) Reconcile(ctx context.Context) error {
 			}
 		}
 		if !initial && op.State == "mapped" {
-			kind := "user"
-			if op.Kind == "dispatch" {
-				kind = "task"
-			}
-			_, err = w.Ledger.Enqueue(ctx, Input{ID: "initial-" + op.ID, Target: op.ID, Kind: kind, Payload: op.Payload})
+			_, err = w.Ledger.Enqueue(ctx, initialInput(op))
 			return err
 		}
 		v, e := w.Inspect(ctx, op.ID)
