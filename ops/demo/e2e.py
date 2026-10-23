@@ -24,7 +24,13 @@ SUMMARY_RESERVE = 16 * 1024
 AKS_TITLE = "AKS e2e regression"
 AKS_MARKER = "<!-- aks-e2e-tracking -->"
 AKS_START, AKS_END = "<!-- aks-e2e-status:start -->", "<!-- aks-e2e-status:end -->"
-AKS_STAGES = ("config", "preflight", "create", "wait", "federate", "scenario", "teardown", "finalize")
+AKS_STAGES = ("config", "preflight", "substrate-inputs", "create", "wait", "federate", "scenario", "teardown", "finalize")
+SUBSTRATE_EVIDENCE_RECOVERY = (
+    "For unavailable, expired or mismatched Substrate image evidence: "
+    "Re-run the Images run for the source pinned in PUBLISHED_IMAGES while within GitHub\'s 30-day re-run window, "
+    "then wait for successful Verified image pins. If only verification is missing, re-run Verified image pins with that publish_run_id. "
+    "If the evidence is too old, refresh the reviewed chart image pins, PUBLISHED_IMAGES and matching backup-helper receipt."
+)
 
 
 class ApiError(Exception):
@@ -323,7 +329,8 @@ def track(api, repo, run_id, sha, run_url, test=False, profile="kind", stage="sc
     base = f"/repos/{repo}/issues"
     if profile == "aks":
         issue = find_tracker(api, repo, AKS_TITLE, AKS_MARKER)
-        block = f"{AKS_START}\nStage: {stage}\nWorkflow: {run_url}\nCommit: {sha}\n{AKS_END}"
+        recovery = "\n" + SUBSTRATE_EVIDENCE_RECOVERY if stage == "substrate-inputs" else ""
+        block = f"{AKS_START}\nStage: {stage}\nWorkflow: {run_url}\nCommit: {sha}{recovery}\n{AKS_END}"
         if issue is None:
             issue = api.request("POST", base, {"title": AKS_TITLE, "body": f"{AKS_MARKER}\n\n{block}\n"})
         else:

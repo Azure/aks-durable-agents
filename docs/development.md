@@ -114,7 +114,12 @@ operator inputs. See the [chart README](../charts/aks-durable-agents/README.md#o
 
 Tests use fake credentials and local TLS servers, including the **real sessions
 OpenAI adapter** at the [canonical upstream pin](entraauth.md#offline-verification-and-the-sessions-dependency). They require neither Azure access nor model keys. The [AKS workflow](../ops/aks/README.md) defaults to read-only manual dispatch and
-requests the operator-gated no-sandbox scenario daily at 05:43 UTC. It retains
+requests the operator-gated no-sandbox scenario daily at 05:43 UTC, plus
+`substrate-gvisor` at 08:17 UTC Mon/Wed/Fri. The latter resolves only retained
+verified evidence for the exact reviewed `PUBLISHED_IMAGES` source; unavailable
+evidence fails before provisioning with fixed recovery guidance in the existing
+AKS tracker. See [schedule and evidence recovery](../ops/aks/README.md#substrate-schedule-and-retained-evidence).
+It retains
 simulated approval, parked-host restart, effective policy controls, fenced
 backup/strict replay, whole-cluster teardown and independent expiry cleanup.
 Qualification and operator opt-ins remain required; `AKS_BUDGET_CONFIRMED` is an

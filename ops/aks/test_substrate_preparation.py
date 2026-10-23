@@ -28,7 +28,7 @@ finally:
 
 
 class PreparationTests(unittest.TestCase):
-    def exercise(self, *, old_actor=False, mismatched_map=False, bad_signature=False, bad_integrity=False):
+    def exercise(self, *, old_actor=False, mismatched_map=False, bad_signature=False, bad_integrity=False, scheduled=False, missing_evidence=False):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
@@ -46,11 +46,18 @@ class PreparationTests(unittest.TestCase):
         output, calls = root / "prepared", []
         pub = {"version": 1, "workflowCommit": "a" * 40, "substrateCommit": substrate_images.SUBSTRATE_COMMIT, "pauseCommit": substrate_images.PAUSE_COMMIT, "images": {role: substrate_images.PREFIX + role + "@sha256:" + "b" * 64 for role in substrate_images.ROLES}}
         mapping = substrate_images.installer_map(pub)
+        if scheduled:
+            from test_substrate_schedule import FakeGitHub
+            github = FakeGitHub()
+            if missing_evidence:
+                github.artifacts = []
         def command(argv, **kwargs):
             argv = [str(v) for v in argv]
             calls.append(argv)
             raw = b""
-            if argv[:2] == ["gh", "api"]:
+            if scheduled and argv[:2] == ["gh", "api"] and not argv[-1].endswith(("/123", "/456")):
+                raw = github.command(argv, limit=kwargs["timeout"])
+            elif argv[:2] == ["gh", "api"]:
                 verify = argv[-1].endswith("456")
                 value = {"id": 456 if verify else 123, "path": ".github/workflows/image-pins.yml" if verify else ".github/workflows/images.yml", "head_sha": "a" * 40, "event": "workflow_run" if verify else "push", "head_branch": "main", "status": "completed", "conclusion": "success", "repository": {"full_name": inputs.REPO}, "head_repository": {"full_name": inputs.REPO}}
                 raw = json.dumps(value).encode()
@@ -86,10 +93,20 @@ class PreparationTests(unittest.TestCase):
         env.update(RUNNER_TEMP=str(root), PRIVATE_SENTINEL="never-package-this", MODEL_PRICE_AS_OF=datetime.datetime.now(datetime.timezone.utc).date().isoformat())
         env["PUBLISHED_IMAGES"] = json.dumps({"version": 1, "sourceCommit": "d" * 40, "images": {role: dict(zip(("repository", "digest"), ref.split("@"))) for role, ref in pins.items()}})
         env["BACKUP_HELPER_RECEIPT"] = json.dumps(dict(test_lifecycle.RECEIPT, hostDigest=pins["host"].split("@")[1]))
+        if scheduled:
+            manifest = json.loads(env["PUBLISHED_IMAGES"])
+            manifest["sourceCommit"] = "a" * 40
+            env["PUBLISHED_IMAGES"] = json.dumps(manifest)
+            receipt = json.loads(env["BACKUP_HELPER_RECEIPT"])
+            receipt["sourceCommit"] = "a" * 40
+            env["BACKUP_HELPER_RECEIPT"] = json.dumps(receipt)
         decisions = [{"tool": "kubectl", "status": "integrity-error", "findings": []}] if bad_integrity else []
         def execute():
             with patch.dict(os.environ, env, clear=True), patch.object(sys, "path", list(sys.path)), patch.object(subprocess, "run", side_effect=command), patch.object(tool_audit, "audit_tools", return_value=decisions):
-                inputs.prepare(output, source, "123", "456")
+                if scheduled:
+                    inputs.prepare(output, source, "", "", scheduled=True)
+                else:
+                    inputs.prepare(output, source, "123", "456")
         return output, calls, execute
 
     def test_verified_prepaid_graph_exports_only_source_tools_maps_and_closed_reports(self):
@@ -110,6 +127,26 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(sum(c[:2] == ["cosign", "verify"] for c in calls), 13)
         self.assertEqual(sum(c[:2] == ["docker", "pull"] for c in calls), 18)
         self.assertFalse(any(c[0] in ("az", "kubectl", "ate-setup", "kubectl-ate") for c in calls))
+
+    def test_scheduled_pair_flows_through_all_existing_prepaid_checks(self):
+        output, calls, execute = self.exercise(scheduled=True)
+        execute()
+        self.assertTrue((output / "prepared.tar.gz").is_file())
+        self.assertEqual(sum(c[:2] == ["cosign", "verify"] for c in calls), 13)
+        self.assertTrue(any(c[:3] == ["gh", "run", "download"] and c[3] == "123" for c in calls))
+        self.assertFalse(any(c[0] in ("az", "kubectl", "ate-setup", "kubectl-ate") for c in calls))
+
+    def test_scheduled_missing_or_mismatched_evidence_has_remedy_before_images(self):
+        from substrate_schedule import EvidenceError
+        for change in ({"missing_evidence": True}, {"mismatched_map": True}):
+            output, calls, execute = self.exercise(scheduled=True, **change)
+            with self.subTest(change=change):
+                with self.assertRaises(EvidenceError) as caught:
+                    execute()
+                self.assertIn("Re-run", str(caught.exception))
+                self.assertIn("refresh", str(caught.exception))
+                self.assertFalse((output / "prepared.tar.gz").exists())
+                self.assertFalse(any(c[0] in ("az", "docker", "kubectl", "ate-setup") for c in calls))
 
     def test_actual_workflow_restore_provides_yaml_in_clean_python_without_downloads(self):
         output, _, execute = self.exercise()
