@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -44,11 +43,11 @@ type Policy struct {
 type Puller struct{ repositories map[string]*remote.Repository }
 
 // New accepts a trusted transport for host TLS policy or tests. Nil disables
-// ambient proxies. ORAS handles bearer challenges and strips Authorization
-// when redirects cross origins, including different ports on the same host.
+// ambient proxies. ORAS handles bearer challenges; this client strips
+// Authorization on every redirect hop, including redirects within one origin.
 func New(policy Policy, transport http.RoundTripper) (*Puller, error) {
 	if len(policy.Repositories) == 0 {
-		return nil, errors.New("registry repositories required")
+		return nil, fault(ErrUnsupported, "policy", "repositories-required")
 	}
 	if transport == nil {
 		t := http.DefaultTransport.(*http.Transport).Clone()
@@ -56,10 +55,12 @@ func New(policy Policy, transport http.RoundTripper) (*Puller, error) {
 		t.DisableCompression = true
 		transport = t
 	}
-	client := &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	client := &http.Client{Transport: statusTransport{transport}, Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		// net/http can copy the initial headers again on a later redirect hop.
+		req.Header.Del("Authorization")
 		// auth.Client installs CheckRedirect, so preserve Go's usual ten-hop bound.
 		if len(via) >= 10 || (req.URL.Scheme != "https" && (req.URL.Scheme != "http" || policy.HTTPRegistry == "" || req.URL.Host != policy.HTTPRegistry)) {
-			return errors.New("registry redirect refused")
+			return fault(ErrUnsupported, "redirect", "redirect-policy")
 		}
 		return nil
 	}}
@@ -68,7 +69,7 @@ func New(policy Policy, transport http.RoundTripper) (*Puller, error) {
 	for _, name := range policy.Repositories {
 		r, err := remote.NewRepository(name)
 		if err != nil || r.Reference.Reference != "" || r.Reference.Registry+"/"+r.Reference.Repository != name {
-			return nil, errors.New("invalid registry repository")
+			return nil, fault(ErrUnsupported, "policy", "repository-reference")
 		}
 		r.PlainHTTP = r.Reference.Registry == policy.HTTPRegistry
 		foundHTTP = foundHTTP || r.PlainHTTP
@@ -78,12 +79,12 @@ func New(policy Policy, transport http.RoundTripper) (*Puller, error) {
 		p.repositories[name] = r
 	}
 	if !foundHTTP {
-		return nil, errors.New("HTTP registry must match an allowed repository authority")
+		return nil, fault(ErrUnsupported, "policy", "http-authority")
 	}
 	for name, cred := range policy.Credentials {
 		r := p.repositories[name]
 		if r == nil || cred.RefreshToken != "" || (r.PlainHTTP && cred != auth.EmptyCredential) {
-			return nil, errors.New("invalid scoped registry credential")
+			return nil, fault(ErrUnsupported, "policy", "credential-scope")
 		}
 	}
 	return p, nil
@@ -94,55 +95,63 @@ func New(policy Policy, transport http.RoundTripper) (*Puller, error) {
 func (p *Puller) Pull(ctx context.Context, ref string) (pkg *Package, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	state := &readState{role: "manifest"}
+	ctx = context.WithValue(ctx, readKey{}, state)
 	defer func() {
-		if cause := ctx.Err(); cause != nil {
-			pkg, err = nil, cause
+		if ctx.Err() != nil {
+			pkg, err = nil, state.failure(ctx, ErrUnavailable, "context", ctx.Err())
 		}
 	}()
 	repo, dig, ok := strings.Cut(ref, "@")
 	if !ok || !validDigest(dig) {
-		return nil, errors.New("package requires a lowercase sha256 digest reference")
+		return nil, fault(ErrUnsupported, "manifest", "digest-reference")
 	}
 	r := p.repositories[repo]
 	if r == nil {
-		return nil, errors.New("package repository not allowed")
+		return nil, fault(ErrUnsupported, "manifest", "repository-allowlist")
 	}
 	desc, body, err := r.FetchReference(ctx, dig)
 	if err != nil {
-		return nil, errors.New("registry manifest read failed")
+		return nil, state.failure(ctx, nil, "registry-read", err)
 	}
-	if desc.Digest.String() != dig || desc.Size < 0 || desc.Size > maxManifest {
+	if desc.Digest.String() != dig || desc.Size < 0 {
 		body.Close()
-		return nil, errors.New("invalid manifest descriptor")
+		return nil, state.failure(ctx, ErrIntegrity, "manifest-descriptor", nil)
 	}
-	manifest, err := readDescriptor(body, desc)
+	if desc.Size > maxManifest {
+		body.Close()
+		return nil, state.failure(ctx, ErrUnsupported, "manifest-limit", nil)
+	}
+	manifest, err := readDescriptor(ctx, state, body, desc)
 	if err != nil {
 		return nil, err
 	}
 	m, err := parseManifest(manifest)
 	if err != nil {
-		return nil, err
+		return nil, state.failure(ctx, nil, "manifest-profile", err)
 	}
 	blobs := make([][]byte, 0, 2)
-	for _, d := range []blobDescriptor{m.Config, m.Layers[0]} {
+	for i, d := range []blobDescriptor{m.Config, m.Layers[0]} {
+		state = &readState{role: []string{"config", "layer"}[i]}
+		ctx = context.WithValue(ctx, readKey{}, state)
 		target := ocispec.Descriptor{MediaType: d.MediaType, Digest: godigest.Digest(d.Digest), Size: d.Size}
 		rc, err := r.Fetch(ctx, target)
 		if err != nil {
-			return nil, errors.New("registry blob read failed")
+			return nil, state.failure(ctx, nil, "registry-read", err)
 		}
-		b, err := readDescriptor(rc, target)
+		b, err := readDescriptor(ctx, state, rc, target)
 		if err != nil {
 			return nil, err
 		}
 		blobs = append(blobs, b)
 	}
-	return Verify(ctx, manifest, blobs[0], blobs[1])
+	return Verify(ctx, dig, manifest, blobs[0], blobs[1])
 }
-func readDescriptor(body io.ReadCloser, desc ocispec.Descriptor) ([]byte, error) {
+func readDescriptor(ctx context.Context, state *readState, body io.ReadCloser, desc ocispec.Descriptor) ([]byte, error) {
 	defer body.Close()
 	b, err := content.ReadAll(body, desc)
 	if err != nil {
-		return nil, errors.New("package descriptor integrity mismatch")
+		return nil, state.failure(ctx, ErrIntegrity, "descriptor-body", err)
 	}
 	return b, nil
 }
@@ -170,16 +179,25 @@ func parseManifest(b []byte) (manifest, error) {
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.DisallowUnknownFields()
 	err := d.Decode(&m)
-	if err != nil || d.Decode(new(any)) != io.EOF || m.SchemaVersion != 2 || m.MediaType != "application/vnd.oci.image.manifest.v1+json" || m.ArtifactType != oci.MediaTypeArtifact || m.Subject != nil || len(m.Layers) != 1 {
-		return m, errors.New("unsupported package manifest")
+	if err != nil || d.Decode(new(any)) != io.EOF || m.SchemaVersion != 2 || m.ArtifactType != oci.MediaTypeArtifact || m.Subject != nil || len(m.Layers) != 1 {
+		return m, fault(ErrUnsupported, "manifest", "manifest-profile")
+	}
+	if m.MediaType != "application/vnd.oci.image.manifest.v1+json" {
+		return m, fault(ErrUnsupported, "manifest", "manifest-media-type")
 	}
 	for _, v := range []blobDescriptor{m.Config, m.Layers[0]} {
-		if !validDigest(v.Digest) || v.Size < 0 || v.URLs != nil || v.Data != nil {
-			return m, errors.New("invalid package descriptor")
+		if v.URLs != nil {
+			return m, fault(ErrUnsupported, "manifest", "descriptor-urls")
+		}
+		if v.Data != nil {
+			return m, fault(ErrUnsupported, "manifest", "descriptor-inline-data")
+		}
+		if !validDigest(v.Digest) || v.Size < 0 {
+			return m, fault(ErrUnsupported, "manifest", "descriptor-profile")
 		}
 	}
 	if m.Config.MediaType != oci.MediaTypeEmptyConfig || m.Config.Size != 2 || m.Layers[0].MediaType != oci.MediaTypeContent || m.Layers[0].Size > maxLayer {
-		return m, errors.New("unsupported package blobs")
+		return m, fault(ErrUnsupported, "manifest", "blob-profile")
 	}
 	return m, nil
 }

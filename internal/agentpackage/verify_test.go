@@ -52,7 +52,7 @@ func TestVerifyRejectsTamperingAndUntrustedDetails(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := makeFixture(t)
 			mutate(&f)
-			p, err := Verify(t.Context(), f.manifest, f.config, f.layer)
+			p, err := Verify(t.Context(), digest(f.manifest), f.manifest, f.config, f.layer)
 			if err == nil || p != nil {
 				t.Fatal("accepted tampered package")
 			}
@@ -88,7 +88,7 @@ func TestVerifyRejectsUnsupportedManifest(t *testing.T) {
 			if field == "duplicate" {
 				f.manifest = append([]byte(`{"schemaVersion":2,`), f.manifest[1:]...)
 			}
-			if p, err := Verify(t.Context(), f.manifest, f.config, f.layer); err == nil || p != nil {
+			if p, err := Verify(t.Context(), digest(f.manifest), f.manifest, f.config, f.layer); err == nil || p != nil {
 				t.Fatal("accepted unsupported manifest")
 			}
 		})
@@ -100,7 +100,11 @@ func TestVerifyRejectsArchiveEntry(t *testing.T) {
 			f := makeFixture(t)
 			f.layer = archive(t, f.files, &tar.Header{Name: name, Mode: 0644, ModTime: time.Unix(0, 0), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR})
 			f.remanifest()
-			if _, err := Verify(t.Context(), f.manifest, f.config, f.layer); err == nil || err.Error() != "unsupported package archive entry" {
+			want := "entry-path"
+			if name == "instructions/writer.md" {
+				want = "duplicate-path"
+			}
+			if _, err := Verify(t.Context(), digest(f.manifest), f.manifest, f.config, f.layer); !hasFailure(err, ErrUnsupported, want) {
 				t.Fatalf("wrong refusal for unsafe entry: %v", err)
 			}
 		})
@@ -110,7 +114,7 @@ func TestVerifyRejectsArchiveEntry(t *testing.T) {
 			f := makeFixture(t)
 			f.layer = archive(t, f.files, &tar.Header{Name: "extra", Linkname: "instructions/writer.md", Mode: 0644, ModTime: time.Unix(0, 0), Typeflag: kind, Format: tar.FormatUSTAR})
 			f.remanifest()
-			if _, err := Verify(t.Context(), f.manifest, f.config, f.layer); err == nil || err.Error() != "package links and special files are unsupported" {
+			if _, err := Verify(t.Context(), digest(f.manifest), f.manifest, f.config, f.layer); !hasFailure(err, ErrUnsupported, "entry-type") {
 				t.Fatalf("wrong special-file refusal: %v", err)
 			}
 		})
@@ -124,7 +128,7 @@ func TestVerifyRejectsArchiveEntry(t *testing.T) {
 			}
 			f.layer = archive(t, f.files, h)
 			f.remanifest()
-			if _, err := Verify(t.Context(), f.manifest, f.config, f.layer); err == nil || err.Error() != "unsupported package archive entry" {
+			if _, err := Verify(t.Context(), digest(f.manifest), f.manifest, f.config, f.layer); !hasFailure(err, ErrUnsupported, "tar-format") {
 				t.Fatalf("wrong metadata refusal: %v", err)
 			}
 		})
@@ -148,14 +152,14 @@ func TestVerifyResourceLimits(t *testing.T) {
 	t.Run("manifest", func(t *testing.T) {
 		f := makeFixture(t)
 		f.manifest = bytes.Repeat([]byte(" "), (1<<20)+1)
-		if _, err := Verify(t.Context(), f.manifest, f.config, f.layer); err == nil || err.Error() != "package exceeds byte limits" {
+		if _, err := Verify(t.Context(), digest(f.manifest), f.manifest, f.config, f.layer); !hasFailure(err, ErrUnsupported, "byte-limits") {
 			t.Fatalf("wrong bound: %v", err)
 		}
 	})
 	t.Run("compressed", func(t *testing.T) {
 		f := makeFixture(t)
 		f.layer = make([]byte, (8<<20)+1)
-		if _, err := Verify(t.Context(), f.manifest, f.config, f.layer); err == nil || err.Error() != "package exceeds byte limits" {
+		if _, err := Verify(t.Context(), digest(f.manifest), f.manifest, f.config, f.layer); !hasFailure(err, ErrUnsupported, "byte-limits") {
 			t.Fatalf("wrong bound: %v", err)
 		}
 	})
@@ -164,7 +168,7 @@ func TestVerifyResourceLimits(t *testing.T) {
 		f.files["too-large"] = make([]byte, (1<<20)+1)
 		f.layer = archive(t, f.files, nil)
 		f.remanifest()
-		if _, err := Verify(t.Context(), f.manifest, f.config, f.layer); err == nil || err.Error() != "unsupported package archive entry" {
+		if _, err := Verify(t.Context(), digest(f.manifest), f.manifest, f.config, f.layer); !hasFailure(err, ErrUnsupported, "file-size") {
 			t.Fatalf("wrong file bound: %v", err)
 		}
 	})
@@ -175,7 +179,7 @@ func TestVerifyResourceLimits(t *testing.T) {
 		}
 		f.layer = archive(t, f.files, nil)
 		f.remanifest()
-		if _, err := Verify(t.Context(), f.manifest, f.config, f.layer); err == nil || err.Error() != "unsupported package archive entry" {
+		if _, err := Verify(t.Context(), digest(f.manifest), f.manifest, f.config, f.layer); !hasFailure(err, ErrUnsupported, "entry-count") {
 			t.Fatalf("wrong entry bound: %v", err)
 		}
 	})
@@ -192,7 +196,7 @@ func TestVerifyResourceLimits(t *testing.T) {
 		f := makeFixture(t)
 		f.layer = b.Bytes()
 		f.remanifest()
-		if _, err := Verify(t.Context(), f.manifest, f.config, f.layer); err == nil || err.Error() != "incomplete package file" {
+		if _, err := Verify(t.Context(), digest(f.manifest), f.manifest, f.config, f.layer); !hasFailure(err, ErrIntegrity, "file-body") {
 			t.Fatalf("wrong expansion refusal: %v", err)
 		}
 	})
@@ -288,8 +292,8 @@ func TestPullContextAfterHeaders(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := p.Pull(ctx, repo+"@sha256:"+strings.Repeat("a", 64)); !errors.Is(err, want) {
-				t.Fatalf("body read lost context identity: %v", err)
+			if _, err := p.Pull(ctx, repo+"@sha256:"+strings.Repeat("a", 64)); !errors.Is(err, want) || !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("body read lost context identity/class: %v", err)
 			}
 		})
 	}
@@ -314,7 +318,7 @@ func TestVerifyCancellationDuringExtraction(t *testing.T) {
 	f := makeFixture(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	if _, err := Verify(&extractionContext{ctx, cancel, 3}, f.manifest, f.config, f.layer); !errors.Is(err, context.Canceled) {
+	if _, err := Verify(&extractionContext{ctx, cancel, 3}, digest(f.manifest), f.manifest, f.config, f.layer); !errors.Is(err, context.Canceled) {
 		t.Fatalf("extraction lost cancellation: %v", err)
 	}
 }
