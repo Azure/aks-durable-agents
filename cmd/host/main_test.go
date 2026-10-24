@@ -104,26 +104,6 @@ func TestRepeatedHarnessServiceKeepsEveryExactPort(t *testing.T) {
 	}
 }
 
-// Chart tests compare their real rendered args to the same fixture. This tests
-// the production CLI path without adding a fake-credential flag or parser fork.
-func TestNativeChartArgumentsUseProductionParser(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "charts", "aks-durable-agents", "tests", "native-host-args.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var args []string
-	if err = json.Unmarshal(raw, &args); err != nil {
-		t.Fatal(err)
-	}
-	c, err := parse(args)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(c.Harnesses) != 2 || c.HarnessService != "test-aks-durable-agents-harness.agents.svc.cluster.local:9000" || len(c.HarnessServices) != 1 || c.HarnessServices[0] != "test-aks-durable-agents-harness.agents.svc.cluster.local:9001" || c.Mode != authn.Off || c.ToolExecutors != "" || c.PeerNodeFile != "" || c.NodeName != "" || c.ModelCredential != nil || c.ModelPolicy != "/config/model-policy.json" {
-		t.Fatalf("native chart args changed meaning: %+v", c)
-	}
-}
-
 func TestFlags(t *testing.T) {
 	c, err := parse([]string{"-harness=release-notes=127.0.0.1:9000", "-model=deployment", "-model-base-url=https://model.example/openai/v1/"})
 	if err != nil {

@@ -58,9 +58,7 @@ planned, not current guarantees. See [architecture and trust boundaries](archite
 The chart's fixture pod is not a sandbox. The chart does not install Substrate;
 its optional host backend needs separate infrastructure. The intended Substrate
 assembly provides isolated execution and snapshots, but this assembly's recovery
-and isolation still need qualification. The native document producer profile is
-also not a standalone public deployment. See [Substrate prerequisites and limits](substrate.md)
-and [external producer inputs](../ops/canvas/README.md#scope-and-prerequisites).
+and isolation still need qualification. See [Substrate prerequisites and limits](substrate.md).
 
 ## Development dependencies
 

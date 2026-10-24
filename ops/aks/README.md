@@ -1,7 +1,9 @@
 # Daily AKS e2e and independent expiry cleanup
 
 The **Nightly AKS e2e** workflow requests the operator-gated no-sandbox real-model
-scenario daily at **05:43 UTC**. Manual dispatch still defaults to read-only
+scenario daily at **05:43 UTC**. The separate `substrate-gvisor` case runs at
+**08:17 UTC Monday/Wednesday/Friday** through the same workflow jobs and limits.
+Manual dispatch still defaults to read-only
 identity/RG validation. This is the simulated-approval/trusted-network profile,
 not delegated Entra/TLS acceptance. Offline tests do not qualify a live AKS
 deployment. The existing kind workflow and its fake-model assertions are unchanged.
@@ -19,11 +21,12 @@ that exact branch in `nightly-aks`. Do not allow PR/fork refs or arbitrary branc
 Remove the temporary allowance after qualification; keep `main` cleanup enabled.
 
 For the separate **install-only Substrate v0.5.0** recipe and the explicit
-manual-only **`substrate-gvisor` Sessions actor variant**, see
+**`substrate-gvisor` Sessions actor variant**, see
 [Substrate on disposable AKS](SUBSTRATE.md#manual-sessions-actor-variant).
-The variant keeps the schedule/default no-sandbox path unchanged. It requires
-separate operator enablement, exact publication/verification run inputs and a
-fresh live go; local tests and the native counter pass are not that qualification.
+The variant keeps the daily/default no-sandbox path unchanged. It requires
+separate operator enablement. Manual runs still need explicit verified image-run
+inputs and a fresh operator go; the scheduled path uses the exact-source policy
+below. Offline tests do not qualify the scheduled AKS assembly.
 
 ## Operator configuration
 
@@ -233,6 +236,43 @@ tracker without explicit mentions or pages; ordinary GitHub notification setting
 still apply. Disabling `AKS_SCENARIO_ENABLED` also suppresses tracker updates, but
 blocked scheduled runs remain visibly failed in Actions. The independent cleanup
 cron, ownership checks, teardown and seven-day safe artifact policy are unchanged.
+
+### Substrate schedule and retained evidence
+
+`17 8 * * 1,3,5` requests `substrate-gvisor` at 08:17 UTC Mon/Wed/Fri, 2h34m
+after the unchanged 05:43 no-sandbox nightly. A disabled Substrate gate fails
+closed; it never substitutes another no-sandbox run. GitHub can delay schedules,
+so spacing is not a start-time guarantee. Existing target-absence/run-ownership
+checks refuse an occupied target. Short mutation groups are not full-run locks
+or guaranteed queues; the expiry sweeper remains a backstop.
+
+Before provisioning, the credential-free preparation job resolves retained
+successful canonical-main publication/verification evidence for exactly
+`PUBLISHED_IMAGES.sourceCommit`. It never moves to another source, including a
+newer main source. Published and verified receipt/map contents must match; both
+artifacts must be retained and unexpired, without ambiguous same-name artifacts.
+The installer map still pins the distinct Substrate source commit. Lookup gets
+at most 60s of the existing 840s preparation budget, five 100-record pages per
+listing, 20 verification candidates and 20 publication downloads. Existing signatures, SBOMs,
+actor capability and native-tool checks still run before the provisioning epoch.
+
+Missing, expired or mismatched evidence fails Actions and updates the **same AKS
+regression tracker** at stage `substrate-inputs`, with fixed recovery guidance:
+re-run the original Images push run for the source pinned in `PUBLISHED_IMAGES`
+within GitHub's 30-day re-run window and wait for successful Verified image pins
+**only if its current-main stale-source check still accepts that source**. If only
+verification is missing and publication is retained, dispatch Verified image pins
+with that `publish_run_id`, subject to the same check. Code or workflow changes
+on main can make the pinned publication stale even inside the re-run window;
+those recovery runs then skip exporting verified evidence. For a stale source
+or evidence too old to restore, publish/verify a reviewed replacement and refresh
+the chart pins, `PUBLISHED_IMAGES` and matching helper configuration/receipt;
+never select latest as a fallback. Evidence is
+retained 30 days, so pin/evidence maintenance is required. No automatic publication,
+new IAM, billing read, retry or notification recipient is added. The seven-day
+scenario proof retention, original 30+15-minute resource clock and teardown stay
+unchanged. The new schedule is not qualified until a scheduled native run and
+its teardown have actually passed.
 
 ### What a scenario attempts
 
