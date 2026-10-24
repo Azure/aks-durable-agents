@@ -18,6 +18,8 @@ Start with the [project overview](../README.md) and [current validation status](
 
 - [Architecture diagrams](architecture.md): current chart, opt-in Substrate backend
   and planned integration, with document, identity and recovery boundaries.
+- [AgentSuite package profile and registry access](agent-packages.md): verification
+  library limits, explicit credentials and proxy-aware embedding (not host activation).
 - [Embedded host configuration and security limits](host.md): authentication,
   owner/approver permissions, new-journal rollout, local build and remaining limits.
 - [Opt-in Substrate host wiring](substrate.md): current development pins, one
