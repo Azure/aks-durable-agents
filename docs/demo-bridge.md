@@ -28,7 +28,9 @@ SDK Create selects this route/target Model; Exec takes exact Config and one text
 The host rejects weak mediation before the controller and all harness-reported results.
 Inspect the draft. Qualified Approve records only a decision; explicit owner Resume
 publishes. One owner independently satisfying approver policy is supported.
-Legacy plaintext clients are not signed-in qualification. Never relax auth/listeners.
+Use the [TLS owner/approver client](owner-client.md) for signed-in operator access
+through a private loopback Pod forward. Legacy plaintext clients are not signed-in
+qualification. Never relax auth/listeners.
 
 Publication is one SQLite body BLOB plus receipt in one transaction, not an external
 post or separate `.json` file. Session/key/payload dedup survives lost replies;
