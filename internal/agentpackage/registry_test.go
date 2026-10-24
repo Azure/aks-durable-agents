@@ -48,6 +48,20 @@ func TestPullAnonymousBearerChallenge(t *testing.T) {
 	if string(b) != "Write fictional release notes.\n" || tokens.Load() == 0 {
 		t.Fatal("challenged pull did not return verified content")
 	}
+	// A shared cold auth client must keep per-request response diagnostics isolated.
+	cold, err := New(Policy{Repositories: []string{repo}}, s.Client().Transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 4)
+	for range 4 {
+		go func() { _, err := cold.Pull(t.Context(), repo+"@"+digest(f.manifest)); results <- err }()
+	}
+	for range 4 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestPullScopedCredentials(t *testing.T) {
@@ -58,7 +72,11 @@ func TestPullScopedCredentials(t *testing.T) {
 			blobs := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				redirects.Add(1)
 				if r.Header.Get("Authorization") != "" {
-					t.Error("cross-origin redirect leaked authorization")
+					t.Error("redirect hop leaked authorization")
+				}
+				if !strings.HasPrefix(r.URL.Path, "/final/") {
+					http.Redirect(w, r, "/final"+r.URL.Path, http.StatusTemporaryRedirect)
+					return
 				}
 				if strings.HasSuffix(r.URL.Path, digest(f.config)) {
 					w.Write(f.config)
@@ -125,7 +143,7 @@ func TestPullScopedCredentials(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if pkg.Digest() != digest(f.manifest) || tokens.Load() == 0 || redirects.Load() != 2 {
+			if pkg.Digest() != digest(f.manifest) || tokens.Load() == 0 || redirects.Load() != 4 {
 				t.Fatal("authenticated redirected pull did not return verified content")
 			}
 		})
