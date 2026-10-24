@@ -59,7 +59,10 @@ common=(--server 127.0.0.1:9443 --ca /private/host-ca.pem \
 bounded Config/input file bytes. It does not parse an export or choose a model.
 Retain the UID even if Exec fails. Never rerun start to recover an uncertain
 outcome. `inspect` reads the session and correlated pending tool request without
-model/tool execution. Review that request and retain its head and pending tuple.
+model/tool execution. It searches up to 256 records before the approval request,
+allowing intervening lifecycle records after recovery. If no exact execution/tool
+match is found within that window, inspection stops with an unknown outcome.
+Review the request and retain its head and pending tuple.
 
 One explicit `approve-run` invocation means approve this reviewed request **and**
 resume as its owner. There is no separate automatic action when inspecting:

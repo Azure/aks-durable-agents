@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,7 +80,7 @@ func TestOwnerClientKindServer(t *testing.T) {
 	}
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go server.Serve(tls.NewListener(ln, &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{pair}}))
-	t.Cleanup(func() { _ = server.Close() })
+	t.Cleanup(func() { shutdownOwnerKindHTTP(server) })
 	if err = os.WriteFile("/evidence/ready", []byte("synthetic fixture ready\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -88,6 +89,51 @@ func TestOwnerClientKindServer(t *testing.T) {
 	case <-t.Context().Done():
 		t.Fatal("fixture lifetime expired")
 	}
+}
+
+func shutdownOwnerKindHTTP(server *http.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = server.Shutdown(ctx)
+	_ = server.Close()
+}
+
+func TestOwnerKindShutdownFinishesActiveResponse(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	response := make(chan error, 1)
+	go func() {
+		r, err := server.Client().Get(server.URL)
+		if err == nil {
+			_ = r.Body.Close()
+			if r.StatusCode != http.StatusNoContent {
+				err = fmt.Errorf("unexpected response: %d", r.StatusCode)
+			}
+		}
+		response <- err
+	}()
+	<-entered
+	closed := make(chan struct{})
+	go func() { shutdownOwnerKindHTTP(server.Config); close(closed) }()
+	select {
+	case <-closed:
+		unblock()
+		t.Fatal("shutdown closed an active response")
+	case <-time.After(20 * time.Millisecond):
+	}
+	unblock()
+	if err := <-response; err != nil {
+		t.Fatalf("active response lost: %v", err)
+	}
+	<-closed
 }
 
 type kindOwnerCredential struct {

@@ -250,21 +250,29 @@ func Run(ctx context.Context, args []string, stdout, prompt io.Writer, factory C
 	if o.command == "inspect" {
 		var request *v1.Event
 		if p := s.PendingApproval; p != nil {
-			// The host journals TOOL_CALL immediately before its owned APPROVAL_REQUEST.
 			if p.RequestSeq < 2 || p.RequestSeq > s.LastSeq {
 				return failed(stdout, "inspect", "unknown", s)
 			}
-			records, err := c.Replay(ctx, o.session, p.RequestSeq-1, p.RequestSeq)
-			if err != nil || len(records) != 2 {
+			// Repair can append the request after lifecycle records. Search at most
+			// 256 preceding records without guessing or replaying an unbounded history.
+			records, err := c.Replay(ctx, o.session, max(1, p.RequestSeq-256), p.RequestSeq)
+			if err != nil || len(records) < 2 {
 				return failed(stdout, "inspect", "unknown", s)
 			}
-			call, req := records[0], records[1]
-			e := call.GetEvent()
+			req := records[len(records)-1]
 			r := req.GetEvent()
-			if call.GetSeq() != p.RequestSeq-1 || req.GetSeq() != p.RequestSeq || e.GetKind() != v1.EventKind_EVENT_TOOL_CALL || e.GetExecutionId() != p.ExecutionId || e.GetTool().GetId() != p.ToolCallId || r.GetKind() != v1.EventKind_EVENT_APPROVAL_REQUEST || r.GetExecutionId() != p.ExecutionId || r.GetApproval().GetToolCallId() != p.ToolCallId {
+			if req.GetSeq() != p.RequestSeq || r.GetKind() != v1.EventKind_EVENT_APPROVAL_REQUEST || r.GetExecutionId() != p.ExecutionId || r.GetApproval().GetToolCallId() != p.ToolCallId {
 				return failed(stdout, "inspect", "unknown", s)
 			}
-			request = e
+			for _, record := range records[:len(records)-1] {
+				e := record.GetEvent()
+				if e.GetKind() == v1.EventKind_EVENT_TOOL_CALL && e.GetExecutionId() == p.ExecutionId && e.GetTool().GetId() == p.ToolCallId {
+					request = e
+				}
+			}
+			if request == nil {
+				return failed(stdout, "inspect", "unknown", s)
+			}
 		}
 		return emit(stdout, "inspect", "inspected", s, request)
 	}

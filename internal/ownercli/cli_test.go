@@ -62,6 +62,8 @@ type boundary struct {
 	execReq      *v1.ExecRequest
 	approveReq   *v1.ApproveRequest
 	resumeReq    *v1.ResumeRequest
+	replayReq    *v1.ReplayRequest
+	records      []*v1.LogRecord
 	beforeExec   func()
 	beforeResume func()
 }
@@ -138,10 +140,18 @@ func (b *boundary) Replay(q *v1.ReplayRequest, s v1.Sessions_ReplayServer) error
 	if err := b.hit(s.Context(), "replay"); err != nil {
 		return err
 	}
-	if q.Session != "session-one" || q.ToSeq < 6 || q.FromSeq > 5 {
+	b.replayReq = q
+	if q.Session != "session-one" || q.FromSeq < 1 || q.ToSeq < q.FromSeq {
 		return status.Error(codes.InvalidArgument, "bad range")
 	}
-	for _, r := range []*v1.LogRecord{{Seq: 5, Event: &v1.Event{ExecutionId: "turn-one", Kind: v1.EventKind_EVENT_TOOL_CALL, Body: &v1.Event_Tool{Tool: &v1.ToolCall{Id: "call-one", Tool: "publish", Args: &structpb.Struct{Fields: map[string]*structpb.Value{"draft": structpb.NewStringValue("private draft")}}}}}}, {Seq: 6, Event: &v1.Event{ExecutionId: "turn-one", Kind: v1.EventKind_EVENT_APPROVAL_REQUEST, Body: &v1.Event_Approval{Approval: &v1.ApprovalRequest{ToolCallId: "call-one"}}}}} {
+	records := b.records
+	if records == nil {
+		records = []*v1.LogRecord{{Seq: 5, Event: &v1.Event{ExecutionId: "turn-one", Kind: v1.EventKind_EVENT_TOOL_CALL, Body: &v1.Event_Tool{Tool: &v1.ToolCall{Id: "call-one", Tool: "publish", Args: &structpb.Struct{Fields: map[string]*structpb.Value{"draft": structpb.NewStringValue("private draft")}}}}}}, {Seq: 6, Event: &v1.Event{ExecutionId: "turn-one", Kind: v1.EventKind_EVENT_APPROVAL_REQUEST, Body: &v1.Event_Approval{Approval: &v1.ApprovalRequest{ToolCallId: "call-one"}}}}}
+	}
+	for _, r := range records {
+		if r.Seq < q.FromSeq || r.Seq > q.ToSeq {
+			continue
+		}
 		if err := s.Send(r); err != nil {
 			return err
 		}
@@ -302,6 +312,28 @@ func TestInspectDisclosesPendingDraftWithoutMutation(t *testing.T) {
 		t.Fatal("inspect mutated")
 	}
 }
+func TestInspectRecoveredRequestAcrossSuspend(t *testing.T) {
+	b, common := fixture(t)
+	b.get.LastSeq = 301
+	b.get.PendingApproval.RequestSeq = 300
+	call := &v1.Event{ExecutionId: "turn-one", Kind: v1.EventKind_EVENT_TOOL_CALL, Body: &v1.Event_Tool{Tool: &v1.ToolCall{Id: "call-one", Tool: "publish", Args: &structpb.Struct{Fields: map[string]*structpb.Value{"draft": structpb.NewStringValue("recovered draft")}}}}}
+	request := &v1.Event{ExecutionId: "turn-one", Kind: v1.EventKind_EVENT_APPROVAL_REQUEST, Body: &v1.Event_Approval{Approval: &v1.ApprovalRequest{ToolCallId: "call-one"}}}
+	b.records = []*v1.LogRecord{{Seq: 298, Event: call}, {Seq: 299, Event: &v1.Event{Kind: v1.EventKind_EVENT_LIFECYCLE, Body: &v1.Event_Lifecycle{Lifecycle: &v1.Lifecycle{Kind: v1.Lifecycle_LIFECYCLE_SUSPEND}}}}, {Seq: 300, Event: request}}
+	var out bytes.Buffer
+	if err := Run(t.Context(), args(common, "inspect", "--session", "session-one"), &out, io.Discard, goodFactory); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "recovered draft") || b.replayReq.FromSeq != 44 || b.replayReq.ToSeq != 300 || b.count("approval") != 0 || b.count("resume") != 0 {
+		t.Fatalf("recovered inspect: %s, range=%v", &out, b.replayReq)
+	}
+	// A matching tool ID from another execution must not substitute for the request.
+	call.ExecutionId = "different-turn"
+	out.Reset()
+	if err := Run(t.Context(), args(common, "inspect", "--session", "session-one"), &out, io.Discard, goodFactory); err == nil || !strings.Contains(out.String(), `"outcome":"unknown"`) {
+		t.Fatalf("unbound request accepted: %v %s", err, &out)
+	}
+}
+
 func TestApproveChecksTupleAndResumeWireHead(t *testing.T) {
 	b, common := fixture(t)
 	var out bytes.Buffer
