@@ -5,9 +5,7 @@
 **Experimental proof only.** In required mode this host installs Sessions'
 `WithAuthorization` for per-RPC owner checks and approver read/approval access.
 This is host-RPC isolation, not journal-wide enforcement or governed activation.
-By default both listeners must be **literal loopback IPs**, even with
-authentication enabled. The explicit auth-off private TLS exception below changes
-only the Sessions listener, never health or required mode.
+Both listeners must be **literal loopback IPs**, even with authentication enabled.
 Remote harness addresses are loopback-only unless the explicit split-pod Service
 override described below is configured. The optional [Substrate backend](substrate.md)
 uses a separately installed private runtime and one stateless-replay harness; it
@@ -51,14 +49,16 @@ What the host enforces:
   ownership keys.
 - `-auth-mode=off` leaves existing behavior unchanged: anyone who can reach the
   host may read, act on sessions and approve. It is for trusted-network
-  development only, with an explicit startup warning. Private pod access requires
-  the separate opt-in below; it does not authenticate callers. Off-mode Fork
-  behavior is unchanged.
+  development only, with an explicit startup warning. Off-mode Fork behavior is
+  unchanged.
 - Health and gRPC reflection are registered only on `-health-addr`; that listener
   has no Sessions service. It is plaintext loopback operator access, not a public
   health endpoint. There is no dynamic harness registry or self-RPC bypass.
 - All model calls use the [keyless transport](modeltransport.md). The host pins the configured
-  deployment for chat and streaming, overriding harness-supplied model IDs.
+  deployment for chat and streaming, overriding harness-supplied model IDs on
+  legacy routes. The isolated [source-file demo bridge](demo-bridge.md) instead
+  rejects model mismatch and enforces its publication approval minimum before
+  controller entry. It is not package admission or a registration API.
   Caller JWTs are not forwarded to the model, harness or tool executor.
 - Static harness/tool routes use public placement packages and an independently
   implemented version-1 Unix executor protocol. Explicit `durable_dedup: true`
@@ -209,8 +209,7 @@ After lost responses/timeouts, stop new mutations and reconcile the original
 session/execution, journal head/pending tuple, real-attempt ledger and publication
 receipts. Do not retry, create a replacement session or automatically Resume.
 
-Sessions and health listeners stay loopback-only unless the explicit private
-Sessions TLS opt-in below is selected. For a split-pod deployment,
+Sessions and health listeners stay loopback-only. For a split-pod deployment,
 `-harness-service=service.namespace.svc.cluster.local:9000` permits exactly that
 configured non-loopback harness address. Repeat this flag for multiple exact
 Service/port pairs; each route must match a listed endpoint. Arbitrary IPs,
@@ -245,69 +244,31 @@ the prior budget. Older binaries reject the new field. Neither opt-in rewrites
 historical neutral requests or outgoing request hashes. Native controller replay does
 not enter the live transport and must leave the attempt ledger unchanged.
 
-## Native document producer routes
+## Descriptor-pinned remote routes
 
-A Canvas producer uses the exact immutable registry key
+A remote harness using the native archive contract uses the exact immutable registry key
 `bundle-v4-<64-lowercase-hex>`; this is not a Kubernetes resource name. Configure
 one static `-harness=KEY=ADDRESS` per prepared archive and one exact
 `-harness-service=FQDN:PORT` exception per non-loopback endpoint. Native routes
 also pin the remote descriptor ID: serving a different descriptor at the same
 address is refused. There is no dynamic registration or short-name alias.
 
-Native document-only deployments omit `-tool-executors` and fixture-only peer
-marker flags. They do not gain action execution or replay authority. Retain
-required same-node affinity and verify actual placement; omitting the marker is
-not marker attestation. See the chart's [native profile](../charts/aks-durable-agents/README.md#native-document-producer-profile).
+A document-only remote route can omit `-tool-executors` and fixture-only peer
+marker flags. It does not gain action execution or replay authority. This host
+contract remains available, but the chart has no native producer deployment profile.
 
 `/host health-probe 127.0.0.1:8081` is a bounded TCP readiness check using a
 literal loopback address and canonical nonzero port. It does not initialize
 identity, policy or journal state and does not prove authorization or inference
-readiness. The native chart uses it without requiring a fixture binary.
+readiness. The Substrate chart profile uses it without requiring a fixture binary.
 
-## Explicit private Sessions TLS for the hosted engine
+## Removed wildcard listener option
 
-`-sessions-trusted-network=true` is a narrow opt-in for the
-[chart's private Canvas profile](../charts/aks-durable-agents/README.md#private-canvas-engine-profile),
-not a remote-authenticated mode. It is accepted only with `-auth-mode=off`, both
-`-tls-cert` and `-tls-key`, and `-addr=0.0.0.0:<numeric-port>` (port 1–65535;
-0 is also accepted for ephemeral local tests).
-For the chart this is `-addr=0.0.0.0:8080`; `-health-addr=127.0.0.1:8081` stays
-literal loopback. Missing TLS, another bind address, invalid ports, or required
-auth with the flag fail before journal/identity initialization. Without the flag,
-existing loopback validation is unchanged. Required-auth TLS and admission rules
-are unchanged; the flag does not enable wildcard required-auth listeners.
-
-The host serves TLS even though caller authentication is off. Its leaf must
-contain the exact chart Sessions Service DNS SAN:
-`<agents.name>-sessions.<namespace>.svc.cluster.local`. Use the rendered name
-because long release names are shortened/hashed. The engine dials this name on
-8080 with an explicit CA and hostname verification, never insecure TLS or a
-plaintext fallback. The existing host TLS Secret contains `tls.crt`, `tls.key`
-and `ca.crt`; only the CA item is projected into the engine. The engine's own
-TLS certificate/key come from a different Secret with IP SAN `127.0.0.1`, for
-its loopback HTTPS API and the operator's local port-forward/CA-verified adapter.
-No Secret material belongs in values or ConfigMaps. Secret rotation requires
-explicit restarts of affected processes; no live reload is promised.
-
-**Identity is not exercised.** Sessions resource ownership and authenticated
-approval are not introduced by TLS or by label-selected NetworkPolicies. Limit
-private TCP8080 ingress to this release's engine in the same namespace and
-verify all additive policies and enforcement before enabling workloads. Do not
-expose this listener through Ingress, NodePort, LoadBalancer or an untrusted proxy.
-Host model/WI configuration and exact harness egress remain host-owned; the engine
-receives no model credentials or workload identity. Health remains a separate
-plaintext loopback operator endpoint with no Sessions service. Neither readiness
-nor a successful TLS connection proves authorization, inference or replay.
-
-Use one retained host disk and a separate retained Azure Disk/POSIX Filesystem
-RWOP engine disk, prepared for UID65532; no automatic ownership repair or state
-migration is performed. Fence previous writers before force recovery. The engine
-creates its private 0700 child `/data/state` and binds instance, definition and
-Sessions endpoint there. Binding the DNS endpoint **does not detect a new host
-journal behind the same DNS name**. Preserve/fence the original host journal and
-ledger; missing/moved session evidence must fail closed, not trigger replacement
-sessions or implicit Resume. See the chart guide for preparation, local TLS
-port-forward setup and the policy-first zero-replica installation gate.
+`-sessions-trusted-network` is no longer supported. Both listeners require
+literal loopback addresses; TLS does not permit a wildcard Sessions listener.
+The chart no longer hosts Canvas engines or native document producers. See the
+[chart upgrade note](../charts/aks-durable-agents/README.md#removed-canvas-hosting-profiles)
+before changing an existing deployment; retained state is not migrated.
 
 ## What still belongs upstream
 

@@ -17,14 +17,7 @@ python3 -B -m unittest discover -s ops/backup -p 'test_*.py'
 ```
 
 These exercise components with fake credentials and local test servers, not a
-cluster workflow. The
-[local team proof state](../internal/squadproof/README.md) has separate admission,
-scoped executor and receipt-gated queue tests under
-`go test -race ./internal/squadproof`. Its optional `squadproof` tag enables
-non-shipping local runtime fixtures using production's Sessions components;
-`go test -race -tags squadproof ./internal/squadproof` tests those explicitly.
-The production host and model limits are unchanged. Neither suite starts a
-cluster or supplies an automatic team coordinator.
+cluster workflow.
 For the self-contained fake-model kind workflow, use
 [`make demo`](../ops/demo/README.md); it builds its own client inside Docker.
 
@@ -51,8 +44,7 @@ It targets **AKS 1.37**, Linux amd64, OpenID Connect (OIDC) and workload identit
 Cilium enforcement and Azure Disk CSI. Reviewed probe-capable image digests,
 prepared private storage, and identity/TLS/model-policy inputs are required;
 bare defaults cannot run. The root Dockerfile alone lacks the **legacy fixture
-profile's** probe binary; the native profile uses `/host health-probe` and
-requires its own reviewed producer image and prepared archives.
+profile's** probe binary; the Substrate profile uses `/host health-probe`.
 Workloads start dormant until the operator verifies policy enforcement.
 Read the [backup and restore recipe](../ops/backup/README.md) before opening retained data.
 
@@ -66,18 +58,14 @@ set -e
 test "$(go env GOVERSION)" = "$(awk '$1 == "toolchain" {print $2}' go.mod)"
 go mod download
 go mod verify
+go mod tidy -diff
 go build ./...
 go vet ./...
 go test -race ./...
-go test -tags squadproof -list '^TestProofBuildBoundary$' ./internal/squadproof | grep -x TestProofBuildBoundary
-go test -race -tags squadproof ./internal/squadproof
-go vet -tags squadproof ./internal/squadproof ./cmd/squad-proof
-go build -tags squadproof -o .build/squad-proof ./cmd/squad-proof
 go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
-staticcheck -tags squadproof ./...
+staticcheck ./...
 go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
 govulncheck ./...
-govulncheck -tags squadproof ./internal/squadproof ./cmd/squad-proof
 ```
 
 Image validation additionally runs `bash ops/images/vulncheck.sh` after
@@ -102,7 +90,12 @@ operator inputs. See the [chart README](../charts/aks-durable-agents/README.md#o
 
 Tests use fake credentials and local TLS servers, including the **real sessions
 OpenAI adapter** at the [canonical upstream pin](entraauth.md#offline-verification-and-the-sessions-dependency). They require neither Azure access nor model keys. The [AKS workflow](../ops/aks/README.md) defaults to read-only manual dispatch and
-requests the operator-gated no-sandbox scenario daily at 05:43 UTC. It retains
+requests the operator-gated no-sandbox scenario daily at 05:43 UTC, plus
+`substrate-gvisor` at 08:17 UTC Mon/Wed/Fri. The latter resolves only retained
+verified evidence for the exact reviewed `PUBLISHED_IMAGES` source; unavailable
+evidence fails before provisioning with fixed recovery guidance in the existing
+AKS tracker. See [schedule and evidence recovery](../ops/aks/README.md#substrate-schedule-and-retained-evidence).
+It retains
 simulated approval, parked-host restart, effective policy controls, fenced
 backup/strict replay, whole-cluster teardown and independent expiry cleanup.
 Qualification and operator opt-ins remain required; `AKS_BUDGET_CONFIRMED` is an
@@ -116,11 +109,10 @@ session/key; false or omitted declarations refuse without another tool call. A s
 explicit `AzureCLICredential`, no retries, and at most three calls; missing RBAC
 must be reported, not assigned.
 
-Run the backup and native producer unit tests separately:
+Run the backup and AKS unit tests separately:
 
 ```sh
 python3 -B -m unittest discover -s ops/backup -p 'test_*.py'
-python3 -B -m unittest discover -s ops/canvas -p 'test_*.py'
 python3 -B -m unittest discover -s ops/aks -p 'test_*.py'
 ```
 

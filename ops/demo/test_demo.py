@@ -221,9 +221,8 @@ sys.exit(code)
         host = by_component[demo.HOST_COMPONENT]
         self.assertIn("daemon",[container["name"] for container in host["spec"]["template"]["spec"]["containers"]])
 
-    def test_runtime_manifest_does_not_disable_policy_or_enable_native(self):
+    def test_runtime_manifest_keeps_policy_auth_and_dormant_workloads(self):
         values = demo.demo_values("local/demo", "sha256:" + "a"*64, "demo-run")
-        self.assertFalse(values["harness"]["native"]["enabled"])
         self.assertTrue(values["networkPolicy"]["enabled"])
         self.assertEqual(values["auth"], {"mode":"off", "trustedNetwork":True})
         self.assertEqual(values["model"]["deployment"], "demo-model")

@@ -54,17 +54,10 @@ isolation. Bare chart defaults cannot run: reviewed images, prepared storage,
 TLS, identity, model policy and network-policy enforcement are operator inputs.
 See the [chart prerequisites](../charts/aks-durable-agents/README.md).
 
-The opt-in [native document producer profile](../charts/aks-durable-agents/README.md#native-document-producer-profile)
-is a separate current remote-harness path: it replaces the fixture pod with static
-producers, mounts prepared archives read-only and uses `/host health-probe`.
-It does not install Substrate or qualify AKS, caller identity, effects or recovery.
-Its producer source/images and private qualification inputs are not distributed
-here; see [the external-input limits](../ops/canvas/README.md#scope-and-prerequisites).
-
 ## Opt-in Substrate backend and planned integration
 
 The host also implements an opt-in [Substrate backend](substrate.md), selected
-instead of remote harnesses (fixture or native producers). It routes one configured stateless harness
+instead of remote harnesses. It routes one configured stateless harness
 through a TLS control API and a private h2c router into an Actor, using
 operator-supplied runtime/image settings. Model transport and socket executors remain on the host
 side; the Actor is not given model credentials. This host wiring exists, but the

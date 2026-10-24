@@ -1,9 +1,6 @@
 {{- define "agents.validateRuntime" -}}
 {{- if eq .Values.runtime.mode "substrate" -}}
 {{- if not .Values.networkPolicy.enabled -}}{{ fail "Substrate runtime requires NetworkPolicy separation" }}{{- end -}}
-{{- if or .Values.harness.native.enabled (.Values.canvas | default dict).enabled -}}
-{{- fail "Substrate runtime cannot be combined with native producers or Canvas" -}}
-{{- end -}}
 {{- range $name := list "atespace" "templateAtespace" "template" -}}
 {{- if not (get $.Values.runtime.substrate $name) -}}{{ fail (printf "runtime.substrate.%s is required" $name) }}{{- end -}}
 {{- end -}}

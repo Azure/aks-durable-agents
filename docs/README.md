@@ -18,10 +18,14 @@ Start with the [project overview](../README.md) and [current validation status](
 
 - [Architecture diagrams](architecture.md): current chart, opt-in Substrate backend
   and planned integration, with document, identity and recovery boundaries.
+- [AgentSuite package profile and registry access](agent-packages.md): verification
+  library limits, explicit credentials and proxy-aware embedding (not host activation).
 - [Embedded host configuration and security limits](host.md): authentication,
   owner/approver permissions, new-journal rollout, local build and remaining limits.
 - [Opt-in Substrate host wiring](substrate.md): current development pins, one
   stateless harness, private runtime prerequisites and single-host recovery limits.
+- [Labelled source-file demo bridge](demo-bridge.md): isolated execution Config,
+  host approval minimum, local receipt and strict replay; not package deployment.
 - [Entra caller authentication](entraauth.md): delegated token verification,
   trust/lifetime contract and real-tenant prerequisites.
 - [Keyless model transport and Go wiring](modeltransport.md): workload identity,
@@ -45,7 +49,6 @@ interpreting any deployment or recovery claim.
 | [`internal/`](../internal/) | Host assembly, approver policy and Unix-socket executor client. |
 | [`charts/`](../charts/) | Digest-pinned two-pod packaging, retained single-writer storage and NetworkPolicies. |
 | [`ops/backup/`](../ops/backup/) | Stopped-writer backup and isolated, socket-denied replay restore. |
-| [`ops/canvas/`](../ops/canvas/) | Native producer offline checks and optional external-input kind qualification. |
 
 ## Develop and qualify a preview release
 

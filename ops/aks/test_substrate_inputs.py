@@ -1,15 +1,42 @@
 """Pre-paid input selection and capability validation; no external calls."""
 import copy
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 
 import substrate_inputs as p
 
 
 class InputGateTests(unittest.TestCase):
     def test_schedule_and_default_stay_no_sandbox(self):
-        self.assertEqual(p.selection({"EVENT_NAME": "schedule"}), "no-sandbox")
+        self.assertEqual(p.selection({"EVENT_NAME": "schedule", "EVENT_SCHEDULE": "43 5 * * *"}), "no-sandbox")
         self.assertEqual(p.selection({"EVENT_NAME": "workflow_dispatch"}), "no-sandbox")
-        self.assertEqual(p.selection({"EVENT_NAME": "schedule", "VARIANT": "substrate-gvisor"}), "no-sandbox")
+        self.assertEqual(p.selection({"EVENT_NAME": "schedule", "EVENT_SCHEDULE": "43 5 * * *", "VARIANT": "substrate-gvisor"}), "no-sandbox")
+
+    def test_new_schedule_is_native_or_refuses_never_falls_back(self):
+        good = {"EVENT_NAME": "schedule", "EVENT_SCHEDULE": "17 8 * * 1,3,5", "AKS_SUBSTRATE_ENABLED": "true"}
+        self.assertEqual(p.selection(good), "substrate-gvisor")
+        for change in ({"AKS_SUBSTRATE_ENABLED": "false"}, {"AKS_SUBSTRATE_ENABLED": ""}, {"EVENT_SCHEDULE": ""}, {"EVENT_SCHEDULE": "unknown"}):
+            with self.subTest(change=change), self.assertRaises(ValueError): p.selection(dict(good, **change))
+
+    def test_actual_cli_emits_one_scheduled_mode_and_actionable_prepaid_failure(self):
+        script = str(Path(p.__file__))
+        for event, cron, variant, scheduled in (("schedule", "43 5 * * *", "no-sandbox", "false"), ("schedule", "17 8 * * 1,3,5", "substrate-gvisor", "true"), ("workflow_dispatch", "", "no-sandbox", "false")):
+            env = {"EVENT_NAME": event, "EVENT_SCHEDULE": cron, "AKS_SUBSTRATE_ENABLED": "true"}
+            result = subprocess.run([sys.executable, "-B", script, "select"], env=env, capture_output=True, check=False, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), ["variant="+variant, "scheduled_substrate="+scheduled])
+        with tempfile.TemporaryDirectory() as temp:
+            env = dict(os.environ, RUNNER_TEMP=temp, PUBLISHED_IMAGES="")
+            result = subprocess.run([sys.executable, "-B", script, "prepare", "--scheduled", "--source", temp, "--output", str(Path(temp)/"output")], env=env, capture_output=True, check=False, text=True)
+            self.assertEqual(result.returncode, 1)
+            for text in ("Re-run", "Images", "PUBLISHED_IMAGES", "30-day", "stale-source check", "stale", "refresh", "No provisioning authorized"):
+                self.assertIn(text, result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertFalse((Path(temp)/"output/prepared.tar.gz").exists())
 
     def test_actor_requires_explicit_manual_run_enablement_and_both_run_ids(self):
         good = {"EVENT_NAME": "workflow_dispatch", "VARIANT": "substrate-gvisor", "RUN_SCENARIO": "true", "AKS_SUBSTRATE_ENABLED": "true", "PUBLISH_RUN_ID": "123", "VERIFY_RUN_ID": "456"}

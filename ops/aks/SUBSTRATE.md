@@ -273,16 +273,18 @@ This install-only check does not connect that host to the runtime or nightly.
 
 ## Manual Sessions actor variant
 
-`aks-e2e.yml` has an explicit `substrate-gvisor` choice. It is **manual-only**:
-`run_scenario` remains false by default, `variant` defaults to `no-sandbox`, and
-scheduled runs always select the existing no-sandbox case. No Substrate scenario
-has been live-qualified by the offline/image/admission tests. A passing native
-counter install does not authorize a Sessions run. Obtain a fresh operator go
-for the exact target, node/request capacity, identities, model budget and inputs
-before dispatch; do not enable the schedule as part of this qualification.
+`aks-e2e.yml` has an explicit manual `substrate-gvisor` choice and a separate
+**08:17 UTC Monday/Wednesday/Friday** schedule. The daily 05:43 UTC case stays
+no-sandbox; manual `run_scenario` remains false and `variant` defaults to
+`no-sandbox`. Offline/image/admission tests do not qualify a live scheduled
+Substrate scenario. Manual dispatch still requires a fresh operator go for the
+exact target, node/request capacity, identities, model budget and inputs.
+The [scheduled exact-source evidence policy](README.md#substrate-schedule-and-retained-evidence)
+reuses the same gates, one provisioning epoch, teardown and regression tracker;
+no latest-source fallback or separate host API is introduced.
 
 In addition to the existing operator/configuration/required-auth gates, selection
-requires `AKS_SUBSTRATE_ENABLED=true` and explicit dispatch inputs:
+requires `AKS_SUBSTRATE_ENABLED=true`; manual dispatch also requires explicit inputs:
 
 - `variant=substrate-gvisor` and `run_scenario=true`;
 - `substrate_publish_run_id`: a successful canonical-main **Images** run;

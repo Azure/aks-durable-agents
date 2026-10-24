@@ -392,6 +392,17 @@ class AksTrackerTests(unittest.TestCase):
     def track(self, api, **kwargs):
         return e2e.track(api, "Azure/aks-durable-agents", 123, SHA, URL, profile="aks", **kwargs)
 
+    def test_substrate_inputs_failure_updates_same_tracker_with_fixed_recovery(self):
+        api = FakeAPI([aks_tracker()])
+        self.track(api, stage="substrate-inputs")
+        self.assertEqual(len(api.issues), 1)
+        body = api.issues[0]["body"]
+        for text in ("human note", "Stage: substrate-inputs", "Re-run", "Images", "PUBLISHED_IMAGES", "30-day", "stale-source check", "stale", "refresh", "publish_run_id"):
+            self.assertIn(text, body)
+        self.assertEqual([c[0] for c in api.writes()], ["PATCH"])
+        self.assertEqual(api.issues[0]["title"], AKS_TITLE)
+        self.assertNotIn("comments", api.issues[0])
+
     def test_kind_and_aks_trackers_are_separate_both_directions(self):
         api = FakeAPI([tracker()])
         before = copy.deepcopy(api.issues[0])

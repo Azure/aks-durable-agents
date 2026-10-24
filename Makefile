@@ -3,7 +3,7 @@
 IMAGE_CONTEXT ?= .build/images
 IMAGE_PREFIX ?= local/aks-durable-agents
 
-# Build only the production host and reference fixture, never either drillhost.
+# Build only the production host and reference fixture, never the backup drillhost.
 image-binaries:
 	mkdir -p "$(IMAGE_CONTEXT)"
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=readonly -trimpath -buildvcs=false -ldflags=-buildid= -o "$(IMAGE_CONTEXT)/host" ./cmd/host

@@ -1,8 +1,6 @@
-{{- include "agents.validateNative" . -}}
 {{- include "agents.validateRuntime" . -}}
 {{- $root := . -}}
 {{- $name := include "agents.name" . -}}
-{{- $canvas := (.Values.canvas | default dict).enabled -}}
 {{- $substrate := eq .Values.runtime.mode "substrate" -}}
 {{- $peer := ternary "executor" "harness" $substrate -}}
 {{- range $role := list $peer "host" }}
@@ -68,20 +66,10 @@ spec:
           imagePullPolicy: IfNotPresent
           command: [/host]
           args:
-            {{- if $canvas }}
-            - -addr=0.0.0.0:8080
-            - -sessions-trusted-network=true
-            {{- else }}
             - -addr=127.0.0.1:8080
-            {{- end }}
             - -health-addr=127.0.0.1:8081
             {{- if $substrate }}
             {{- include "agents.substrateFlags" $root | nindent 12 }}
-            {{- else if $root.Values.harness.native.enabled }}
-            {{- range $root.Values.harness.native.entries }}
-            - {{ printf "-harness-service=%s" (include "agents.nativeService" (dict "root" $root "port" .port)) | quote }}
-            - {{ printf "-harness=%s=%s" .id (include "agents.nativeService" (dict "root" $root "port" .port)) | quote }}
-            {{- end }}
             {{- else }}
             - {{ printf "-harness-service=%s" (include "agents.service" $root) | quote }}
             - {{ printf "-harness=%s=%s" $root.Values.harness.name (include "agents.service" $root) | quote }}
@@ -91,16 +79,14 @@ spec:
             - -model-policy=/config/model-policy.json
             - {{ printf "-auth-mode=%s" $root.Values.auth.mode | quote }}
             - -journal=/data/journal.db
-            {{- if not $root.Values.harness.native.enabled }}
             - -tool-executors=/data/tools.json
-            {{- end }}
             - {{ printf "-model=%s" $root.Values.model.deployment | quote }}
             - {{ printf "-model-base-url=%s" $root.Values.model.endpoint | quote }}
             - {{ printf "-model-scope=%s" $root.Values.model.scope | quote }}
             {{- if eq $root.Values.auth.mode "required" }}
             - -auth-config=/auth/auth.json
             {{- end }}
-            {{- if or $canvas (eq $root.Values.auth.mode "required") }}
+            {{- if eq $root.Values.auth.mode "required" }}
             - -tls-cert=/tls/tls.crt
             - -tls-key=/tls/tls.key
             {{- end }}
@@ -111,7 +97,7 @@ spec:
                   fieldPath: spec.nodeName
           readinessProbe:
             exec:
-              {{- if or $substrate $root.Values.harness.native.enabled }}
+              {{- if $substrate }}
               command: [/host, health-probe, "127.0.0.1:8081"]
               {{- else }}
               command: [/session-fixture, network-probe, --address, "127.0.0.1:8081", --expect, allowed]
@@ -137,35 +123,11 @@ spec:
               mountPath: /auth
               readOnly: true
             {{- end }}
-            {{- if or $canvas (eq $root.Values.auth.mode "required") }}
+            {{- if eq $root.Values.auth.mode "required" }}
             - name: tls
               mountPath: /tls
               readOnly: true
             {{- end }}
-        {{- else if $root.Values.harness.native.enabled }}
-        - name: producer
-          image: {{ printf "%s@%s" $root.Values.image.harness.repository $root.Values.image.harness.digest | quote }}
-          imagePullPolicy: IfNotPresent
-          command: [/usr/local/bin/canvas-harness]
-          args: [serve, -inventory, {{ $root.Values.harness.native.inventory | quote }}, -ready-listen, "0.0.0.0:8081"]
-          readinessProbe:
-            httpGet:
-              path: /readyz
-              port: 8081
-            periodSeconds: 5
-            timeoutSeconds: 4
-          securityContext:
-            {{- include "agents.security" $root | nindent 12 }}
-          resources:
-            {{- include "agents.resources" $root | nindent 12 }}
-          volumeMounts:
-            - name: data
-              mountPath: /data/producers
-              subPath: {{ printf "%s/producers" $root.Values.persistence.subPath | quote }}
-              readOnly: true
-            - name: data
-              mountPath: /tmp
-              subPath: {{ printf "%s/tmp-producer" $root.Values.persistence.subPath | quote }}
         {{- else }}
         {{- $containers := list "fixture-harness" "executor" "fake" -}}
         {{- if $substrate }}{{ $containers = list "executor" }}{{ end -}}
@@ -220,14 +182,10 @@ spec:
             name: {{ $name }}-auth
             defaultMode: 0444
         {{- end }}
-        {{- if or $canvas (eq $root.Values.auth.mode "required") }}
+        {{- if eq $root.Values.auth.mode "required" }}
         - name: tls
           secret:
-            {{- if $canvas }}
-            secretName: {{ $root.Values.canvas.sessionsTLSSecretName | quote }}
-            {{- else }}
             secretName: {{ $root.Values.auth.tlsSecretName | quote }}
-            {{- end }}
             defaultMode: 0444
         {{- end }}
         {{- end }}
