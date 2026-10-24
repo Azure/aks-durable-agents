@@ -150,6 +150,9 @@ func validateV2Draft(draft string) error {
 	return nil
 }
 func validateToolScenario(scope controller.ToolCallContext, c api.ToolCall, scenario string) error {
+	if scenario == bridgeScenario {
+		return validateBridgeTool(scope, c)
+	}
 	if scenario == "" || scenario == "v1" {
 		return validateTool(scope, c)
 	}

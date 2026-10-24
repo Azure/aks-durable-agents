@@ -55,7 +55,10 @@ What the host enforces:
   has no Sessions service. It is plaintext loopback operator access, not a public
   health endpoint. There is no dynamic harness registry or self-RPC bypass.
 - All model calls use the [keyless transport](modeltransport.md). The host pins the configured
-  deployment for chat and streaming, overriding harness-supplied model IDs.
+  deployment for chat and streaming, overriding harness-supplied model IDs on
+  legacy routes. The isolated [source-file demo bridge](demo-bridge.md) instead
+  rejects model mismatch and enforces its publication approval minimum before
+  controller entry. It is not package admission or a registration API.
   Caller JWTs are not forwarded to the model, harness or tool executor.
 - Static harness/tool routes use public placement packages and an independently
   implemented version-1 Unix executor protocol. Explicit `durable_dedup: true`
