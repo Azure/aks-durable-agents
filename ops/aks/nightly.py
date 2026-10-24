@@ -525,7 +525,7 @@ def values_from_env(env, subpath):
         prices[target] = int(env[source])
     prices.update(extraMicroUSDPerCall=0, source=env["MODEL_PRICE_SOURCE"], asOf=env["MODEL_PRICE_AS_OF"])
     return {"workloads": {"enabled": False}, "auth": {"mode": "off", "trustedNetwork": True},
-        "workloadIdentity": {"clientID": env["MODEL_CLIENT_ID"]}, "harness": {"native": {"enabled": False}},
+        "workloadIdentity": {"clientID": env["MODEL_CLIENT_ID"]},
         "networkPolicy": {"enabled": True}, "persistence": {"existingClaim": PVC, "storageClass": STORAGE_CLASS, "subPath": subpath, "size": "1Gi"},
         "model": {"endpoint": env["MODEL_ENDPOINT"], "deployment": env["MODEL_DEPLOYMENT"], "policy": {"runID": subpath, "maxAttempts": 2, "pricing": prices}}}
 

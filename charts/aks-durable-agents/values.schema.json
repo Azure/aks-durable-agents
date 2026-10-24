@@ -12,39 +12,6 @@
     "harness",
     "networkPolicy"
   ],
-  "allOf": [
-    {
-      "if": {
-        "required": ["canvas"],
-        "properties": {"canvas": {"required": ["enabled"], "properties": {"enabled": {"const": true}}}}
-      },
-      "then": {
-        "properties": {
-          "canvas": {
-            "required": ["instanceID", "origin", "sessionsTLSSecretName", "tlsSecretName", "persistence", "image"],
-            "properties": {
-              "instanceID": {"pattern": "^[a-z][a-z0-9-]{0,62}$"},
-              "origin": {"pattern": "^https://127\\.0\\.0\\.1:[1-9][0-9]{0,4}$"},
-              "sessionsTLSSecretName": {"minLength": 1},
-              "tlsSecretName": {"minLength": 1},
-              "persistence": {"required": ["existingClaim", "size", "storageClass"]},
-              "image": {
-                "required": ["repository", "digest", "includesHealthProbe"],
-                "properties": {
-                  "repository": {"pattern": "^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9]+([._/-][a-z0-9]+)*$"},
-                  "digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
-                  "includesHealthProbe": {"const": true}
-                }
-              }
-            }
-          },
-          "harness": {"required": ["native"], "properties": {"native": {"required": ["enabled"], "properties": {"enabled": {"const": true}}}}},
-          "auth": {"properties": {"mode": {"const": "off"}, "trustedNetwork": {"const": true}}},
-          "networkPolicy": {"properties": {"enabled": {"const": true}}}
-        }
-      }
-    }
-  ],
   "properties": {
     "runtime": {
       "type": "object", "additionalProperties": false,
@@ -58,35 +25,6 @@
             "atespace": {"type": "string", "maxLength": 63, "pattern": "^$|^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"},
             "templateAtespace": {"type": "string", "maxLength": 63, "pattern": "^$|^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"},
             "template": {"type": "string", "maxLength": 63, "pattern": "^$|^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"}
-          }
-        }
-      }
-    },
-    "canvas": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "image": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "repository": {"type": "string"},
-            "digest": {"type": "string"},
-            "includesHealthProbe": {"type": "boolean"}
-          }
-        },
-        "enabled": {"type": "boolean"},
-        "instanceID": {"type": "string"},
-        "origin": {"type": "string"},
-        "sessionsTLSSecretName": {"type": "string", "pattern": "^$|^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", "maxLength": 253},
-        "tlsSecretName": {"type": "string", "pattern": "^$|^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", "maxLength": 253},
-        "persistence": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "existingClaim": {"type": "string", "pattern": "^$|^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", "maxLength": 253},
-            "size": {"type": "string", "pattern": "^[1-9][0-9]*(Mi|Gi|Ti)$"},
-            "storageClass": {"type": "string", "pattern": "^$|^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"}
           }
         }
       }
@@ -120,7 +58,7 @@
             "includesHealthProbe": {
               "type": "boolean",
               "const": true,
-              "description": "Operator verifies /host plus the profile-specific probe: legacy /session-fixture network-probe, native /host health-probe. Schema checks the declaration, not image contents."
+              "description": "Operator verifies /host plus the runtime-specific probe: remote /session-fixture network-probe, Substrate /host health-probe. Schema checks the declaration, not image contents."
             }
           }
         },
@@ -506,26 +444,6 @@
         "fake"
       ],
       "properties": {
-        "native": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["enabled", "inventory", "entries"],
-          "properties": {
-            "enabled": {"type": "boolean"},
-            "inventory": {"const": "/data/producers/inventory.json"},
-            "entries": {
-              "type": "array", "maxItems": 32, "uniqueItems": true,
-              "items": {
-                "type": "object", "additionalProperties": false,
-                "required": ["id", "port"],
-                "properties": {
-                  "id": {"type": "string", "pattern": "^bundle-v4-[0-9a-f]{64}$"},
-                  "port": {"type": "integer", "minimum": 1, "maximum": 65535, "not": {"const": 8081}}
-                }
-              }
-            }
-          }
-        },
         "name": {
           "type": "string",
           "maxLength": 63,

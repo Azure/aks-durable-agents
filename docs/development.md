@@ -17,14 +17,7 @@ python3 -B -m unittest discover -s ops/backup -p 'test_*.py'
 ```
 
 These exercise components with fake credentials and local test servers, not a
-cluster workflow. The
-[local team proof](../proofs/squadbackend/README.md) is a separate non-shipping
-Go module. From `proofs/squadbackend/`, `go test -race ./...` tests admission,
-scoped executor and receipt-gated queues. Its optional `squadproof` tag enables
-local runtime fixtures using production's Sessions components;
-`go test -race -tags squadproof ./...` in that module tests those explicitly.
-The production host and model limits are unchanged. Neither suite starts a
-cluster or supplies an automatic team coordinator.
+cluster workflow.
 For the self-contained fake-model kind workflow, use
 [`make demo`](../ops/demo/README.md); it builds its own client inside Docker.
 
@@ -51,8 +44,7 @@ It targets **AKS 1.37**, Linux amd64, OpenID Connect (OIDC) and workload identit
 Cilium enforcement and Azure Disk CSI. Reviewed probe-capable image digests,
 prepared private storage, and identity/TLS/model-policy inputs are required;
 bare defaults cannot run. The root Dockerfile alone lacks the **legacy fixture
-profile's** probe binary; the native profile uses `/host health-probe` and
-requires its own reviewed producer image and prepared archives.
+profile's** probe binary; the Substrate profile uses `/host health-probe`.
 Workloads start dormant until the operator verifies policy enforcement.
 Read the [backup and restore recipe](../ops/backup/README.md) before opening retained data.
 
@@ -74,22 +66,6 @@ go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
 staticcheck ./...
 go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
 govulncheck ./...
-(
-  cd proofs/squadbackend
-  go mod download
-  go mod verify
-  go mod tidy -diff
-  go build ./...
-  go vet ./...
-  go test -race ./...
-  go test -tags squadproof -list '^TestProofBuildBoundary$' ./internal/squadproof | grep -x TestProofBuildBoundary
-  go test -race -tags squadproof ./...
-  go vet -tags squadproof ./...
-  go build -tags squadproof -o .build/squad-proof ./cmd/squad-proof
-  staticcheck -tags squadproof ./...
-  govulncheck ./...
-  govulncheck -tags squadproof ./...
-)
 ```
 
 Image validation additionally runs `bash ops/images/vulncheck.sh` after
@@ -133,11 +109,10 @@ session/key; false or omitted declarations refuse without another tool call. A s
 explicit `AzureCLICredential`, no retries, and at most three calls; missing RBAC
 must be reported, not assigned.
 
-Run the backup and native producer unit tests separately:
+Run the backup and AKS unit tests separately:
 
 ```sh
 python3 -B -m unittest discover -s ops/backup -p 'test_*.py'
-python3 -B -m unittest discover -s ops/canvas -p 'test_*.py'
 python3 -B -m unittest discover -s ops/aks -p 'test_*.py'
 ```
 

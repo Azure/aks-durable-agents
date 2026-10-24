@@ -20,22 +20,6 @@ app.kubernetes.io/instance: {{ .Release.Name | quote }}
 {{- printf "%s-harness.%s.svc.cluster.local:9000" (include "agents.name" .) .Release.Namespace -}}
 {{- end -}}
 
-{{- define "agents.nativeService" -}}
-{{- printf "%s-harness.%s.svc.cluster.local:%v" (include "agents.name" .root) .root.Release.Namespace .port -}}
-{{- end -}}
-
-{{- define "agents.validateNative" -}}
-{{- if .Values.harness.native.enabled -}}
-{{- if not .Values.harness.native.entries -}}{{ fail "harness.native.entries must not be empty" }}{{- end -}}
-{{- $ids := dict -}}{{- $ports := dict -}}
-{{- range .Values.harness.native.entries -}}
-{{- $port := toString .port -}}
-{{- if or (hasKey $ids .id) (hasKey $ports $port) -}}{{ fail "harness.native.entries requires unique IDs and ports" }}{{- end -}}
-{{- $_ := set $ids .id true -}}{{- $_ := set $ports $port true -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-
 {{- define "agents.security" -}}
 runAsUser: 65532
 runAsGroup: 65532

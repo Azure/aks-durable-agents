@@ -109,7 +109,6 @@ def demo_values(repository, digest, run_id):
         "auth":{"mode":"off","trustedNetwork":True},
         # Schema-only placeholder: no Azure webhook/identity is installed in kind.
         "workloadIdentity":{"clientID":"55555555-5555-5555-5555-555555555555"},
-        "harness":{"native":{"enabled":False}},
         "networkPolicy":{"enabled":True},
         "persistence":{"existingClaim":"demo-data","storageClass":"standard","subPath":"demo","size":"1Gi"},
         "model":{"endpoint":"https://fake-model.invalid/openai/v1/","deployment":"demo-model","policy":{"runID":run_id,"pricing":{"inputMicroUSDPerMillionTokens":1,"outputMicroUSDPerMillionTokens":1,"extraMicroUSDPerCall":0,"source":"https://fake-model.invalid/pricing","asOf":datetime.date.today().isoformat()}}},

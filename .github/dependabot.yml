@@ -1,15 +1,9 @@
 version: 2
 updates:
   - package-ecosystem: gomod
-    directories:
-      - /
-      - /proofs/squadbackend
+    directory: /
     schedule:
       interval: weekly
-    groups:
-      shared-go-modules:
-        group-by: dependency-name
-        patterns: ["*"]
     ignore:
       # Upgrade needs durability qualification (async suspend default) first.
       - dependency-name: github.com/agent-substrate/substrate
