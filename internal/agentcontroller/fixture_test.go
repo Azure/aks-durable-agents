@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -97,7 +98,7 @@ func retainedConfig(t *testing.T) Config {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Config{Namespace: "test", Directory: t.TempDir(), Model: "operator-model", Binding: []byte(`{"endpoint":"https://operator.example","policy":{"maxAttempts":3},"runnerABI":"ada-agent-chat-v1"}`), Puller: puller}
+	return Config{Namespace: "test", Directory: filepath.Join(t.TempDir(), "state"), Model: "operator-model", Binding: []byte(`{"endpoint":"https://operator.example","policy":{"maxAttempts":3},"runnerABI":"ada-agent-chat-v1"}`), Puller: puller}
 }
 func fixtureAgent(p *agentpackage.Package) Agent {
 	return Agent{ObjectMeta: metav1.ObjectMeta{Namespace: "test", Name: "writer", UID: types.UID("uid-one"), Generation: 1}, Spec: Spec{Package: PackageReference{Reference: "registry.example/suite@" + p.Digest()}, Member: "writer", ModelBindingRef: BindingReference{Name: "default"}}}

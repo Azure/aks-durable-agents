@@ -31,7 +31,7 @@ type definition struct {
 	Namespace, Name, UID string
 	Generation           int64
 	Spec                 Spec
-	Binding              json.RawMessage
+	Binding              []byte
 	Revision, Harness    string
 	ABI, Model           string
 }
@@ -128,6 +128,9 @@ func openRetained(c Config, model controller.ModelFunc, stream controller.Stream
 	if err != nil {
 		return nil, err
 	}
+	if err = recoverRetained(r.root, entries); err != nil {
+		return nil, err
+	}
 	for _, entry := range entries {
 		if !strings.HasPrefix(entry.Name(), "d-") {
 			continue
@@ -213,6 +216,37 @@ func privateRoot(path string) (*os.Root, error) {
 		return nil, errRetained
 	}
 	return r, nil
+}
+
+// A link-before-unlink crash can leave exactly two aliases inside this root.
+// Remove only the proven temporary alias; outside hard links remain rejected.
+func recoverRetained(root *os.Root, entries []os.DirEntry) error {
+	published := map[[2]uint64]bool{}
+	temporary := map[string][2]uint64{}
+	for _, entry := range entries {
+		info, err := root.Lstat(entry.Name())
+		if err != nil {
+			return err
+		}
+		st := info.Sys().(*syscall.Stat_t)
+		if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || int(st.Uid) != os.Geteuid() || st.Nlink != 2 {
+			continue
+		}
+		key := [2]uint64{uint64(st.Dev), uint64(st.Ino)}
+		if strings.HasPrefix(entry.Name(), "d-") || strings.HasPrefix(entry.Name(), "p-") {
+			published[key] = true
+		} else if strings.HasPrefix(entry.Name(), ".tmp-") {
+			temporary[entry.Name()] = key
+		}
+	}
+	for name, key := range temporary {
+		if published[key] {
+			if err := root.Remove(name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 func privateFile(info os.FileInfo) bool {
 	st := info.Sys().(*syscall.Stat_t)

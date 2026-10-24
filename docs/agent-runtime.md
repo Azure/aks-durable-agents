@@ -30,7 +30,8 @@ checks back the SDK registry factory. Serialize manager operations on one lifecy
 goroutine; callbacks use immutable data. Stop/join the controller and stop the SDK
 registry before closing the runtime. An interrupted listener-identity publication
 fails closed on restart rather than guessing ownership or deleting a foreign socket.
-Incomplete temporary files are ignored, not automatically collected.
+Unpublished temporary files are ignored. Interrupted publication recovers only a
+proven two-link temporary alias inside the locked state root, never an outside link.
 The state path determines socket addresses; moving it is not a supported migration
 of existing registration specs. Backups must include both the journal and runtime
 state; cached packages alone are not session history.

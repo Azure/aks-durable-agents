@@ -130,6 +130,64 @@ func TestStateDirectoryAliasesShareManagerLock(t *testing.T) {
 	}
 }
 
+func TestRetainedBindingBytesSurviveJSONEncoding(t *testing.T) {
+	p := retainedFixture(t, nil)
+	cfg := retainedConfig(t)
+	cfg.Binding = []byte(`{"endpoint":"https://example.invalid/?a=1&b=<value>","label":"\u2028"}`)
+	r, err := openRetained(cfg, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := r.remember(t.Context(), fixtureAgent(p), p)
+	r.close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := openRetained(cfg, nil, nil)
+	if err != nil {
+		t.Fatalf("canonical binding changed in stored JSON: %v", err)
+	}
+	defer restored.close()
+	if _, release, err := restored.factory(d.Harness, restored.spec(d)); err != nil {
+		t.Fatal(err)
+	} else {
+		release()
+	}
+}
+func TestInterruptedPublicationRecoversOnlyInternalTemporaryAlias(t *testing.T) {
+	for _, kind := range []string{"cache", "definition"} {
+		t.Run(kind, func(t *testing.T) {
+			p := retainedFixture(t, nil)
+			cfg := retainedConfig(t)
+			r, err := openRetained(cfg, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d, err := r.remember(t.Context(), fixtureAgent(p), p)
+			r.close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			name := "p-" + p.Digest()[7:] + ".json"
+			if kind == "definition" {
+				name = "d-" + d.Harness + ".json"
+			}
+			alias := filepath.Join(cfg.Directory, ".tmp-interrupted")
+			if err := os.Link(filepath.Join(cfg.Directory, name), alias); err != nil {
+				t.Fatal(err)
+			}
+			restored, err := openRetained(cfg, nil, nil)
+			if err != nil {
+				t.Fatalf("crash after publication link blocked reload: %v", err)
+			}
+			defer restored.close()
+			if _, err := os.Lstat(alias); !os.IsNotExist(err) {
+				t.Fatal("published temporary alias not recovered")
+			}
+		})
+	}
+}
+
 func TestRetainedRequiresConfiguredReferencePolicy(t *testing.T) {
 	cfg := retainedConfig(t)
 	cfg.Puller = nil
