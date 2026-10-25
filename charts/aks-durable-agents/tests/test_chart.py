@@ -102,10 +102,49 @@ class ChartTests(unittest.TestCase):
         pod = next(d["spec"]["template"]["spec"] for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"].endswith("-host"))
         self.assertFalse(any(a.startswith(("--agent-http-registry", "--agent-credentials-file")) for a in pod["containers"][0]["args"]))
         egress = next(d["spec"]["egress"] for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"]["name"].endswith("-host-egress"))
-        for cidr, ports in (("10.0.0.1/32", {443, 6443}), ("10.1.0.0/24", {443, 5000})):
+        for cidr, ports in (("10.0.0.1/32", {443, 6443}), ("10.1.0.0/24", {443})):
             rule = next(r for r in egress if {"ipBlock": {"cidr": cidr}} in r["to"])
             self.assertEqual({p["port"] for p in rule["ports"]}, ports)
             self.assertTrue(all(p["protocol"] == "TCP" for p in rule["ports"]))
+
+    def test_agents_repository_grammar(self):
+        crd = yaml.safe_load(helm("show", "crds", CHART).stdout)
+        pattern = crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]["package"]["properties"]["reference"]["pattern"]
+        for name in ("my-agent", "my--agent", "my__agent", "nested/my---agent_v2.1"):
+            with self.subTest(name=name):
+                repository = "registry.example/team/" + name
+                values = self.agent_values()
+                values["agents"]["repositories"] = [repository]
+                self.documents(values)
+                self.assertRegex(repository + "@sha256:" + "a" * 64, pattern)
+        for name in ("my___agent", "my..agent", "-agent", "agent-", "team//agent"):
+            with self.subTest(invalid=name):
+                repository = "registry.example/" + name
+                values = self.agent_values()
+                values["agents"]["repositories"] = [repository]
+                self.assertNotEqual(render(values).returncode, 0)
+                self.assertNotRegex(repository + "@sha256:" + "a" * 64, pattern)
+
+    def test_agents_registry_egress_ports_follow_authorities(self):
+        for authority, http, ports in (("registry.example", True, {80, 443}),
+                                       ("registry.example:5000", True, {443, 5000}),
+                                       ("registry.example:5001", True, {443, 5001}),
+                                       ("registry.example:8443", False, {443, 8443})):
+            with self.subTest(authority=authority, http=http):
+                values = self.agent_values()
+                values["agents"].update(repositories=[authority + "/team/helper", "other.example:9443/team/helper"],
+                                        httpRegistry=authority if http else "", registryCredentialsSecret="")
+                docs = self.documents(values)
+                egress = next(d["spec"]["egress"] for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"]["name"].endswith("-host-egress"))
+                rule = next(r for r in egress if {"ipBlock": {"cidr": "10.1.0.0/24"}} in r["to"])
+                self.assertEqual({p["port"] for p in rule["ports"]}, ports | {9443})
+                self.assertEqual(len(rule["ports"]), len(ports | {9443}))
+        for port in (0, 65536):
+            values = self.agent_values()
+            values["agents"]["repositories"] = [f"registry.example:{port}/team/helper"]
+            result = render(values)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("registry port must be between 1 and 65535", result.stderr)
 
     def test_agents_refuse_missing_inputs_and_substrate(self):
         for key, bad in (("repositories", []), ("apiServerCIDRs", []), ("registryCIDRs", []),

@@ -274,11 +274,28 @@ func TestAgentBindingEffectiveScopeAndPolicyRestart(t *testing.T) {
 			if err := json.Unmarshal(raw, &policy); err != nil {
 				t.Fatal(err)
 			}
-			// Every changed policy uses an isolated ledger, which is itself frozen.
-			policy["ledgerPath"] = filepath.Join(t.TempDir(), "private", "changed.db")
+			ledger := filepath.Join(t.TempDir(), "private", "policy.db")
+			policy["ledgerPath"] = ledger
+			baselineData, _ := json.Marshal(policy)
+			if err := os.WriteFile(c.ModelPolicy, baselineData, 0600); err != nil {
+				t.Fatal(err)
+			}
+			baselinePolicy, err := modeltransport.OpenPolicyFile(c.ModelPolicy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			baseline := agentBinding(c, baselinePolicy)
+			baselinePolicy.Close()
+			// Preserve the baseline DB but free the same path for this binding-only
+			// comparison; the budget ledger independently rejects snapshot drift.
+			if err := os.Rename(ledger, ledger+".baseline"); err != nil {
+				t.Fatal(err)
+			}
 			switch field {
 			case "runID":
 				policy["runID"] = "changed"
+			case "ledgerPath":
+				policy["ledgerPath"] = filepath.Join(filepath.Dir(ledger), "changed.db")
 			case "pricing":
 				policy["pricing"].(map[string]any)["asOf"] = "2026-10-20"
 			case "limits":
@@ -293,8 +310,8 @@ func TestAgentBindingEffectiveScopeAndPolicyRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer p.Close()
-			if bytes.Equal(before, agentBinding(c, p)) {
-				t.Fatal("policy change did not drift")
+			if bytes.Equal(baseline, agentBinding(c, p)) {
+				t.Fatal("isolated policy change did not drift")
 			}
 		})
 	}

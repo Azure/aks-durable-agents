@@ -220,9 +220,6 @@ func (c *Controller) admit(ctx context.Context, a Agent) Status {
 			return rejected(a, metav1.ConditionFalse, "ImmutableSpecChanged")
 		}
 	} else {
-		if c.config.Puller == nil {
-			return rejected(a, metav1.ConditionUnknown, "PackageUnavailable")
-		}
 		p, err := c.config.Puller.Pull(ctx, a.Spec.Package.Reference)
 		if err != nil {
 			if errors.Is(err, agentpackage.ErrUnavailable) {

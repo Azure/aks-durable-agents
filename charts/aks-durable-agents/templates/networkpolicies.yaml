@@ -56,7 +56,19 @@ spec:
         {{- range .Values.agents.registryCIDRs }}
         - ipBlock: {cidr: {{ . | quote }}}
         {{- end }}
-      ports: [{protocol: TCP, port: 443}, {protocol: TCP, port: 5000}]
+      {{- $ports := list 443 }}
+      {{- range .Values.agents.repositories }}
+      {{- $authority := first (splitList "/" .) }}
+      {{- $parts := splitList ":" $authority }}
+      {{- $port := ternary 80 443 (eq $authority $.Values.agents.httpRegistry) }}
+      {{- if eq (len $parts) 2 }}{{ $port = atoi (last $parts) }}{{ end }}
+      {{- if or (lt $port 1) (gt $port 65535) }}{{ fail "registry port must be between 1 and 65535" }}{{ end }}
+      {{- $ports = append $ports $port }}
+      {{- end }}
+      ports:
+        {{- range uniq $ports }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
     {{- end }}
     {{- if eq .Values.runtime.mode "substrate" }}
     - to:

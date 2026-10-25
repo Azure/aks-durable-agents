@@ -44,7 +44,9 @@ host/controller integration.
 ## Opt-in host controller
 
 Enable `agents.enabled` in the chart with exact `agents.repositories`, API server
-CIDRs and registry/redirect CIDRs. Helm installs the retained namespaced Agent CRD;
+CIDRs and registry/redirect CIDRs. Registry egress uses configured authority ports
+(default HTTPS 443 or HTTP 80), plus 443 for redirects; redirect destinations must
+use those ports and the configured CIDRs. Helm installs the retained Agent CRD;
 its three-field spec is immutable: use a new name for changed inputs.
 The host receives `--agents-namespace`, repeated `--agent-repository`, optional
 `--agent-credentials-file` (JSON repository-to-ORAS-credential map), and the

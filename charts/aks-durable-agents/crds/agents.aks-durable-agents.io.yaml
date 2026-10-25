@@ -37,7 +37,7 @@ spec:
                   properties:
                     reference:
                       type: string
-                      pattern: '^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9]+([._/-][a-z0-9]+)*@sha256:[0-9a-f]{64}$'
+                      pattern: '^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9]+(([.]|_{1,2}|-+)[a-z0-9]+)*(/[a-z0-9]+(([.]|_{1,2}|-+)[a-z0-9]+)*)*@sha256:[0-9a-f]{64}$'
                 member: {type: string, minLength: 1}
                 modelBindingRef:
                   type: object

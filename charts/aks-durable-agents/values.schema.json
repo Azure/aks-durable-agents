@@ -26,7 +26,7 @@
         "enabled": {"type": "boolean"},
         "repositories": {
           "type": "array", "uniqueItems": true,
-          "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9]+([._/-][a-z0-9]+)*$"}
+          "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9]+(([.]|_{1,2}|-+)[a-z0-9]+)*(/[a-z0-9]+(([.]|_{1,2}|-+)[a-z0-9]+)*)*$"}
         },
         "httpRegistry": {"type": "string", "pattern": "^$|^[a-z0-9][a-z0-9.-]*(:[0-9]+)?$"},
         "registryCredentialsSecret": {"type": "string", "maxLength": 253, "pattern": "^$|^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"},
