@@ -86,7 +86,7 @@ func PrepareCandidate(p *agentpackage.Package, expected CandidateExpectations) (
 		return refuse("unsupported native profile")
 	}
 	binding := expected.Binding
-	if binding.RunnerABI != RunnerABI || binding.Endpoint == "" || binding.Deployment == "" {
+	if binding.RunnerABI != RunnerABI || binding.Endpoint == "" || qualification.ValidateModelLabel(binding.Deployment) != nil {
 		return refuse("native binding")
 	}
 	if binding.Scope == "" {

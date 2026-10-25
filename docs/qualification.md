@@ -86,6 +86,8 @@ calls the existing pure `packagedHarness` validation/renderer directly: the nati
 system prompt, JSON escaping and host-selected deployment remain identical to
 ordinary hosting. The summary distinguishes the authored model from that actual
 deployment and retains exact verified source references/bytes and case inputs.
+Deployment labels must fit qualification journals: 1–128 non-space printable
+ASCII bytes. A label outside that contract refuses preparation.
 
 Only the native one-member, tool-free profile with one evaluation index is
 supported. Index/case/assertion order is preserved. Contains, notContains, regex

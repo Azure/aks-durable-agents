@@ -255,6 +255,25 @@ func TestPrepareCandidateRefusesSubstitutionAndInvalidContext(t *testing.T) {
 	}
 }
 
+// Native model calls retain the deployment label verbatim; qualification journals
+// accept only 1–128 non-space printable ASCII bytes.
+func TestPrepareCandidateDeploymentLabelBoundary(t *testing.T) {
+	p := preparationFixture(t, preparationCases(), nil)
+	for _, label := range []string{"m", strings.Repeat("m", 128), "model/name:version"} {
+		e := preparationExpected(t, p)
+		e.Binding.Deployment = label
+		got, err := PrepareCandidate(p, e)
+		if err != nil || got.Summary.Model != label {
+			t.Fatalf("valid deployment label refused: %v", err)
+		}
+	}
+	for _, label := range []string{strings.Repeat("m", 129), "送信", "model name", "model\nname", "model\x7fname"} {
+		e := preparationExpected(t, p)
+		e.Binding.Deployment = label
+		assertPreparationRefused(t, p, e, "native binding")
+	}
+}
+
 func TestPrepareCandidateRefusesUnsupportedInventoryAndBounds(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
