@@ -90,5 +90,16 @@ harness:
     command: /session-fixture
     args: [fake, --addr, "127.0.0.1:9001", --ledger, /data/fake-calls.jsonl]
 
+# Opt-in in-process Agent controller; CRDs use Helm's retained crds/ lifecycle.
+agents:
+  enabled: false
+  repositories: []
+  httpRegistry: ""
+  # Existing Secret: credentials.json contains an exact repository -> ORAS credential map.
+  registryCredentialsSecret: ""
+  # Operator-supplied API server and registry/redirect destinations for host egress.
+  apiServerCIDRs: []
+  registryCIDRs: []
+
 networkPolicy:
   enabled: true

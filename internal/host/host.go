@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Azure/aks-durable-agents/entraauth"
+	"github.com/Azure/aks-durable-agents/internal/agentcontroller"
 	"github.com/Azure/aks-durable-agents/internal/socketexec"
 	"github.com/Azure/aks-durable-agents/modeltransport"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -31,6 +32,7 @@ type application struct {
 	store            *sqlitelog.Store
 	verifier         *entraauth.Verifier
 	modelPolicy      *modeltransport.Policy
+	agents           *agentcontroller.Controller
 	backends         []io.Closer
 	once             sync.Once
 }
@@ -173,6 +175,10 @@ func newApplication(ctx context.Context, c Config, credential azcore.TokenCreden
 	if err = session.ReserveStaticHarnessNames(a.store, registry); err != nil {
 		return nil, err
 	}
+	a.agents, err = startAgentController(ctx, c, a.modelPolicy, a.store, registry, modelFn, streamFn)
+	if err != nil {
+		return nil, err
+	}
 	sessionOptions := []session.Option{session.WithLogger(logger)}
 	if c.Mode == authn.Required {
 		sessionOptions = append(sessionOptions, session.WithAuthorization(approval))
@@ -215,6 +221,9 @@ func (a *application) Close() {
 		}
 		if a.health != nil {
 			a.health.Stop()
+		}
+		if a.agents != nil {
+			a.agents.Close()
 		}
 		for _, backend := range a.backends {
 			_ = backend.Close()

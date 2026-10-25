@@ -24,6 +24,7 @@ type Config struct {
 	Approvers                 []api.CallerIdentity
 	Harnesses                 map[string]string
 	Substrate                 *SubstrateConfig
+	Agents                    AgentConfig
 	ToolExecutors             string
 	// HarnessService is an explicit exact in-cluster Service FQDN:port exception.
 	// It does not relax the loopback Sessions or health listeners.
@@ -62,6 +63,9 @@ func (c Config) validate() error {
 	}
 	if (c.TLSCert == "") != (c.TLSKey == "") || (c.Mode == authn.Required && c.TLSCert == "") {
 		return errors.New("required mode needs a TLS certificate and key")
+	}
+	if err := c.validateAgents(); err != nil {
+		return err
 	}
 	if c.Journal == "" || (len(c.Harnesses) == 0 && c.Substrate == nil) {
 		return errors.New("journal and at least one harness are required")

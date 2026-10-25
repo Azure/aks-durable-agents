@@ -1,4 +1,7 @@
 {{- if .Values.networkPolicy.enabled }}
+{{- if and .Values.agents.enabled (or (empty .Values.agents.apiServerCIDRs) (empty .Values.agents.registryCIDRs)) }}
+{{- fail "agents.apiServerCIDRs and agents.registryCIDRs are required with networkPolicy.enabled" }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -43,6 +46,18 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+    {{- if .Values.agents.enabled }}
+    - to:
+        {{- range .Values.agents.apiServerCIDRs }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports: [{protocol: TCP, port: 443}, {protocol: TCP, port: 6443}]
+    - to:
+        {{- range .Values.agents.registryCIDRs }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports: [{protocol: TCP, port: 443}, {protocol: TCP, port: 5000}]
+    {{- end }}
     {{- if eq .Values.runtime.mode "substrate" }}
     - to:
         - namespaceSelector:

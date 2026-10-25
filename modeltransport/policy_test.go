@@ -1,6 +1,7 @@
 package modeltransport
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -33,6 +34,35 @@ func policyConfig(t *testing.T) (string, string) {
 	}
 	return config, ledger
 }
+func TestPolicySnapshotStableAcrossReopen(t *testing.T) {
+	path, _ := policyConfig(t)
+	p, err := OpenPolicyFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := p.Snapshot()
+	var decoded policySnapshot
+	if err := json.Unmarshal(before, &decoded); err != nil || decoded.RunID != "test-run" || decoded.LedgerPath == "" || decoded.Pricing.Source == "" || decoded.Pricing.AsOf == "" {
+		t.Fatalf("incomplete snapshot: %s %v", before, err)
+	}
+	mutated := p.Snapshot()
+	mutated[0] = '!'
+	if !bytes.Equal(before, p.Snapshot()) {
+		t.Fatal("snapshot shares mutable bytes")
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	p, err = OpenPolicyFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if !bytes.Equal(before, p.Snapshot()) {
+		t.Fatal("same policy changed on reopen")
+	}
+}
+
 func openTestPolicy(t *testing.T) (*Policy, string, string) {
 	t.Helper()
 	config, ledger := policyConfig(t)

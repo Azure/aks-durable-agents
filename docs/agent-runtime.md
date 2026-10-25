@@ -1,9 +1,9 @@
 # Retained Agent runtime
 
 `internal/agentcontroller` contains the Agent v1alpha1 Go types and the internal
-retained native runner. It is not wired into the host: no controller, CRD, chart
-activation, registry administration endpoint or target-qualification claim is
-provided by this component alone.
+retained native runner. The opt-in host controller below connects these to
+namespaced resources. No registry administration endpoint, Ready condition or
+target-qualification claim is provided.
 
 The runtime retains verified OCI bytes by manifest digest, separately from each
 namespace/name/UID/generation-owned definition. It verifies cached bytes with
@@ -40,3 +40,26 @@ SDK-registry tests cover independent registrations and loading retired placers
 without re-registering them. They do not establish controller ownership recovery,
 startup admission, kind deployment or end-to-end session recovery; those require
 host/controller integration.
+
+## Opt-in host controller
+
+Enable `agents.enabled` in the chart with exact `agents.repositories`, API server
+CIDRs and registry/redirect CIDRs. Helm installs the retained namespaced Agent CRD;
+its three-field spec is immutable: use a new name for changed inputs.
+The host receives `--agents-namespace`, repeated `--agent-repository`, optional
+`--agent-credentials-file` (JSON repository-to-ORAS-credential map), and the
+credential-free development exception `--agent-http-registry`.
+Only the host gets a projected API token and namespace-scoped Agent/status RBAC.
+Verify API reachability under your CNI, especially CIDR matching for self-hosted APIs.
+Use a durable plain journal path; state lives at `journal + ".agents"`. Substrate
+cannot be combined with this controller. Feature-off static hosting is unchanged.
+Before serving Sessions RPCs, the host reads a complete namespace snapshot and
+retires orphaned owners. An unreadable API blocks startup; watch failures cause
+relist, never deletion inferred from an error. Deleted UIDs retire independently.
+The effective endpoint, deployment, scope, complete parsed model policy (including
+run ID, ledger path and pricing), and runner ABI are frozen. Keep these fixed
+across restarts; drift refuses the old UID, never substitutes current callbacks.
+Only current matching ACTIVE registrations publish `Registered=True` and
+`servedDigest=packageDigest`; `PackageVerified` alone does not mean runnable.
+Status is last observed admission, not liveness or inference success. No model
+calls are made by reconciliation or status reads. No tools, updates or qualification.

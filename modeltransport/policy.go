@@ -108,6 +108,12 @@ func OpenPolicyFile(path string) (*Policy, error) {
 	return &Policy{config: c, ledger: ledger}, nil
 }
 
+// Snapshot returns fresh JSON bytes of the entire immutable parsed operator policy.
+func (p *Policy) Snapshot() []byte {
+	data, _ := json.Marshal(p.config)
+	return data
+}
+
 // InputLimit reports the immutable input bound; omission preserves the legacy bound.
 func (p *Policy) InputLimit() int {
 	if p.config.MaxInputTokens != nil {
