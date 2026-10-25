@@ -90,6 +90,24 @@ func New(policy Policy, transport http.RoundTripper) (*Puller, error) {
 	return p, nil
 }
 
+// ValidateReference applies the pull policy without network or credential access.
+// Retained artifacts can be inspected offline without authorizing their execution.
+func (p *Puller) ValidateReference(ref string) error {
+	_, _, err := p.reference(ref)
+	return err
+}
+func (p *Puller) reference(ref string) (*remote.Repository, string, error) {
+	repo, dig, ok := strings.Cut(ref, "@")
+	if !ok || !validDigest(dig) {
+		return nil, "", fault(ErrUnsupported, "manifest", "digest-reference")
+	}
+	r := p.repositories[repo]
+	if r == nil {
+		return nil, "", fault(ErrUnsupported, "manifest", "repository-allowlist")
+	}
+	return r, dig, nil
+}
+
 // Pull resolves only an allowlisted repository@sha256 digest. ORAS performs
 // registry I/O; all descriptor bytes are verified before extraction or Suite.
 func (p *Puller) Pull(ctx context.Context, ref string) (pkg *Package, err error) {
@@ -102,13 +120,9 @@ func (p *Puller) Pull(ctx context.Context, ref string) (pkg *Package, err error)
 			pkg, err = nil, state.failure(ctx, ErrUnavailable, "context", ctx.Err())
 		}
 	}()
-	repo, dig, ok := strings.Cut(ref, "@")
-	if !ok || !validDigest(dig) {
-		return nil, fault(ErrUnsupported, "manifest", "digest-reference")
-	}
-	r := p.repositories[repo]
-	if r == nil {
-		return nil, fault(ErrUnsupported, "manifest", "repository-allowlist")
+	r, dig, err := p.reference(ref)
+	if err != nil {
+		return nil, err
 	}
 	desc, body, err := r.FetchReference(ctx, dig)
 	if err != nil {
