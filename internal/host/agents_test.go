@@ -21,6 +21,37 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 )
 
+// Catches binding wire-format drift between ordinary hosting and preparation.
+func TestAgentBindingSharedSerialization(t *testing.T) {
+	c := agentHostConfig(t)
+	c.ModelEndpoint = "https://model.example/?a=1&b=<value>\u2028"
+	p, err := modeltransport.OpenPolicyFile(c.ModelPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	for _, scope := range []string{"", modeltransport.DefaultScope, "https://custom.example/.default"} {
+		c.ModelScope = scope
+		effective := scope
+		if effective == "" {
+			effective = modeltransport.DefaultScope
+		}
+		binding := agentcontroller.NativeBinding{Endpoint: c.ModelEndpoint, Deployment: c.Deployment, Scope: effective, Policy: p.Snapshot(), RunnerABI: agentcontroller.RunnerABI}
+		got, err := binding.JSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := json.Marshal(struct {
+			Endpoint, Deployment, Scope string
+			Policy                      json.RawMessage
+			RunnerABI                   string
+		}{c.ModelEndpoint, c.Deployment, effective, p.Snapshot(), agentcontroller.RunnerABI})
+		if err != nil || !bytes.Equal(got, want) || !bytes.Equal(got, agentBinding(c, p)) {
+			t.Fatalf("binding wire-format mismatch: %v", err)
+		}
+	}
+}
+
 type agentNoCredential struct{ t *testing.T }
 
 func (c agentNoCredential) GetToken(context.Context, policy.TokenRequestOptions) (azcore.AccessToken, error) {

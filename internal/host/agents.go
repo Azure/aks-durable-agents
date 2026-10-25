@@ -53,18 +53,14 @@ func (c Config) validateAgents() error {
 	return nil
 }
 
-type frozenAgentBinding struct {
-	Endpoint, Deployment, Scope string
-	Policy                      json.RawMessage
-	RunnerABI                   string
-}
+type frozenAgentBinding = agentcontroller.NativeBinding
 
 func agentBinding(c Config, policy *modeltransport.Policy) []byte {
 	scope := c.ModelScope
 	if scope == "" {
 		scope = modeltransport.DefaultScope
 	}
-	data, _ := json.Marshal(frozenAgentBinding{c.ModelEndpoint, c.Deployment, scope, policy.Snapshot(), agentcontroller.RunnerABI})
+	data, _ := (frozenAgentBinding{Endpoint: c.ModelEndpoint, Deployment: c.Deployment, Scope: scope, Policy: policy.Snapshot(), RunnerABI: agentcontroller.RunnerABI}).JSON()
 	return data
 }
 

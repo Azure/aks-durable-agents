@@ -72,6 +72,47 @@ an operator rewriting the database and every evidence object. Journal chains
 alone do not detect tail deletion or a fully rewritten chain. There is no external
 attestation, anti-rollback, malicious-host resistance or sandbox guarantee.
 
+## Pure candidate preparation
+
+`internal/agentcontroller.PrepareCandidate` is a separate **unwired** adapter.
+Given one already verified `agentpackage.Package` and host-selected expectations,
+it derives a complete qualification plan and a non-authorizing summary. It does
+not open this store, admit a request, register a harness, create a listener, call
+a model/tool or alter live state. Existing host entry points do not call it.
+
+Manifest, member, composition and platform expectations must match exactly.
+An optional profile digest must match the derived native profile. The adapter
+calls the existing pure `packagedHarness` validation/renderer directly: the native
+system prompt, JSON escaping and host-selected deployment remain identical to
+ordinary hosting. The summary distinguishes the authored model from that actual
+deployment and retains exact verified source references/bytes and case inputs.
+Deployment labels must fit qualification journals: 1–128 non-space printable
+ASCII bytes. A label outside that contract refuses preparation.
+
+Only the native one-member, tool-free profile with one evaluation index is
+supported. Index/case/assertion order is preserved. Contains, notContains, regex
+and toolNotCalled operands map without rewriting. Omitted runs default to one;
+omitted minPasses defaults to runs. Any explicit `critical:false` refuses the
+whole candidate with a plain reason: the current plan cannot preserve advisory
+meaning. Judges, toolCalled, unknown assertions, absent inventory and any tighter
+qualification bound also refuse wholly; no assertion is silently dropped.
+
+The host and adapter share the existing capitalized frozen binding JSON shape
+and serialization. BindingDigest hashes its retained-manager JCS bytes.
+PolicyDigest hashes canonical policy bytes; ModelDigest binds endpoint,
+deployment and effective scope, never the authored model. ProfileDigest binds
+RunnerABI and exact native config; JudgeDigest identifies the fixed no-judge
+profile. SourceDigest is domain-separated over the manifest and selected
+member/composition/index digests: it identifies retained bytes, not Git provenance,
+publisher trust or authority. Explicit expiry is normalized to UTC; no current
+time is consulted. Returned plans and summaries are independently owned.
+
+`qualification.ValidatePlan` reuses admission validation without storage or
+schema changes. It reserves worst-case JSON-escaped valid request identities
+alongside the plan, including the existing request/record metadata bounds.
+Preparation does not qualify or activate anything; isolated execution, budgets,
+evidence production and current-policy authorization remain separate work.
+
 ## Storage and recovery
 
 `Create` exclusively initializes a new private directory. `Open` only opens existing

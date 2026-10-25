@@ -36,6 +36,14 @@ func retainedFixture(t *testing.T, change func(map[string]any, map[string]any)) 
 }
 func retainedFixtureInstructions(t *testing.T, instructions []byte, change func(map[string]any, map[string]any)) *agentpackage.Package {
 	t.Helper()
+	return retainedFixtureFiles(t, instructions, func(suite, agent map[string]any, _ map[string][]byte) {
+		if change != nil {
+			change(suite, agent)
+		}
+	})
+}
+func retainedFixtureFiles(t *testing.T, instructions []byte, change func(map[string]any, map[string]any, map[string][]byte)) *agentpackage.Package {
+	t.Helper()
 	const manifestType = "application/vnd.oci.image.manifest.v1+json"
 	const agentType = "application/vnd.agentsuite.agent.v1+json"
 	desc := func(media string, b []byte) map[string]any {
@@ -53,7 +61,7 @@ func retainedFixtureInstructions(t *testing.T, instructions []byte, change func(
 	}
 	suite := map[string]any{"schemaVersion": "1.0.0-draft", "mediaType": "application/vnd.agentsuite.manifest.v1+json", "name": "handmade", "toolProviderCatalog": ref("catalog", "catalog.json", "application/vnd.agentsuite.tool.provider.catalog.v1+json"), "buildProfiles": []any{ref("default", "build.json", "application/vnd.agentsuite.build.profile.v1+json")}, "compositions": []any{map[string]any{"agent": "writer", "platform": platform, "path": "composition.json", "descriptor": desc("application/vnd.agentsuite.composition.v1+json", files["composition.json"])}}}
 	if change != nil {
-		change(suite, agent)
+		change(suite, agent, files)
 	}
 	files["members/not-the-id.json"] = fixtureJSON(agent)
 	suite["agents"] = []any{ref("writer", "members/not-the-id.json", agentType)}
@@ -64,12 +72,25 @@ func retainedFixtureInstructions(t *testing.T, instructions []byte, change func(
 		}
 		worker["id"] = "worker"
 		delete(worker, "invokes")
+		delete(worker, "evals")
 		files["worker.json"] = fixtureJSON(worker)
 		suite["agents"] = append(suite["agents"].([]any), ref("worker", "worker.json", agentType))
 		files["worker-composition.json"] = fixtureJSON(map[string]any{"schemaVersion": "1.0.0-draft", "mediaType": "application/vnd.agentsuite.composition.v1+json", "agent": "worker", "platform": platform, "buildProfile": "default", "toolProviders": []any{}})
 		suite["compositions"] = append(suite["compositions"].([]any), map[string]any{"agent": "worker", "platform": platform, "path": "worker-composition.json", "descriptor": desc("application/vnd.agentsuite.composition.v1+json", files["worker-composition.json"])})
 	}
 	files["agentsuite.json"] = fixtureJSON(suite)
+	p, err := fixtureVerifyFiles(t, files)
+	if err != nil {
+		t.Fatalf("invalid hand-built fixture: %v", err)
+	}
+	return p
+}
+func fixtureVerifyFiles(t *testing.T, files map[string][]byte) (*agentpackage.Package, error) {
+	t.Helper()
+	desc := func(media string, b []byte) map[string]any {
+		return map[string]any{"mediaType": media, "digest": fixtureDigest(b), "size": len(b)}
+	}
+	const manifestType = "application/vnd.oci.image.manifest.v1+json"
 	var compressed bytes.Buffer
 	gz := gzip.NewWriter(&compressed)
 	tw := tar.NewWriter(gz)
@@ -89,11 +110,7 @@ func retainedFixtureInstructions(t *testing.T, instructions []byte, change func(
 	}
 	config, layer := []byte("{}"), compressed.Bytes()
 	manifest := fixtureJSON(map[string]any{"schemaVersion": 2, "mediaType": manifestType, "artifactType": "application/vnd.agentsuite.suite.v1", "config": desc("application/vnd.oci.empty.v1+json", config), "layers": []any{desc("application/vnd.agentsuite.content.v1.tar+gzip", layer)}})
-	p, err := agentpackage.Verify(context.Background(), fixtureDigest(manifest), manifest, config, layer)
-	if err != nil {
-		t.Fatalf("invalid hand-built fixture: %v", err)
-	}
-	return p
+	return agentpackage.Verify(context.Background(), fixtureDigest(manifest), manifest, config, layer)
 }
 
 func retainedConfig(t *testing.T) Config {

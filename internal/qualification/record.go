@@ -156,6 +156,25 @@ func validWorkspace(s string) bool {
 	return true
 }
 func normalize(r Request) Request { r.Plan.ExpiresAt = r.Plan.ExpiresAt.Round(0).UTC(); return r }
+
+// ValidateModelLabel checks the label contract used by qualification journals.
+// Native preparation must refuse a deployment that no journal can represent.
+func ValidateModelLabel(model string) error {
+	if !validID(model) {
+		return ErrInvalid
+	}
+	return nil
+}
+
+// ValidatePlan checks the existing admission bounds without a store or admission.
+// Reserve the largest encoded valid request identity fields so any valid
+// key/requester fits alongside this plan. '<' takes six JSON bytes with the
+// existing HTML escaping. It neither normalizes nor mutates the plan.
+func ValidatePlan(p Plan) error {
+	identity := strings.Repeat("<", 128)
+	return validateRequest(Request{Key: identity, Requester: identity, Plan: p})
+}
+
 func validateRequest(r Request) error {
 	p := r.Plan
 	if !validID(r.Key) || !validID(r.Requester) || !validWorkspace(p.Subject.Workspace) || !validID(p.Subject.Target) || !validID(p.MemberID) || !validID(p.Platform) || p.ExpiresAt.IsZero() {
