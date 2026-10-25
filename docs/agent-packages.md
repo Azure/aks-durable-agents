@@ -1,8 +1,8 @@
 # AgentSuite package verification
 
-The experimental `internal/agentpackage` library pulls and verifies packages;
-**the host does not call it yet**. There is no package-controller CLI flag,
-chart credential/proxy setting. Verification does not establish activation or Ready.
+The experimental `internal/agentpackage` library pulls and verifies packages.
+The opt-in [host controller](agent-runtime.md#opt-in-host-controller) uses it;
+verification alone does not establish registration, Ready or qualification.
 Integrity is not publisher authentication or runnable-member qualification.
 
 ## Registry access and proxies
@@ -22,10 +22,9 @@ As in normal ORAS registry authentication, the configured registry selects its
 bearer token realm; configure only trusted registries and scoped pull credentials.
 
 `New(policy, nil)` deliberately ignores `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`.
-Setting those variables alone does not change package pulls. There is currently
-**no host call site passing a proxy-aware transport**, because ingestion is not
-wired into the host. Embedding code needing an approved egress proxy can use the
-existing transport argument; it does not need a new library option:
+Setting those variables alone does not change library pulls. The enabled host
+controller explicitly clones the default proxy-aware transport; embedding code
+can likewise use the existing transport argument:
 
 ```go
 transport := http.DefaultTransport.(*http.Transport).Clone()

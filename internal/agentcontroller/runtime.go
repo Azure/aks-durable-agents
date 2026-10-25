@@ -8,4 +8,5 @@ type Config struct {
 	Namespace, Directory, Model string
 	Binding                     []byte
 	Puller                      *agentpackage.Puller
+	Source                      Source
 }

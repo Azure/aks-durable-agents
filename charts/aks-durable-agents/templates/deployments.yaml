@@ -76,6 +76,18 @@ spec:
             - -peer-node-file=/data/fixture-node.json
             - -node-name=$(NODE_NAME)
             {{- end }}
+            {{- if $root.Values.agents.enabled }}
+            - {{ printf "--agents-namespace=%s" $root.Release.Namespace | quote }}
+            {{- range $root.Values.agents.repositories }}
+            - {{ printf "--agent-repository=%s" . | quote }}
+            {{- end }}
+            {{- with $root.Values.agents.httpRegistry }}
+            - {{ printf "--agent-http-registry=%s" . | quote }}
+            {{- end }}
+            {{- if $root.Values.agents.registryCredentialsSecret }}
+            - --agent-credentials-file=/etc/agent-registry/credentials.json
+            {{- end }}
+            {{- end }}
             - -model-policy=/config/model-policy.json
             - {{ printf "-auth-mode=%s" $root.Values.auth.mode | quote }}
             - -journal=/data/journal.db
@@ -113,6 +125,16 @@ spec:
             - name: model-policy
               mountPath: /config
               readOnly: true
+            {{- if $root.Values.agents.enabled }}
+            - name: agent-api
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            {{- if $root.Values.agents.registryCredentialsSecret }}
+            - name: agent-registry
+              mountPath: /etc/agent-registry
+              readOnly: true
+            {{- end }}
+            {{- end }}
             {{- if $substrate }}
             - name: substrate-control
               mountPath: /var/run/substrate-control
@@ -171,6 +193,29 @@ spec:
         {{- if eq $role "host" }}
         {{- if $substrate }}
         {{- include "agents.substrateVolumes" $root | nindent 8 }}
+        {{- end }}
+        {{- if $root.Values.agents.enabled }}
+        - name: agent-api
+          projected:
+            defaultMode: 0444
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items: [{key: ca.crt, path: ca.crt}]
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef: {apiVersion: v1, fieldPath: metadata.namespace}
+        {{- if $root.Values.agents.registryCredentialsSecret }}
+        - name: agent-registry
+          secret:
+            secretName: {{ $root.Values.agents.registryCredentialsSecret | quote }}
+            defaultMode: 0444
+            items: [{key: credentials.json, path: credentials.json}]
+        {{- end }}
         {{- end }}
         - name: model-policy
           configMap:

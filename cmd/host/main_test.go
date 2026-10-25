@@ -11,6 +11,25 @@ import (
 	"github.com/agent-primitives/sessions/authn"
 )
 
+func TestAgentFlags(t *testing.T) {
+	c, err := parse(nil)
+	if err != nil || c.Agents.Namespace != "" || len(c.Agents.Repositories) != 0 || c.Agents.HTTPRegistry != "" || c.Agents.CredentialsFile != "" {
+		t.Fatalf("agents enabled by default: %+v %v", c.Agents, err)
+	}
+	c, err = parse([]string{"--agents-namespace=agents", "--agent-repository=registry.example/one", "--agent-repository=registry.example/two", "--agent-http-registry=registry.example", "--agent-credentials-file=/private/credentials.json"})
+	if err != nil || c.Agents.Namespace != "agents" || !slices.Equal(c.Agents.Repositories, []string{"registry.example/one", "registry.example/two"}) || c.Agents.HTTPRegistry != "registry.example" || c.Agents.CredentialsFile != "/private/credentials.json" {
+		t.Fatalf("agent flags not mapped: %+v %v", c.Agents, err)
+	}
+	for _, args := range [][]string{
+		{"--agent-repository=registry.example/one"}, {"--agent-http-registry=registry.example"}, {"--agent-credentials-file=/private/file"}, {"--agent-http-registry="}, {"--agents-namespace="},
+		{"--agents-namespace=agents", "--substrate-harness=echo=assets/echo"},
+	} {
+		if _, err := parse(args); err == nil {
+			t.Fatalf("accepted partial/mixed agent flags %v", args)
+		}
+	}
+}
+
 func TestAuthConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
 	good := `{"identity":{"tenantID":"tenant","issuer":"issuer","audience":"audience","allowedClientIDs":["client"],"requiredScope":"sessions.access"},"approvers":[{"issuer":"issuer","subject":"approver"}]}`

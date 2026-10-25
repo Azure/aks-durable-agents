@@ -1,0 +1,31 @@
+{{- if .Values.agents.enabled }}
+{{- if eq .Values.runtime.mode "substrate" }}
+{{- fail "agents.enabled cannot be combined with Substrate" }}
+{{- end }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "agents.name" . }}-agents
+  namespace: {{ .Release.Namespace | quote }}
+rules:
+  - apiGroups: [agents.aks-durable-agents.io]
+    resources: [agents]
+    verbs: [get, list, watch]
+  - apiGroups: [agents.aks-durable-agents.io]
+    resources: [agents/status]
+    verbs: [update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "agents.name" . }}-agents
+  namespace: {{ .Release.Namespace | quote }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "agents.name" . }}-agents
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "agents.name" . }}-host
+    namespace: {{ .Release.Namespace | quote }}
+{{- end }}

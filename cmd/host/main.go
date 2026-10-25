@@ -55,6 +55,13 @@ func parse(args []string) (host.Config, error) {
 	fs.StringVar(&c.PeerNodeFile, "peer-node-file", "", "shared fixture node marker; requires node-name")
 	fs.StringVar(&c.NodeName, "node-name", "", "own Downward API node name for co-location check")
 	fs.StringVar(&c.ModelPolicy, "model-policy", "", "required bounded model policy JSON with dated prices and durable ledger")
+	fs.StringVar(&c.Agents.Namespace, "agents-namespace", "", "opt-in Agent controller namespace")
+	fs.Func("agent-repository", "repeatable exact allowed registry/repository", func(value string) error {
+		c.Agents.Repositories = append(c.Agents.Repositories, value)
+		return nil
+	})
+	fs.StringVar(&c.Agents.HTTPRegistry, "agent-http-registry", "", "development-only plaintext registry authority; no credentials")
+	fs.StringVar(&c.Agents.CredentialsFile, "agent-credentials-file", "", "explicit repository-to-ORAS-credential JSON file; no ambient credentials")
 	fs.StringVar(&c.TLSCert, "tls-cert", "", "PEM server certificate file")
 	fs.StringVar(&c.TLSKey, "tls-key", "", "PEM server private key file")
 	mode := fs.String("auth-mode", "required", "off (trusted network only) or required (host-RPC permissions, not journal-wide enforcement)")
@@ -99,11 +106,20 @@ func parse(args []string) (host.Config, error) {
 	if fs.NArg() != 0 {
 		return c, errors.New("unexpected positional arguments")
 	}
+	agentOptions := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "agents-namespace" || strings.HasPrefix(f.Name, "agent-") {
+			agentOptions = true
+		}
+	})
+	if agentOptions && c.Agents.Namespace == "" {
+		return c, errors.New("agent options require --agents-namespace")
+	}
 	if len(seen) != 0 {
 		if sub.Harness == "" {
 			return c, errors.New("substrate flags require -substrate-harness")
 		}
-		mixed := len(c.Harnesses) != 0
+		mixed := len(c.Harnesses) != 0 || agentOptions
 		fs.Visit(func(f *flag.Flag) {
 			if f.Name == "harness-service" || f.Name == "peer-node-file" || f.Name == "node-name" {
 				mixed = true

@@ -52,6 +52,156 @@ class ChartTests(unittest.TestCase):
         values["runtime"] = {"mode": "substrate", "substrate": {"atespace": "substrate-sessions", "templateAtespace": "substrate-sessions", "template": "release-notes"}}
         return values
 
+    def agent_values(self):
+        values = copy.deepcopy(self.defaults)
+        values["agents"] = {
+            "enabled": True, "repositories": ["registry.example/team/helper", "registry.example/team/other"],
+            "httpRegistry": "registry.example:5000", "registryCredentialsSecret": "agent-pulls",
+            "apiServerCIDRs": ["10.0.0.1/32"], "registryCIDRs": ["10.1.0.0/24"],
+        }
+        return values
+
+    def test_agents_host_only_token_and_scoped_rbac(self):
+        docs = self.documents(self.agent_values(), namespace="custom")
+        pods = {d["metadata"]["labels"]["app.kubernetes.io/component"]: d["spec"]["template"]["spec"] for d in docs if d["kind"] == "Deployment"}
+        host = pods["host"]
+        self.assertFalse(host["automountServiceAccountToken"])
+        daemon = host["containers"][0]
+        self.assertIn("--agents-namespace=custom", daemon["args"])
+        self.assertEqual([a for a in daemon["args"] if a.startswith("--agent-repository=")], ["--agent-repository=registry.example/team/helper", "--agent-repository=registry.example/team/other"])
+        self.assertIn("--agent-http-registry=registry.example:5000", daemon["args"])
+        self.assertIn("--agent-credentials-file=/etc/agent-registry/credentials.json", daemon["args"])
+        token_mount = next(m for m in daemon["volumeMounts"] if m["mountPath"] == "/var/run/secrets/kubernetes.io/serviceaccount")
+        self.assertTrue(token_mount["readOnly"])
+        volumes = {v["name"]: v for v in host["volumes"]}
+        sources = volumes[token_mount["name"]]["projected"]["sources"]
+        self.assertIn({"serviceAccountToken": {"path": "token", "expirationSeconds": 3600}}, sources)
+        self.assertIn({"configMap": {"name": "kube-root-ca.crt", "items": [{"key": "ca.crt", "path": "ca.crt"}]}}, sources)
+        self.assertIn({"downwardAPI": {"items": [{"path": "namespace", "fieldRef": {"apiVersion": "v1", "fieldPath": "metadata.namespace"}}]}}, sources)
+        credentials = next(v["secret"] for v in host["volumes"] if v.get("secret", {}).get("secretName") == "agent-pulls")
+        self.assertEqual(credentials["items"], [{"key": "credentials.json", "path": "credentials.json"}])
+        # Opt-in must not alter the legacy fixture pod or grant it API access.
+        baseline = self.documents(self.defaults, namespace="custom")
+        fixture = next(d["spec"]["template"]["spec"] for d in baseline if d["kind"] == "Deployment" and d["metadata"]["name"].endswith("-harness"))
+        self.assertEqual(pods["harness"], fixture)
+        role = next(d for d in docs if d["kind"] == "Role")
+        self.assertEqual(role["metadata"]["namespace"], "custom")
+        self.assertEqual(role["rules"], [
+            {"apiGroups": ["agents.aks-durable-agents.io"], "resources": ["agents"], "verbs": ["get", "list", "watch"]},
+            {"apiGroups": ["agents.aks-durable-agents.io"], "resources": ["agents/status"], "verbs": ["update"]},
+        ])
+        binding = next(d for d in docs if d["kind"] == "RoleBinding")
+        self.assertEqual(binding["subjects"], [{"kind": "ServiceAccount", "name": host["serviceAccountName"], "namespace": "custom"}])
+        self.assertEqual(binding["roleRef"], {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": role["metadata"]["name"]})
+        self.assertFalse(any(d["kind"] in ("ClusterRole", "ClusterRoleBinding") for d in docs))
+
+    def test_agents_narrow_egress_and_optional_credentials(self):
+        values = self.agent_values()
+        values["agents"].update(httpRegistry="", registryCredentialsSecret="")
+        docs = self.documents(values)
+        pod = next(d["spec"]["template"]["spec"] for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"].endswith("-host"))
+        self.assertFalse(any(a.startswith(("--agent-http-registry", "--agent-credentials-file")) for a in pod["containers"][0]["args"]))
+        egress = next(d["spec"]["egress"] for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"]["name"].endswith("-host-egress"))
+        for cidr, ports in (("10.0.0.1/32", {443, 6443}), ("10.1.0.0/24", {443})):
+            rule = next(r for r in egress if {"ipBlock": {"cidr": cidr}} in r["to"])
+            self.assertEqual({p["port"] for p in rule["ports"]}, ports)
+            self.assertTrue(all(p["protocol"] == "TCP" for p in rule["ports"]))
+
+    def test_agents_repository_grammar(self):
+        crd = yaml.safe_load(helm("show", "crds", CHART).stdout)
+        pattern = crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]["package"]["properties"]["reference"]["pattern"]
+        for name in ("my-agent", "my--agent", "my__agent", "nested/my---agent_v2.1"):
+            with self.subTest(name=name):
+                repository = "registry.example/team/" + name
+                values = self.agent_values()
+                values["agents"]["repositories"] = [repository]
+                self.documents(values)
+                self.assertRegex(repository + "@sha256:" + "a" * 64, pattern)
+        for name in ("my___agent", "my..agent", "-agent", "agent-", "team//agent"):
+            with self.subTest(invalid=name):
+                repository = "registry.example/" + name
+                values = self.agent_values()
+                values["agents"]["repositories"] = [repository]
+                self.assertNotEqual(render(values).returncode, 0)
+                self.assertNotRegex(repository + "@sha256:" + "a" * 64, pattern)
+
+    def test_agents_registry_egress_ports_follow_authorities(self):
+        for authority, http, ports in (("registry.example", True, {80, 443}),
+                                       ("registry.example:5000", True, {443, 5000}),
+                                       ("registry.example:5001", True, {443, 5001}),
+                                       ("registry.example:8443", False, {443, 8443})):
+            with self.subTest(authority=authority, http=http):
+                values = self.agent_values()
+                values["agents"].update(repositories=[authority + "/team/helper", "other.example:9443/team/helper"],
+                                        httpRegistry=authority if http else "", registryCredentialsSecret="")
+                docs = self.documents(values)
+                egress = next(d["spec"]["egress"] for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"]["name"].endswith("-host-egress"))
+                rule = next(r for r in egress if {"ipBlock": {"cidr": "10.1.0.0/24"}} in r["to"])
+                self.assertEqual({p["port"] for p in rule["ports"]}, ports | {9443})
+                self.assertEqual(len(rule["ports"]), len(ports | {9443}))
+        for port in (0, 65536):
+            values = self.agent_values()
+            values["agents"]["repositories"] = [f"registry.example:{port}/team/helper"]
+            result = render(values)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("registry port must be between 1 and 65535", result.stderr)
+
+    def test_agents_refuse_missing_inputs_and_substrate(self):
+        for key, bad in (("repositories", []), ("apiServerCIDRs", []), ("registryCIDRs", []),
+                         ("repositories", ["registry.example/team/helper:latest"]),
+                         ("registryCredentialsSecret", "bad/name"), ("apiServerCIDRs", ["not-cidr"])):
+            with self.subTest(key=key, bad=bad):
+                values = self.agent_values()
+                values["agents"][key] = bad
+                self.assertNotEqual(render(values).returncode, 0)
+        values = self.substrate_values()
+        values["agents"] = self.agent_values()["agents"]
+        self.assertNotEqual(render(values).returncode, 0)
+        values = self.agent_values()
+        values["networkPolicy"] = {"enabled": False}
+        values["agents"].update(apiServerCIDRs=[], registryCIDRs=[])
+        self.documents(values)
+
+    def test_agents_crd_immutable_contract_and_standard_helm_retention(self):
+        result = helm("show", "crds", CHART)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        crds = [d for d in yaml.safe_load_all(result.stdout) if d]
+        self.assertEqual(len(crds), 1)
+        crd = crds[0]
+        self.assertEqual(crd["metadata"]["name"], "agents.agents.aks-durable-agents.io")
+        self.assertNotIn("helm.sh/hook", crd["metadata"].get("annotations", {}))
+        self.assertEqual(crd["spec"]["scope"], "Namespaced")
+        self.assertEqual(crd["spec"]["group"], "agents.aks-durable-agents.io")
+        version, = crd["spec"]["versions"]
+        self.assertEqual(version["name"], "v1alpha1")
+        self.assertTrue(version["served"] and version["storage"])
+        self.assertEqual(version["subresources"], {"status": {}})
+        schema = version["schema"]["openAPIV3Schema"]["properties"]
+        spec = schema["spec"]
+        self.assertEqual(set(spec["properties"]), {"package", "member", "modelBindingRef"})
+        self.assertEqual(set(spec["required"]), set(spec["properties"]))
+        self.assertIn({"rule": "self == oldSelf", "message": "Agent spec is immutable; create a new Agent"}, spec["x-kubernetes-validations"])
+        reference = spec["properties"]["package"]["properties"]["reference"]
+        self.assertRegex("registry.example/team/agent@sha256:" + "a" * 64, reference["pattern"])
+        for invalid in ("registry.example/team/agent:latest", "registry.example/team/agent@sha256:" + "A" * 64):
+            self.assertNotRegex(invalid, reference["pattern"])
+        self.assertEqual(spec["properties"]["modelBindingRef"]["properties"]["name"]["enum"], ["default"])
+        status = schema["status"]["properties"]
+        self.assertEqual(set(status), {"agentUID", "observedGeneration", "packageDigest", "member", "resolvedBindingDigest", "revisionDigest", "harnessName", "servedDigest", "conditions"})
+        conditions = status["conditions"]
+        self.assertEqual(conditions["maxItems"], 2)
+        self.assertEqual(conditions["x-kubernetes-list-type"], "map")
+        self.assertEqual(conditions["x-kubernetes-list-map-keys"], ["type"])
+        condition = conditions["items"]
+        self.assertEqual(set(condition["required"]), {"type", "status", "reason", "message", "lastTransitionTime"})
+        fields = condition["properties"]
+        self.assertEqual(fields["type"]["enum"], ["PackageVerified", "Registered"])
+        self.assertEqual(fields["status"]["enum"], ["True", "False", "Unknown"])
+        self.assertEqual(fields["lastTransitionTime"]["format"], "date-time")
+        self.assertEqual(fields["observedGeneration"]["format"], "int64")
+        self.assertEqual(fields["observedGeneration"]["minimum"], 0)
+        self.assertFalse(any(d["kind"] in ("Role", "RoleBinding", "CustomResourceDefinition") for d in self.documents(self.defaults)))
+
     def test_substrate_has_separate_executor_without_remote_harness(self):
         docs = self.documents(self.substrate_values())
         deployments = {d["metadata"]["labels"]["app.kubernetes.io/component"]: d for d in docs if d["kind"] == "Deployment"}
