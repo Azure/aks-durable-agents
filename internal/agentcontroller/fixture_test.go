@@ -32,12 +32,16 @@ func fixtureDigest(b []byte) string {
 // Hand-built Suite graph: member paths deliberately do not follow a filename convention.
 func retainedFixture(t *testing.T, change func(map[string]any, map[string]any)) *agentpackage.Package {
 	t.Helper()
+	return retainedFixtureInstructions(t, []byte("Write fictional release notes.\n"), change)
+}
+func retainedFixtureInstructions(t *testing.T, instructions []byte, change func(map[string]any, map[string]any)) *agentpackage.Package {
+	t.Helper()
 	const manifestType = "application/vnd.oci.image.manifest.v1+json"
 	const agentType = "application/vnd.agentsuite.agent.v1+json"
 	desc := func(media string, b []byte) map[string]any {
 		return map[string]any{"mediaType": media, "digest": fixtureDigest(b), "size": len(b)}
 	}
-	files := map[string][]byte{"prompts/frozen.md": []byte("Write fictional release notes.\n")}
+	files := map[string][]byte{"prompts/frozen.md": instructions}
 	agent := map[string]any{"schemaVersion": "1.0.0-draft", "mediaType": agentType, "id": "writer", "instructions": map[string]any{"path": "prompts/frozen.md", "descriptor": desc("text/markdown; charset=utf-8", files["prompts/frozen.md"])}, "model": map[string]any{"protocol": "openai-compatible", "model": "author-model-not-host-model"}}
 	platform := map[string]any{"os": "linux", "architecture": "amd64"}
 	image := map[string]any{"platform": platform, "imageRef": "registry.example/harness@sha256:" + strings.Repeat("a", 64), "image": map[string]any{"mediaType": manifestType, "digest": "sha256:" + strings.Repeat("a", 64), "size": 1}}

@@ -9,6 +9,20 @@ import (
 	"testing"
 )
 
+func TestRetainedDigestGrammar(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	for _, ref := range []string{"registry.example/suite@" + digest, "registry.example/suite:tag@" + digest} {
+		if got := retainedReferenceDigest(ref); got != digest {
+			t.Fatalf("valid digest reference refused: %q => %q", ref, got)
+		}
+	}
+	for _, ref := range []string{"registry.example/suite:tag", "registry.example/suite@", "registry.example/suite@sha256:" + strings.Repeat("A", 64), "registry.example/suite@sha256:" + strings.Repeat("a", 63), "registry.example/suite@sha256:" + strings.Repeat("a", 65), "registry.example/suite@sha512:" + strings.Repeat("a", 128), "registry.example/INVALID@" + digest, "registry.example/suite@@" + digest} {
+		if got := retainedReferenceDigest(ref); got != "" {
+			t.Fatalf("invalid digest reference accepted: %q => %q", ref, got)
+		}
+	}
+}
+
 func TestRetainedIndependentOwnersShareOnlyPackageCache(t *testing.T) {
 	c, p := retainedConfig(t), retainedFixture(t, nil)
 	r := openFixture(t, c)
@@ -82,11 +96,11 @@ func TestRetainedCanonicalBindingIsStable(t *testing.T) {
 	c := retainedConfig(t)
 	c.Binding = []byte(`{"b":2,"a":1}`)
 	r := openFixture(t, c)
-	want := r.bindingDigest
+	want := retainedHash(r.binding)
 	r.close()
 	c.Binding = []byte(" { \"a\": 1, \"b\": 2 } ")
 	r = openFixture(t, c)
-	if r.bindingDigest != want {
+	if retainedHash(r.binding) != want {
 		t.Fatal("binding identity depends on JSON key order")
 	}
 }

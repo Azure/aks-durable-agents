@@ -41,7 +41,6 @@ type cachedPackage struct{ Manifest, Config, Layer []byte }
 // stop/join the controller and close its SDK registry before closing this manager.
 type retained struct {
 	definitions     map[string]definition
-	bindingDigest   string
 	config          Config
 	binding         json.RawMessage
 	root, sockets   *os.Root
@@ -69,11 +68,7 @@ func (d definition) identity() (string, string) {
 func retainedReferenceDigest(ref string) string {
 	r, err := registry.ParseReference(ref)
 	_, digest, ok := strings.Cut(ref, "@")
-	if err != nil || !ok || r.Reference != digest || len(digest) != 71 || !strings.HasPrefix(digest, "sha256:") {
-		return ""
-	}
-	b, err := hex.DecodeString(digest[7:])
-	if err != nil || hex.EncodeToString(b) != digest[7:] {
+	if err != nil || !ok || r.Reference != digest || !strings.HasPrefix(digest, "sha256:") {
 		return ""
 	}
 	return digest
@@ -96,7 +91,7 @@ func openRetained(c Config, model controller.ModelFunc, stream controller.Stream
 	if err != nil || c.Directory == "" {
 		return nil, errRetained
 	}
-	r := &retained{config: c, binding: binding, bindingDigest: retainedHash(binding), definitions: map[string]definition{}, servers: map[string]*ownedServer{}, model: model, stream: stream}
+	r := &retained{config: c, binding: binding, definitions: map[string]definition{}, servers: map[string]*ownedServer{}, model: model, stream: stream}
 	defer func() {
 		if err != nil {
 			r.close()

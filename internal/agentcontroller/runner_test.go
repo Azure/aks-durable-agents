@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/agent-primitives/sessions/api"
 	v1 "github.com/agent-primitives/sessions/api/genpb"
@@ -103,6 +104,29 @@ func TestRunnerFreezesPromptAndModelWithoutDuplicatingConversation(t *testing.T)
 	}
 	if !reflect.DeepEqual(messages, []string{"system:Write fictional release notes.\n", "user:old", "assistant:answer", "user:new"}) {
 		t.Fatalf("wrong replay context: %v", messages)
+	}
+}
+
+func TestRunnerPreservesUTF8InstructionsOrRefuses(t *testing.T) {
+	for _, instructions := range [][]byte{{0xff, 0xfe, 'A'}, {0xc3}, []byte("Ka pai — kōrero\n")} {
+		p := retainedFixtureInstructions(t, instructions, nil) // Real digest/Suite verification succeeds even for malformed text.
+		h, err := packagedHarness(p, definition{Harness: "test-harness", Model: "operator-model", Spec: Spec{Member: "writer"}})
+		if !utf8.Valid(instructions) {
+			if err == nil {
+				t.Fatalf("native runner admitted non-UTF8 prompt: verified=%x config=%s", instructions, h.config)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		sink := &captureSink{}
+		if err := h.Run(t.Context(), &api.Start{}, sink); err != nil {
+			t.Fatal(err)
+		}
+		if len(sink.requests) != 1 || len(sink.requests[0].Messages) == 0 || sink.requests[0].Messages[0].Text() != string(instructions) {
+			t.Fatal("valid UTF8 instruction bytes changed")
+		}
 	}
 }
 

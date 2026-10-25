@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Azure/aks-durable-agents/internal/agentpackage"
 	"github.com/agent-primitives/sessions/api"
@@ -84,7 +85,7 @@ func packagedHarness(p *agentpackage.Package, d definition) (*frozenHarness, err
 		}
 	}
 	instructions, err := p.ReadFile(agent.Instructions.Path)
-	if err != nil {
+	if err != nil || !utf8.Valid(instructions) {
 		return nil, errRetained
 	}
 	return &frozenHarness{name: d.Harness, model: d.Model, config: retainedJSON(map[string]string{"system_prompt": string(instructions)})}, nil
