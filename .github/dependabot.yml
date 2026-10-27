@@ -7,15 +7,29 @@ updates:
     ignore:
       # Upgrade needs durability qualification (async suspend default) first.
       - dependency-name: github.com/agent-substrate/substrate
+    groups:
+      go-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     groups:
-      codeql-action:
+      github-actions:
         patterns:
-          - github/codeql-action*
+          - "*"
   - package-ecosystem: pip
     directory: /charts/aks-durable-agents/tests
     schedule:
       interval: weekly
+    groups:
+      pip-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
