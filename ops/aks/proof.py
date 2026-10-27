@@ -10,7 +10,8 @@ PHASES = frozenset(("preflight", "install", "network-dormant", "network-live", "
                     "restart", "approve", "continue", "backup", "replay", "cleanup"))
 OPERATIONS = frozenset(("phase", "profile-create", "profile-rollout", "profile-verify", "profile-remove",
                         "profile-node-check", "namespace-create", "volume-create", "chart-install", "policy-check",
-                        "fixture-init-create", "fixture-init-wait", "fixture-init-remove", "deployment-rollout"))
+                        "fixture-init-create", "fixture-init-wait", "fixture-init-remove", "deployment-rollout",
+                        "park-host-discovery", "park-rpc", "park-evidence-discovery", "park-evidence-exec"))
 REASONS = frozenset(("deadline-exhausted", "command-timeout", "command-failed", "interrupted",
                      "invariant-failed", "io-failed", "unclassified-failure"))
 CLEANUP = frozenset(("succeeded", "failed", "not-run"))
