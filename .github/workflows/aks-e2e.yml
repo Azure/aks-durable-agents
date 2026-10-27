@@ -258,7 +258,9 @@ jobs:
 
   wait:
     needs: [config, create]
-    if: ${{ needs.config.outputs.scenario == 'true' }}
+    if: >-
+      ${{ !cancelled() && needs.config.result == 'success' && needs.config.outputs.scenario == 'true' &&
+          needs.create.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: nightly-aks
@@ -287,7 +289,9 @@ jobs:
 
   federate:
     needs: [config, create, wait]
-    if: ${{ needs.config.outputs.scenario == 'true' }}
+    if: >-
+      ${{ !cancelled() && needs.config.result == 'success' && needs.config.outputs.scenario == 'true' &&
+          needs.create.result == 'success' && needs.wait.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     environment: nightly-aks
@@ -319,7 +323,9 @@ jobs:
 
   scenario:
     needs: [config, create, wait, federate]
-    if: ${{ needs.config.outputs.scenario == 'true' }}
+    if: >-
+      ${{ !cancelled() && needs.config.result == 'success' && needs.config.outputs.scenario == 'true' &&
+          needs.create.result == 'success' && needs.wait.result == 'success' && needs.federate.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: nightly-aks

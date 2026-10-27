@@ -1,4 +1,5 @@
 """Keep the bootstrap inert and its cleanup on trusted default-branch code."""
+import shlex
 import subprocess
 import unittest
 from pathlib import Path
@@ -45,6 +46,57 @@ class WorkflowTests(unittest.TestCase):
         finalize = jobs["finalize"]["steps"][0]
         self.assertIn("INPUTS_RESULT", finalize["env"])
         self.assertIn("substrate-gvisor", finalize["run"])
+
+    def scenario_gate(self, jobs, name, results, *, variant="no-sandbox", scenario="true", cancelled=False):
+        condition = jobs[name]["if"].removeprefix("${{").removesuffix("}}").strip()
+        # Without a status function, GitHub's implicit success() propagates the
+        # optional preparation skip, even through a successful create job.
+        self.assertIn("!cancelled()", condition)
+        condition = condition.replace("!cancelled()", "true == false" if cancelled else "false == false")
+        for job, result in results.items():
+            condition = condition.replace("needs." + job + ".result", shlex.quote(result))
+        for key, value in (("variant", variant), ("scenario", scenario)):
+            condition = condition.replace("needs.config.outputs." + key, shlex.quote(value))
+        self.assertNotIn("needs.", condition)
+        # These gates use only comparisons and Boolean operators shared by Bash
+        # and Actions. This checks our actual predicates, not Actions scheduling.
+        result = subprocess.run(["bash", "-c", "[[ " + condition + " ]]"],
+                                env={}, capture_output=True, check=False)
+        self.assertIn(result.returncode, (0, 1), result.stderr)
+        return result.returncode == 0
+
+    def test_scenario_chain_allows_optional_preparation_skip(self):
+        jobs = self.workflow("aks-e2e.yml")["jobs"]
+        results = dict.fromkeys(("config", "preflight", "create", "wait", "federate"), "success")
+        for variant, prepared in (("no-sandbox", "skipped"), ("substrate-gvisor", "success")):
+            results["substrate-inputs"] = prepared
+            for name in ("create", "wait", "federate", "scenario"):
+                with self.subTest(variant=variant, job=name):
+                    self.assertTrue(self.scenario_gate(jobs, name, results, variant=variant))
+
+    def test_scenario_chain_blocks_failed_prerequisites_and_cancellation(self):
+        jobs = self.workflow("aks-e2e.yml")["jobs"]
+        base = dict.fromkeys(("config", "preflight", "create", "wait", "federate"), "success")
+        for variant, prepared in (("no-sandbox", "skipped"), ("substrate-gvisor", "success")):
+            results = dict(base, **{"substrate-inputs": prepared})
+            for name in ("wait", "federate", "scenario"):
+                with self.subTest(variant=variant, job=name, cancelled=True):
+                    self.assertFalse(self.scenario_gate(jobs, name, results, variant=variant, cancelled=True))
+                for scenario in ("false", ""):
+                    with self.subTest(variant=variant, job=name, scenario=scenario):
+                        self.assertFalse(self.scenario_gate(jobs, name, results, variant=variant, scenario=scenario))
+                for prerequisite in jobs[name]["needs"]:
+                    for outcome in ("failure", "cancelled", "skipped", ""):
+                        with self.subTest(variant=variant, job=name, prerequisite=prerequisite, outcome=outcome):
+                            failed = dict(results, **{prerequisite: outcome})
+                            self.assertFalse(self.scenario_gate(jobs, name, failed, variant=variant))
+        for prepared in ("failure", "cancelled", "skipped"):
+            results = dict(base, **{"substrate-inputs": prepared})
+            with self.subTest(prepared=prepared):
+                self.assertFalse(self.scenario_gate(jobs, "create", results, variant="substrate-gvisor"))
+                results["create"] = "skipped"
+                for name in ("wait", "federate", "scenario"):
+                    self.assertFalse(self.scenario_gate(jobs, name, results, variant="substrate-gvisor"))
 
     def test_daily_schedule_and_read_only_manual_default(self):
         workflow = self.workflow("aks-e2e.yml")
