@@ -337,8 +337,12 @@ Failure diagnostics contain exactly `version: 1` and fixed-enum `phase`,
 `operation`, `reason`, `cleanup` fields, never exception text or command output.
 Install operations distinguish profile create/rollout/verify/remove/node-check,
 namespace/volume create, chart install, policy check and fixture init create/wait/remove;
-workload Deployment rollouts use `deployment-rollout`; other steps use the default
-`phase` operation. Reasons are `deadline-exhausted`,
+workload Deployment rollouts use `deployment-rollout`. Both variants distinguish
+park host discovery (`park-host-discovery`), the shared park client and its
+port-forward (`park-rpc`), and post-park evidence discovery/exec
+(`park-evidence-discovery`, `park-evidence-exec`). Other steps, including
+Substrate-specific placement/checkpoint checks, use the default `phase` operation.
+Reasons are `deadline-exhausted`,
 `command-timeout`, `command-failed`, `interrupted`, `invariant-failed`, `io-failed`
 or `unclassified-failure`. These categories do **not** identify an underlying
 pod/container root cause. The original failure context is captured before source

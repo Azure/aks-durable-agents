@@ -807,8 +807,15 @@ class Scenario:
         self.marker()
 
     def evidence(self):
+        previous, park = self.operation, self.phase_name == "park"
+        if park:
+            self.operation = "park-evidence-discovery"
         harness = self.component("harness")
-        return strict_json(self.kube("exec", harness["metadata"]["name"], "-c", "fixture-harness", "--", "/session-fixture", "evidence", "--scenario", "v2", "--data", "/data"))
+        if park:
+            self.operation = "park-evidence-exec"
+        result = strict_json(self.kube("exec", harness["metadata"]["name"], "-c", "fixture-harness", "--", "/session-fixture", "evidence", "--scenario", "v2", "--data", "/data"))
+        self.operation = previous
+        return result
 
     def marker(self):
         host, peer = self.component("host"), self.component("harness")
@@ -822,9 +829,18 @@ class Scenario:
 
     def rpc(self, command):
         require(command in RPCS)
+        previous, park = self.operation, self.phase_name == "park" and command == "park"
+        if park:
+            self.operation = "park-host-discovery"
         host = self.component("host")
+        if park:
+            self.operation = "park-rpc"
         with self.executor.forward(self.prefix, host["metadata"]["name"]) as port:
-            return strict_json(self.executor.run(rpc_command(self.client, command, self.state, port), limit=65))
+            result = strict_json(self.executor.run(rpc_command(self.client, command, self.state, port), limit=65))
+        # Restore only after success, including port-forward shutdown. Failure
+        # leaves its boundary label for the pre-cleanup diagnostic snapshot.
+        self.operation = previous
+        return result
 
     def snapshot(self, name):
         require(name in ("park.json", "approved.json", "completed.json"))
