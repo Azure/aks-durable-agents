@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -13,12 +14,13 @@ import (
 )
 
 type budgetLedger struct {
-	db          *sql.DB
-	maxAttempts int
-	inputLimit  int
+	db           *sql.DB
+	maxAttempts  int
+	inputLimit   int
+	plannedSlots []string
 }
 
-func openBudgetLedger(path, snapshot string, maxAttempts, inputLimit int) (*budgetLedger, error) {
+func openBudgetLedger(path, snapshot string, maxAttempts, inputLimit int, plannedSlots []string) (*budgetLedger, error) {
 	// The final directory is scenario-only and private. Refuse symlinks at every
 	// existing path component; never chmod an operator's existing directory/file.
 	parent := filepath.Dir(path)
@@ -102,10 +104,14 @@ func openBudgetLedger(path, snapshot string, maxAttempts, inputLimit int) (*budg
 		return fail()
 	}
 	defer conn.ExecContext(context.Background(), "ROLLBACK")
+	attemptSchema := `CREATE TABLE model_attempts(id INTEGER PRIMARY KEY,request_hash TEXT NOT NULL UNIQUE,started_at TEXT NOT NULL,finished_at TEXT,outcome TEXT NOT NULL,input_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER)`
+	if plannedSlots != nil {
+		attemptSchema = plannedAttemptsSchema
+	}
 	if created {
 		for _, stmt := range []string{
-			`CREATE TABLE model_budget(id INTEGER PRIMARY KEY CHECK(id=1),snapshot TEXT NOT NULL)`,
-			`CREATE TABLE model_attempts(id INTEGER PRIMARY KEY,request_hash TEXT NOT NULL UNIQUE,started_at TEXT NOT NULL,finished_at TEXT,outcome TEXT NOT NULL,input_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER)`,
+			budgetSchema,
+			attemptSchema,
 		} {
 			if _, err = conn.ExecContext(context.Background(), stmt); err != nil {
 				return fail()
@@ -128,13 +134,18 @@ func openBudgetLedger(path, snapshot string, maxAttempts, inputLimit int) (*budg
 			return fail()
 		}
 	}
+	if plannedSlots != nil {
+		if err = validatePlannedLedger(conn, plannedSlots); err != nil {
+			return fail()
+		}
+	}
 	if _, err = conn.ExecContext(context.Background(), "COMMIT"); err != nil {
 		return fail()
 	}
-	return &budgetLedger{db: db, maxAttempts: maxAttempts, inputLimit: inputLimit}, nil
+	return &budgetLedger{db: db, maxAttempts: maxAttempts, inputLimit: inputLimit, plannedSlots: plannedSlots}, nil
 }
 
-func (l *budgetLedger) reserve(hash string) (int64, error) {
+func (l *budgetLedger) reserve(hash, slot string) (int64, error) {
 	ctx := context.Background()
 	conn, err := l.db.Conn(ctx)
 	if err != nil {
@@ -149,7 +160,16 @@ func (l *budgetLedger) reserve(hash string) (int64, error) {
 	if err = conn.QueryRowContext(ctx, "SELECT count(*),coalesce(sum(CASE WHEN outcome != 'succeeded' OR finished_at IS NULL OR input_tokens IS NULL OR output_tokens IS NULL OR input_tokens < 0 OR input_tokens > ? OR output_tokens < 0 OR output_tokens > ? OR reasoning_tokens < 0 OR reasoning_tokens > output_tokens THEN 1 ELSE 0 END),0) FROM model_attempts", l.inputLimit, maxOutputTokens).Scan(&count, &bad); err != nil || count >= l.maxAttempts || bad != 0 {
 		return 0, ledgerError()
 	}
-	result, err := conn.ExecContext(ctx, "INSERT INTO model_attempts(request_hash,started_at,outcome) VALUES(?,?,'reserved')", hash, time.Now().UTC().Format(time.RFC3339Nano))
+	var result sql.Result
+	started := time.Now().UTC().Format(time.RFC3339Nano)
+	if l.plannedSlots != nil {
+		if !slices.Contains(l.plannedSlots, slot) {
+			return 0, ledgerError()
+		}
+		result, err = conn.ExecContext(ctx, "INSERT INTO model_attempts(call_slot,request_hash,started_at,outcome) VALUES(?,?,?,'reserved')", slot, hash, started)
+	} else {
+		result, err = conn.ExecContext(ctx, "INSERT INTO model_attempts(request_hash,started_at,outcome) VALUES(?,?,'reserved')", hash, started)
+	}
 	if err != nil {
 		return 0, ledgerError()
 	}

@@ -47,10 +47,51 @@ reset or migrate historical evidence. Older binaries reject the new field rather
 than silently applying a smaller limit. The bound does not alter outgoing request
 bytes or hashes, or neutral requests recorded by Sessions.
 
+## Planned-call identity (library-only version 3)
+
+Version 3 is an internal foundation for trusted host code, not an operator/serving
+profile. The current host, chart and legacy rehearsal reader support only v1/v2;
+the host refuses v3 when constructing its shared client (after opening the ledger).
+It does not run packaged tests or establish qualification or Ready.
+
+V3 retains v2's required `"maxAttempts": 3` and all existing pricing, token, USD 2
+and timeout limits. It additionally requires `"plannedCallSlots"` containing
+exactly three distinct IDs, for example:
+
+    "plannedCallSlots": ["case/1:repeat/1", "case/1:repeat/2", "case/1:judge/1"]
+
+IDs contain 1–128 ASCII letters, digits, `_`, `-`, `.`, `:`, or `/`. Use opaque
+host-generated identifiers, never prompts, answers, credentials or personal data.
+Array order has no execution meaning, but changing it changes the frozen snapshot.
+V1/v2 must omit this field, including an empty array.
+
+Trusted code constructs a separate `Config{Policy: p, CallSlot: id, ...}` client
+or transport for each declared slot. V3 requires an exact declared ID; nil/v1/v2
+policies require an empty selector. Validation precedes credential construction.
+The selector is copied at construction, not read from request headers, context or
+model output. It does not derive or authenticate a qualification plan: the trusted
+caller must establish that mapping before constructing transports.
+
+Each slot permits at most one reservation, even after success, restart, or a
+changed request body. Different slots may send byte-identical normalized bodies;
+their separate slot IDs and equal request hashes remain in the ledger. A refused
+duplicate writes no attempt and does not poison unused slots. An actual reserved,
+dispatching, failed or unknown attempt still blocks the entire run. Concurrent
+unused slots may refuse while another attempt is unfinished; refusal never grants
+permission to send. There are no automatic retries or new slot IDs on failure.
+
+V3 is a distinct persistent format: `model_attempts` adds `call_slot TEXT NOT NULL
+UNIQUE`, while `request_hash TEXT NOT NULL` is no longer unique. The other columns
+and transitions remain unchanged. V3 verifies its exact schema and stored slot/hash
+identities on open. An existing v1/v2 ledger cannot be adopted as v3, nor vice
+versa; changed plans also refuse. No migration, reset, general suite-sized budget,
+judge execution or production wiring is supplied by this profile.
+
 ## Reservation and input accounting
 
 Before any model call, the immutable snapshot reserves the full rational amount
-using the selected attempt count (2 or 3) and input bound (8192 or 32768):
+using the selected attempt count (2 or 3, including v3's fixed 3) and input bound
+(8192 or 32768):
 
     attempts * (inputLimit * inputMicroUSDPerMillionTokens
               + 4096 * outputMicroUSDPerMillionTokens) / 1,000,000 microUSD
@@ -114,7 +155,7 @@ The ledger directory is 0700, the file 0600. Existing unsafe permissions, symlin
 or changed snapshots are refused rather than repaired or reset. SQLite uses
 DELETE journaling and FULL synchronization. One canonical JSON snapshot is stored
 in model_budget; one ledger belongs to exactly one run and immutable pricing/
-deployment/path configuration. The fixed tables are:
+deployment/path configuration. The v1/v2 fixed tables are:
 
     model_budget(id INTEGER PRIMARY KEY CHECK(id=1), snapshot TEXT NOT NULL)
     model_attempts(
@@ -127,8 +168,9 @@ Reservation is committed before credentials; dispatching is committed before any
 possible POST. A transaction serializes reservations across processes. The selected
 two- or three-attempt ceiling survives restart; any non-succeeded earlier attempt blocks every
 subsequent reservation. Canonical outgoing JSON is SHA-256 hashed, never stored;
-duplicate hashes are refused even after success. No prompts or bearer credentials
-are written to the ledger. Timestamps use UTC RFC3339Nano.
+duplicate hashes are refused even after success in v1/v2. V3 instead refuses
+duplicate slots, retaining a separate hash for each slot as described above.
+No prompts or bearer credentials are written to the ledger. Timestamps use UTC RFC3339Nano.
 
 Missing token counts are SQL NULL, never zero. Known partial counts may accompany
 an unknown outcome. Success requires complete response JSON or a complete SSE

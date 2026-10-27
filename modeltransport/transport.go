@@ -42,6 +42,9 @@ type Config struct {
 	Transport *http.Transport
 	// Policy optionally enforces bounded Chat requests and a durable run budget.
 	Policy *Policy
+	// CallSlot selects one declared v3 slot at trusted host construction time.
+	// Requests cannot select slots. Empty is required for nil or legacy Policy.
+	CallSlot string
 }
 
 // Transport is safe for concurrent use after construction. Bounded Policy use
@@ -57,6 +60,7 @@ type Transport struct {
 	token      azcore.AccessToken
 	flight     *refresh
 	policy     *Policy
+	callSlot   string
 }
 type refresh struct {
 	done  chan struct{}
@@ -81,11 +85,14 @@ func NewTransport(c Config) (*Transport, error) {
 	}
 	if c.Policy != nil {
 		c.Policy.mu.Lock()
-		valid := !c.Policy.closed && c.Policy.ledger != nil && c.Policy.config.Deployment == c.Deployment
+		valid := !c.Policy.closed && c.Policy.ledger != nil && c.Policy.config.Deployment == c.Deployment && c.Policy.acceptsCallSlot(c.CallSlot)
 		c.Policy.mu.Unlock()
 		if !valid {
-			return nil, errors.New("modeltransport: policy deployment mismatch or closed policy")
+			return nil, errors.New("modeltransport: policy deployment, slot, or lifecycle mismatch")
 		}
+	}
+	if c.Policy == nil && c.CallSlot != "" {
+		return nil, errors.New("modeltransport: call slot requires a planned policy")
 	}
 	cred := c.Credential
 	if cred == nil {
@@ -110,7 +117,7 @@ func NewTransport(c Config) (*Transport, error) {
 	base.DisableKeepAlives = true
 	base.Protocols = new(http.Protocols)
 	base.Protocols.SetHTTP1(true)
-	return &Transport{endpoint: u, scope: c.Scope, credential: cred, base: base, now: time.Now, policy: c.Policy}, nil
+	return &Transport{endpoint: u, scope: c.Scope, credential: cred, base: base, now: time.Now, policy: c.Policy, callSlot: c.CallSlot}, nil
 }
 
 // NewClient returns a bounded client that refuses every redirect. RoundTrip also
