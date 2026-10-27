@@ -232,8 +232,15 @@ class SubstrateScenario(nightly.Scenario):
         return {"podUID": peer["metadata"]["uid"], "nodeName": spec["nodeName"]}
 
     def evidence(self):
+        previous, park = self.operation, self.phase_name == "park"
+        if park:
+            self.operation = "park-evidence-discovery"
         host = self.component("host")
-        return nightly.strict_json(self.kube("exec", host["metadata"]["name"], "-c", "daemon", "--", "/session-fixture", "evidence", "--scenario", "v2", "--data", "/data"))
+        if park:
+            self.operation = "park-evidence-exec"
+        result = nightly.strict_json(self.kube("exec", host["metadata"]["name"], "-c", "daemon", "--", "/session-fixture", "evidence", "--scenario", "v2", "--data", "/data"))
+        self.operation = previous
+        return result
 
     def read_placement(self):
         host = self.component("host")
