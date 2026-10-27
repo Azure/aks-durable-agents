@@ -272,6 +272,45 @@ func TestPlannedSlotsNoMigration(t *testing.T) {
 	}
 }
 
+// SQLite TEXT affinity does not coerce BLOBs; Go string scanning must not hide that difference.
+func TestPlannedSlotsRejectBlobIdentity(t *testing.T) {
+	for _, column := range []string{"call_slot", "request_hash"} {
+		t.Run(column, func(t *testing.T) {
+			path, ledger := plannedPolicyConfig(t)
+			p := openPlannedPolicy(t, path)
+			var sends atomic.Int32
+			s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sends.Add(1)
+				io.WriteString(w, usageResponse)
+			}))
+			defer s.Close()
+			target := s.URL + "/openai/v1/chat/completions"
+			if err := boundedSend(slotClient(t, p, "case/1:repeat/1", s), target, chat("same", false)); err != nil {
+				t.Fatal(err)
+			}
+			p.Close()
+			db, err := sql.Open("sqlite", ledger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Column names are the fixed test table above, never external input.
+			if _, err = db.Exec("UPDATE model_attempts SET " + column + "=CAST(" + column + " AS BLOB)"); err != nil {
+				t.Fatal(err)
+			}
+			db.Close()
+			p, err = OpenPolicyFile(path)
+			if err == nil {
+				defer p.Close()
+				reuseErr := boundedSend(slotClient(t, p, "case/1:repeat/1", s), target, chat("same", false))
+				t.Fatalf("BLOB identity accepted; reuse error=%v sends=%d", reuseErr, sends.Load())
+			}
+			if sends.Load() != 1 {
+				t.Fatal("altered identity dispatched")
+			}
+		})
+	}
+}
+
 func TestPlannedSlotsRefuseAlteredState(t *testing.T) {
 	for _, stmt := range []string{
 		`CREATE INDEX extra ON model_attempts(request_hash)`,

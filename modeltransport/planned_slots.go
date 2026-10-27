@@ -74,14 +74,15 @@ func validatePlannedLedger(conn *sql.Conn, slots []string) error {
 	if err != nil || len(expected) != 0 || !indexSeen {
 		return ledgerError()
 	}
-	rows, err = conn.QueryContext(ctx, "SELECT call_slot,request_hash FROM model_attempts")
+	rows, err = conn.QueryContext(ctx, "SELECT call_slot,request_hash,typeof(call_slot),typeof(request_hash) FROM model_attempts")
 	if err != nil {
 		return ledgerError()
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var slot, hash string
-		if err = rows.Scan(&slot, &hash); err != nil || !slices.Contains(slots, slot) || len(hash) != 64 {
+		var slot, hash, slotType, hashType string
+		// Scanning BLOBs into strings erases SQLite's distinct uniqueness domain.
+		if err = rows.Scan(&slot, &hash, &slotType, &hashType); err != nil || slotType != "text" || hashType != "text" || !slices.Contains(slots, slot) || len(hash) != 64 {
 			return ledgerError()
 		}
 		for _, c := range hash {
