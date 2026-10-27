@@ -11,6 +11,8 @@ import (
 var schemaV1 = []struct{ name, sql string }{
 	{"metadata", `CREATE TABLE metadata(id INTEGER PRIMARY KEY CHECK(id=1),schema_version INTEGER NOT NULL,store_id TEXT NOT NULL,lineage TEXT NOT NULL,binding TEXT NOT NULL)`},
 	{"approvals", `CREATE TABLE approvals(id TEXT PRIMARY KEY,slot TEXT NOT NULL,session_uid TEXT NOT NULL,request_key TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('active','abandoned')),record TEXT NOT NULL)`},
+	{"approval_history_slot", `CREATE INDEX approval_history_slot ON approvals(slot)`},
+	{"approval_history_key", `CREATE INDEX approval_history_key ON approvals(session_uid,request_key)`},
 	{"one_active_slot", `CREATE UNIQUE INDEX one_active_slot ON approvals(slot) WHERE state='active'`},
 	{"one_active_key", `CREATE UNIQUE INDEX one_active_key ON approvals(session_uid,request_key) WHERE state='active'`},
 	{"intents", `CREATE TABLE intents(slot TEXT PRIMARY KEY,approval_id TEXT NOT NULL UNIQUE,session_uid TEXT NOT NULL,request_key TEXT NOT NULL,operation_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('unknown','succeeded','failed')),record TEXT NOT NULL,UNIQUE(session_uid,request_key),FOREIGN KEY(approval_id) REFERENCES approvals(id))`},

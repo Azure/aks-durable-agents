@@ -394,6 +394,36 @@ func TestIntentProcessCrash(t *testing.T) {
 	}
 }
 
+// Full-history binding checks must not scan unrelated retained approvals while
+// holding the store's writer transaction. Partial active indexes cannot help.
+func TestApprovalHistoryLookupAvoidsFullScan(t *testing.T) {
+	s := testStore(t)
+	a := prepared(t, s)
+	rows, err := s.db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN SELECT record FROM approvals WHERE slot=? OR (session_uid=? AND request_key=?)", a.Call.slot(), a.Call.SessionUID, a.Call.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	searches := 0
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		t.Log(detail)
+		if strings.Contains(detail, "SCAN approvals") {
+			t.Error("full-history lookup scans unrelated retained approvals")
+		}
+		if strings.Contains(detail, "SEARCH approvals") {
+			searches++
+		}
+	}
+	if rows.Err() != nil || searches != 2 {
+		t.Fatalf("expected indexed searches for both alternatives, got %d: %v", searches, rows.Err())
+	}
+}
+
 func TestStoreRejectsInconsistentRecordProjection(t *testing.T) {
 	s := testStore(t)
 	a := committed(t, s)
