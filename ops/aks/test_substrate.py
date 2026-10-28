@@ -393,6 +393,16 @@ class InstallerTests(RendererTests):
                 self.assertTrue(any("workerpool/substrate-smoke" in a for a in commands[:first_cleanup]))
                 self.assertEqual(sum(any("delete" in a and "atespace" in a for a in [c]) for c in commands), 1)
 
+    def test_successful_smoke_interrupted_during_cleanup_is_labelled_cleanup(self):
+        for resource in ("pod/counter-probe", "workerpool/substrate-smoke"):
+            with self.subTest(resource=resource):
+                self.boundary = Boundary()
+                self.boundary.error = KeyboardInterrupt()
+                status = self.failed(fail=lambda args: "delete" in args and resource in args)
+                self.assertEqual(self.evidence("native-proof.json")["status"], "nativePassed")
+                self.assertEqual((status["failedStep"], status["resourceKind"], status["resourceName"]),
+                                 ("cleanup", "other", "other"))
+
     def test_interruption_and_exhausted_deadline_make_no_diagnostic_reads(self):
         class Expiring:
             expired = False

@@ -257,7 +257,7 @@ def rollout_state(kind, controller):
 
 def container_facts(pod):
     """Closed container states, bounded exit codes and the existing reason projection for one pod."""
-    status, states, exits = pod.get("status", {}), set(), set()
+    status, states, exits, terminated = pod.get("status", {}), set(), set(), False
     for field in ("containerStatuses", "initContainerStatuses"):
         containers = status.get(field, [])
         require(type(containers) is list)
@@ -265,12 +265,13 @@ def container_facts(pod):
             state, last = container.get("state", {}), container.get("lastState", {})
             states.update(key for key in rollout_schema.CONTAINER_STATES if key in state)
             for source in (state.get("terminated"), last.get("terminated")):
+                terminated |= type(source) is dict
                 code = source.get("exitCode") if type(source) is dict else None
                 if type(code) is int and 0 <= code <= 255:
                     exits.add(code)
     reasons = pod_reason_codes(pod)
     # "other" alone is the rollout projection's no-observation sentinel, not an install reason.
-    return states, (set() if reasons == {"other"} and not states & {"waiting", "terminated"} else reasons), exits
+    return states, (set() if reasons == {"other"} and not terminated and "waiting" not in states else reasons), exits
 
 
 def install_observations(kind, name, read):

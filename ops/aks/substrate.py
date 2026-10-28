@@ -397,6 +397,8 @@ def run_smoke_cleanup(client, actions, primary):
             client.cleanup_state[name].update(status="failed", errorType=type(error).__name__)
             if isinstance(error, (KeyboardInterrupt, SystemExit)):
                 client.cleanup_interrupted = True
+                if primary is None:
+                    client.at("cleanup")
                 raise
             failed = True
     if failed and primary is None:

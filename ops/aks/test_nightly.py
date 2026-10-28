@@ -424,6 +424,13 @@ class InstallObservationTests(unittest.TestCase):
         with self.assertRaises(self.n.SafeFailure):
             self.n.install_observations("WorkerPool", "substrate-smoke", self.reader(responses))
 
+    def test_running_container_preserves_previous_unknown_termination_reason(self):
+        pod = {"status": {"containerStatuses": [{"state": {"running": {}},
+            "lastState": {"terminated": {"reason": "Error", "exitCode": 7}}}]}}
+        self.assertEqual(self.n.container_facts(pod), ({"running"}, {"other"}, {7}))
+        pod["status"]["containerStatuses"][0]["lastState"] = {}
+        self.assertEqual(self.n.container_facts(pod), ({"running"}, set(), set()))
+
     def test_rollout_enum_requires_current_generation_and_integer_status(self):
         def deployment(**status):
             return {"metadata": {"generation": 3}, "spec": {"replicas": 2}, "status": status}
