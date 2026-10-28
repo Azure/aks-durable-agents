@@ -26,6 +26,9 @@ NETWORK = [{"phase": p, "case": c, "stage": s, "passed": True}
 TIMINGS = {"version": 1, "phases": {"preflight": 0, "replay": 2.5}, "totalSeconds": 3}
 DIAGNOSTICS = {"version": 1, "phase": "install", "operation": "fixture-init-wait",
                "reason": "command-timeout", "cleanup": "succeeded"}
+INSTALL = {"version": 1, "failedStep": "workload-rollout", "resourceKind": "Deployment", "resourceName": "ate-api-server",
+           "eventReasons": ["BackOff", "FailedScheduling"], "containerReasons": ["ImagePullBackOff"],
+           "containerStates": ["terminated", "waiting"], "exitCodes": [1, 137], "rolloutStatus": "incomplete"}
 AKS_TITLE = "AKS e2e regression"
 AKS_MARKER = "<!-- aks-e2e-tracking -->"
 AKS_START, AKS_END = "<!-- aks-e2e-status:start -->", "<!-- aks-e2e-status:end -->"
@@ -171,6 +174,48 @@ class AksCollectorTests(unittest.TestCase):
                               self.summary.read_text())
                 self.assertNotIn(SECRET, self.output())
                 self.reset_destination()
+
+    def test_install_status_is_reserialized_only_for_substrate_install_failures(self):
+        path, substrate = self.ws / "install-status.json", ("--profile", "aks-substrate")
+        for result in ("failure", "cancelled"):
+            (self.ws / "diagnostics.json").write_text(json.dumps(DIAGNOSTICS))
+            path.write_text(json.dumps(INSTALL, indent=4))
+            self.assertEqual(self.collect(result=result, extra=substrate).returncode, 0)
+            self.assertEqual((self.dest / path.name).read_text(), json.dumps(INSTALL, sort_keys=True) + "\n")
+            text = self.summary.read_text()
+            for line in ("Install step: workload-rollout", "Install resource: Deployment/ate-api-server",
+                         "Event reasons: BackOff, FailedScheduling", "Container reasons: ImagePullBackOff",
+                         "Container states: terminated, waiting", "Exit codes: 1, 137", "Install rollout: incomplete",
+                         "Underlying cause: not determined"):
+                self.assertIn("- " + line + "\n", text)
+            self.reset_destination()
+        for result, profile, phase in (("success", substrate, "install"), ("failure", (), "install"),
+                                       ("failure", substrate, "park"), ("failure", substrate, None)):
+            diagnostic = self.ws / "diagnostics.json"
+            diagnostic.write_text(json.dumps(dict(DIAGNOSTICS, phase=phase))) if phase else diagnostic.unlink()
+            self.collect(result=result, extra=profile)
+            self.assertFalse((self.dest / path.name).exists(), (result, profile, phase))
+            self.assertNotIn("Install step", self.summary.read_text())
+            self.reset_destination()
+
+    def test_unsafe_install_status_is_unavailable_and_cannot_hide_valid_rollout_panel(self):
+        path, rollout = self.ws / "install-status.json", self.ws / "rollout-status.json"
+        report = {"version": 1, "controllerKind": "DaemonSet", "controllerName": "nightly-profile",
+                  "podReasons": ["ImagePullBackOff"], "readyNodes": 0, "desiredNodes": 2}
+        (self.ws / "diagnostics.json").write_text(json.dumps(dict(DIAGNOSTICS, operation="profile-rollout")))
+        rollout.write_text(json.dumps(report))
+        for raw in (None, SECRET, json.dumps(dict(INSTALL, message=SECRET)), json.dumps(dict(INSTALL, resourceName=SECRET)),
+                    json.dumps(INSTALL)[:-1] + ',"version":1}', b" " * (16 * 1024 + 1)):
+            if raw is not None:
+                path.write_bytes(raw if isinstance(raw, bytes) else raw.encode())
+            self.assertEqual(self.collect(result="failure", extra=("--profile", "aks-substrate")).returncode, 0)
+            self.assertFalse((self.dest / path.name).exists())
+            text = self.summary.read_text()
+            self.assertIn("- Install status: unavailable\n", text)
+            self.assertIn("- Controller: DaemonSet/nightly-profile\n", text)
+            self.assertTrue((self.dest / rollout.name).exists())
+            self.assertNotIn(SECRET, self.output())
+            self.reset_destination()
 
     def test_rollout_missing_unsafe_and_mismatched_status_never_copied(self):
         path = self.ws / "rollout-status.json"

@@ -12,7 +12,7 @@ import unittest
 import uuid
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import substrate
 import yaml
@@ -223,13 +223,14 @@ class Boundary:
         self.request = 0
         self.fail = None
         self.trust_ready = False
+        self.fail_input, self.error, self.reads = None, substrate.cleanup.CloudError("external boundary failure"), {}
 
     def __call__(self, args, *, timeout, input=None, stderr_sink=None):
         if stderr_sink:
             stderr_sink(b"")
         self.calls.append((args, input, timeout))
-        if self.fail and self.fail(args):
-            raise substrate.cleanup.CloudError("external boundary failure")
+        if (self.fail and self.fail(args)) or (self.fail_input and self.fail_input(args, input)):
+            raise self.error
         if args[0] == "git":
             return COMMIT.encode() if "rev-parse" in args else b""
         if args[:3] == ["go", "version", "-m"]:
@@ -259,6 +260,8 @@ class Boundary:
             return json.dumps({"resources": [{"name": r} for r in resources]}).encode()
         if "get" in args:
             target = args[args.index("get") + 1]
+            if target in self.reads:
+                return self.reads[target] if isinstance(self.reads[target], bytes) else json.dumps(self.reads[target]).encode()
             if target == "nodes":
                 return json.dumps({"items": [{"metadata": {"name": "node-a", "labels": {"kubernetes.io/os": "linux", "kubernetes.io/arch": "amd64"}}, "spec": {}, "status": {"conditions": [{"type": "Ready", "status": "True" if self.node_ready else "False"}], "nodeInfo": {"kubeletVersion": self.node_version}}}]}).encode()
             if target == "storageclass/managed-csi":
@@ -293,12 +296,153 @@ class InstallerTests(RendererTests):
         self.cloud = Cloud(self.env)
         self.clock = substrate.lifecycle.Deadline(1000, now=lambda: 1001, monotonic=lambda: 1)
 
-    def install(self, run=None):
+    def install(self, run=None, **options):
         self.args.evidence_dir = self.root / ("evidence-" + uuid.uuid4().hex)
-        return substrate.install(self.args, self.render(), self.images, self.env, run=run or self.boundary, cloud=self.cloud, clock=self.clock, sleep=lambda _: None)
+        return substrate.install(self.args, self.render(), self.images, self.env, run=run or self.boundary, cloud=self.cloud, clock=self.clock, sleep=lambda _: None, **options)
+
+    def failed(self, fail=None, fail_input=None, **options):
+        status = {}
+        self.boundary.fail, self.boundary.fail_input = fail, fail_input
+        with self.assertRaises((ValueError, substrate.cleanup.CloudError, KeyboardInterrupt)):
+            self.install(status=status, **options)
+        return status
+
+    @staticmethod
+    def created(kind, name=None):
+        def match(args, input):
+            doc = json.loads(input) if input and "create" in args and "kubectl" in args[0] else {}
+            return doc.get("kind") == kind and name in (None, doc["metadata"]["name"])
+        return match
 
     def evidence(self, name):
         return json.loads((self.args.evidence_dir / name).read_text())
+
+    def workload_reads(self, name="ate-api-server"):
+        labels = {"app": name}
+        owner = {"apiVersion": "apps/v1", "kind": "Deployment", "name": name, "uid": "d-uid", "controller": True}
+        rs = {"apiVersion": "apps/v1", "kind": "ReplicaSet", "metadata": {"name": "rs-private", "uid": "rs-uid", "ownerReferences": [owner]}}
+        pod = {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "pod-private", "uid": "p-uid", "labels": labels,
+               "ownerReferences": [{"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "rs-private", "uid": "rs-uid", "controller": True}]},
+               "status": {"containerStatuses": [{"state": {"waiting": {"reason": "ImagePullBackOff", "message": "PRIVATE-message"}}, "lastState": {}}]}}
+        event = {"type": "Warning", "reason": "BackOff", "message": "PRIVATE-message", "involvedObject": {"uid": "p-uid"}}
+        return {"deployment/" + name: {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": name, "uid": "d-uid", "generation": 1},
+                "spec": {"replicas": 1, "selector": {"matchLabels": labels}}, "status": {"observedGeneration": 1, "readyReplicas": 0}},
+                "replicasets": {"apiVersion": "apps/v1", "kind": "ReplicaSetList", "items": [rs]},
+                "pods": {"apiVersion": "v1", "kind": "PodList", "items": [pod]},
+                "events": {"apiVersion": "v1", "kind": "EventList", "items": [event]}}
+
+    def test_every_install_step_records_one_closed_failed_step_and_resource(self):
+        import proof
+        calls = {"n": 0}
+        def second_trust_read(args):
+            calls["n"] += "clustertrustbundles" in args
+            return "clustertrustbundles" in args and calls["n"] == 2
+        sandbox_delete = lambda args: Path(args[0]).name == "kubectl-ate" and "delete" in args and "actor-template" in args
+        cases = [
+            ("source", dict(fail=lambda a: a[0] == "git" and "rev-parse" in a), ("source", "other", "other")),
+            ("tools", dict(fail=lambda a: a[:3] == ["go", "version", "-m"]), ("tools", "other", "other")),
+            ("preflight", dict(fail=lambda a: "--raw" in a), ("preflight", "other", "other")),
+            ("foundation", dict(fail_input=self.created("Namespace", "ate-system")), ("foundation", "other", "other")),
+            ("foundation-wait", dict(fail=lambda a: "wait" in a and "crd/workerpools.ate.dev" in a), ("foundation", "other", "other")),
+            ("manifest", dict(fail_input=self.created("ClusterRole")), ("manifest", "other", "other")),
+            *((name, dict(fail=lambda a, name=name: Path(a[0]).name == "ate-setup" and "create" in a and name in a), ("setup-" + name, "other", "other"))
+              for name in substrate.SETUP),
+            ("secret", dict(fail_input=self.created("Secret")), ("secret", "other", "other")),
+            ("workload-create", dict(fail_input=self.created("Deployment", "ate-api-server")), ("workload-create", "Deployment", "ate-api-server")),
+            ("daemonset", dict(fail=lambda a: "rollout" in a and "daemonset/atelet" in a), ("workload-rollout", "DaemonSet", "atelet")),
+            ("statefulset", dict(fail=lambda a: "rollout" in a and "statefulset/postgres" in a), ("workload-rollout", "StatefulSet", "postgres")),
+            ("trust", dict(fail=second_trust_read), ("trust", "Deployment", "podcertificate-controller")),
+            ("database", dict(fail=lambda a: "psql" in a), ("database", "StatefulSet", "postgres")),
+            ("workerpool", dict(fail=lambda a: "wait" in a and "workerpool/substrate-smoke" in a), ("workerpool", "WorkerPool", "substrate-smoke")),
+            ("smoke", dict(fail=lambda a: Path(a[0]).name == "kubectl-ate" and "resume" in a), ("smoke", "WorkerPool", "substrate-smoke")),
+            ("cleanup-only", dict(fail=sandbox_delete), ("cleanup", "other", "other"))]
+        for label, options, (step, kind, name) in cases:
+            with self.subTest(label):
+                calls["n"], self.boundary = 0, Boundary()
+                status = self.failed(**options)
+                self.assertEqual((status["failedStep"], status["resourceKind"], status["resourceName"]), (step, kind, name))
+                self.assertEqual(status, proof.validate_install_status(status))
+                self.assertEqual((status["eventReasons"], status["containerStates"], status["rolloutStatus"]), ([], [], "unknown"))
+        self.boundary = Boundary()
+        status = {}
+        self.install(status=status)
+        self.assertEqual(status, {})
+
+    def test_workload_failure_reads_scoped_structured_status_within_five_seconds(self):
+        self.boundary.reads = self.workload_reads()
+        status = self.failed(fail=lambda a: "rollout" in a and "deployment/ate-api-server" in a)
+        self.assertEqual({k: v for k, v in status.items() if k not in ("version", "failedStep", "resourceKind", "resourceName")}, {
+            "eventReasons": ["BackOff"], "containerReasons": ["ImagePullBackOff"], "containerStates": ["waiting"],
+            "exitCodes": [], "rolloutStatus": "incomplete"})
+        reads = [(a, t) for a, _, t in self.boundary.calls if "get" in a and any(x.startswith("--request-timeout=") for x in a)]
+        self.assertEqual([a[a.index("get") + 1] for a, _ in reads], ["deployment/ate-api-server", "replicasets", "pods", "events"])
+        for args, timeout in reads:
+            self.assertEqual((args[args.index("--context") + 1], args[args.index("-n") + 1]), ("selected", "ate-system"))
+            self.assertTrue(0 < timeout <= 5 and float(next(x for x in args if x.startswith("--request-timeout="))[18:-1]) <= 5)
+        self.assertNotIn("PRIVATE", json.dumps(status))
+
+    def test_capture_precedes_cleanup_and_first_failure_survives_cleanup_and_capture_failures(self):
+        for label, reads in (("valid", self.workload_reads("substrate-smoke")), ("malformed", {"workerpool/substrate-smoke": b"not-json"})):
+            with self.subTest(label):
+                self.boundary = Boundary()
+                self.boundary.reads = reads
+                status = self.failed(fail=lambda a: ("resume" in a or "delete" in a) and a[0] != "git")
+                self.assertEqual((status["failedStep"], status["resourceName"]), ("smoke", "substrate-smoke"))
+                commands = [a for a, _, _ in self.boundary.calls]
+                first_cleanup = next(i for i, a in enumerate(commands) if "delete" in a)
+                self.assertTrue(any("workerpool/substrate-smoke" in a for a in commands[:first_cleanup]))
+                self.assertEqual(sum(any("delete" in a and "atespace" in a for a in [c]) for c in commands), 1)
+
+    def test_successful_smoke_interrupted_during_cleanup_is_labelled_cleanup(self):
+        for resource in ("pod/counter-probe", "workerpool/substrate-smoke"):
+            with self.subTest(resource=resource):
+                self.boundary = Boundary()
+                self.boundary.error = KeyboardInterrupt()
+                status = self.failed(fail=lambda args: "delete" in args and resource in args)
+                self.assertEqual(self.evidence("native-proof.json")["status"], "nativePassed")
+                self.assertEqual((status["failedStep"], status["resourceKind"], status["resourceName"]),
+                                 ("cleanup", "other", "other"))
+
+    def test_interruption_and_exhausted_deadline_make_no_diagnostic_reads(self):
+        class Expiring:
+            expired = False
+            def remaining(self, cleanup=False):
+                if self.expired:
+                    raise substrate.cleanup.CloudError("run deadline exhausted")
+                return 100
+            now = staticmethod(lambda: 1001)
+        for label, error in (("interrupt", KeyboardInterrupt()), ("exit", SystemExit()), ("deadline", None)):
+            with self.subTest(label):
+                self.boundary, self.clock = Boundary(), Expiring()
+                self.boundary.reads = self.workload_reads()
+                def fail(args):
+                    if "rollout" in args and "deployment/ate-api-server" in args:
+                        self.clock.expired = error is None
+                        return True
+                self.boundary.error = error or self.boundary.error
+                status = {}
+                with self.assertRaises((KeyboardInterrupt, SystemExit, substrate.cleanup.CloudError)):
+                    self.boundary.fail = fail
+                    self.install(status=status)
+                self.assertEqual((status["failedStep"], status["resourceName"], status["rolloutStatus"], status["containerStates"]),
+                                 ("workload-rollout", "ate-api-server", "unknown", []))
+                self.assertFalse([a for a, _, _ in self.boundary.calls if "get" in a and "pods" in a])
+
+    def test_standalone_installer_stays_failed_closed_and_publishes_nothing(self):
+        client = substrate.Client(self.args, self.clock, Mock(), Mock())
+        with patch("nightly.record_install_failure") as capture:
+            client.at("workload-rollout", "Deployment", "ate-api-server")
+            client.record(ValueError("PRIVATE-message"))
+        capture.assert_not_called()
+        client.run.assert_not_called()
+        mapping = self.root / "images.json"
+        mapping.write_text(json.dumps(self.images))
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(substrate, "install", side_effect=ValueError("PRIVATE-message")), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = substrate.main(["--source", str(self.root), "--image-map", str(mapping), "--nodes", "node-a",
+                                     "--apply", "--evidence-dir", str(self.args.evidence_dir)])
+        self.assertEqual((status, stdout.getvalue(), stderr.getvalue()), (1, "", '{"status":"failed-closed"}\n'))
 
     def test_probe_sigterm_exits_zero_and_only_probe_has_short_grace(self):
         probe = substrate.probe_pod({"probe": PIN}, ["node-a"])

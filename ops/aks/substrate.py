@@ -188,12 +188,29 @@ def render(source, mapping, nodes, *, verify=True, router_host=None):
 
 
 class Client:
-    def __init__(self, args, clock, run, evidence):
+    def __init__(self, args, clock, run, evidence, status=None):
         self.args, self.clock, self.run, self.evidence = args, clock, run, evidence
+        # Caller-owned classified first-failure snapshot; never exception text, argv or API names.
+        self.status, self.where = status, ("other", "other", "other")
         self.native_result = {"status": "notReached"}
         self.cleanup_interrupted = False
         self.cleanup_state = {name: {"resource": name, "status": "notReached"}
                               for name in ("probe", "actor", "actor-template", "atespace", "workerpool", "namespace")}
+
+    def at(self, step, kind="other", name="other"):
+        self.where = (step, kind, name)
+
+    def record(self, error):
+        # Standalone installs have no public consumer; do not spend their deadline on unused reads.
+        if self.status is None:
+            return
+        # The first classified failure wins; capture precedes cleanup and never replaces the error.
+        try:
+            import nightly
+            nightly.record_install_failure(self.status, *self.where, error,
+                lambda args, namespace, limit: self.k(*args, "-n", namespace, limit=limit), self.clock.remaining)
+        except Exception:  # noqa: BLE001, S110 — optional diagnostics cannot mask the installer failure.
+            pass
 
     def save(self, name, value):
         # Evidence errors must not mask a primary failure or skip owned cleanup.
@@ -380,14 +397,18 @@ def run_smoke_cleanup(client, actions, primary):
             client.cleanup_state[name].update(status="failed", errorType=type(error).__name__)
             if isinstance(error, (KeyboardInterrupt, SystemExit)):
                 client.cleanup_interrupted = True
+                if primary is None:
+                    client.at("cleanup")
                 raise
             failed = True
     if failed and primary is None:
+        client.at("cleanup")
         raise cleanup.CloudError("smoke cleanup incomplete; caller must tear down owned cluster")
 
 
 def smoke(client, bundle, images, nodes):
     actions, primary = [], None
+    client.at("smoke", "WorkerPool", SMOKE)
     try:
         actions.append(("atespace", lambda: client.ate("delete", "atespace", SMOKE)))
         client.ate("create", "atespace", SMOKE)
@@ -418,6 +439,7 @@ def smoke(client, bundle, images, nodes):
         return {**proof, "smokeCleanup": "passed"}
     except BaseException as error:
         primary = error
+        client.record(error)
         client.native_result = {"status": "failed", "errorType": type(error).__name__}
         client.save("native-result.json", client.native_result)
         raise
@@ -425,7 +447,7 @@ def smoke(client, bundle, images, nodes):
         run_smoke_cleanup(client, reversed(actions), primary)
 
 
-def install(args, bundle, mapping, env, *, run=lifecycle.command, cloud=None, clock=None, sleep=time.sleep):
+def install(args, bundle, mapping, env, *, run=lifecycle.command, cloud=None, clock=None, sleep=time.sleep, status=None):
     config = apply_configuration(env)
     clock = clock or lifecycle.Deadline(env["AKS_STARTED_EPOCH"])
     clock.remaining()
@@ -438,9 +460,10 @@ def install(args, bundle, mapping, env, *, run=lifecycle.command, cloud=None, cl
     if getattr(args, "evidence_dir", None) is None:
         raise ValueError("explicit fresh private evidence directory required")
     evidence = Evidence(args.evidence_dir, run=run)
-    client = Client(args, clock, evidence.command, evidence)
+    client = Client(args, clock, evidence.command, evidence, status)
     result, primary = {"status": "failed"}, None
     try:
+        client.at("source")
         verify_source(args.source, run=lambda argv, *, timeout: client.call(*argv, limit=timeout))
         if bundle is None:
             bundle = render(args.source, mapping, nodes, verify=False)
@@ -449,6 +472,7 @@ def install(args, bundle, mapping, env, *, run=lifecycle.command, cloud=None, cl
         return proof
     except BaseException as error:
         primary = error
+        client.record(error)
         result["errorType"] = type(error).__name__
         raise
     finally:
@@ -466,34 +490,43 @@ def install(args, bundle, mapping, env, *, run=lifecycle.command, cloud=None, cl
 
 def install_runtime(args, bundle, images, nodes, client, config, cloud, sleep):
     clock = client.clock
+    client.at("tools")
     verify_tools(client)
+    client.at("preflight")
     preflight(config, cloud, client, bundle, nodes)
     docs = bundle["manifests"]
     foundations = [d for d in docs if d["kind"] in ("Namespace", "CustomResourceDefinition")]
+    client.at("foundation")
     for doc in foundations:
         client.create(doc)
     for doc in foundations:
         if doc["kind"] == "CustomResourceDefinition":
             client.k("wait", "--for=condition=Established", "crd/" + doc["metadata"]["name"], "--timeout=60s")
     workloads = ("Deployment", "DaemonSet", "StatefulSet", "Job", "WorkerPool")
+    client.at("manifest")
     for doc in docs:
         if doc not in foundations and doc["kind"] not in workloads:
             client.create(doc)
     with setup_environment(args.source):
         for subcommand in SETUP:
+            client.at("setup-" + subcommand)
             client.call(args.ate_setup, "--no-dev-env", "--kubeconfig", str(args.kubeconfig), "--context", args.context, "create", subcommand)
+    client.at("secret")
     client.create({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "substrate-s3", "namespace": "ate-system"}, "type": "Opaque",
                    "stringData": {"access": secrets.token_hex(16), "secret": secrets.token_urlsafe(32)}})
     for phase in (("podcertificate-controller",), ("postgres", "rustfs", "rustfs-bucket-init"), ("ate-api-server", "ate-controller", "atelet", "atenet-router", "atenet-egress")):
         selected = [d for d in docs if d["kind"] in workloads and d["metadata"]["name"] in phase]
         for doc in selected:
+            client.at("workload-create", doc["kind"], doc["metadata"]["name"])
             client.create(doc)
         for doc in selected:
+            client.at("workload-rollout", doc["kind"], doc["metadata"]["name"])
             if doc["kind"] == "Job":
                 client.k("wait", "--for=condition=Complete", "job/" + doc["metadata"]["name"], "-n", doc["metadata"]["namespace"], "--timeout=180s", limit=185)
             else:
                 client.rollout(doc["kind"].lower(), doc["metadata"]["namespace"], doc["metadata"]["name"])
         if phase[0] == "podcertificate-controller":
+            client.at("trust", "Deployment", phase[0])
             required = {s + ".podcert.ate.dev:identity:primary-bundle" for s in ("podidentity", "servicedns", "postgres")}
             until = time.monotonic() + min(120, clock.remaining())
             while not required <= {b["metadata"]["name"] for b in client.get("clustertrustbundles")["items"]}:
@@ -501,6 +534,7 @@ def install_runtime(args, bundle, images, nodes, client, config, cloud, sleep):
                     raise ValueError("certificate trust not ready")
                 sleep(min(2, clock.remaining()))
         if phase[0] == "postgres":
+            client.at("database", "StatefulSet", "postgres")
             variables = {"schema": "substrate", "owner_role": "substrate_owner", "owner_user": "substrate_owner_user", "owner_password": "",
                          "readwrite_role": "substrate_readwrite", "readwrite_user": "substrate_readwrite_user", "readwrite_password": ""}
             sql = "BEGIN;\n" + (args.source / "pkg/postgressetup/setup.sql").read_text() + "\nCOMMIT;\n"
@@ -510,6 +544,7 @@ def install_runtime(args, bundle, images, nodes, client, config, cloud, sleep):
     primary = None
     try:
         for pool in pools:
+            client.at("workerpool", "WorkerPool", pool["metadata"]["name"])
             client.create(pool)
             # ResumeActor retries assignment conflicts, not an empty pool during rollout.
             client.k("wait", "--for=jsonpath={.status.readyReplicas}=1", "workerpool/" + pool["metadata"]["name"],
@@ -517,6 +552,7 @@ def install_runtime(args, bundle, images, nodes, client, config, cloud, sleep):
         return smoke(client, bundle, images, nodes)
     except BaseException as error:
         primary = error
+        client.record(error)
         raise
     finally:
         actions = [(kind, lambda kind=kind: client.k("delete", kind + "/" + SMOKE, "-n", SMOKE, "--ignore-not-found", "--wait=true", "--timeout=30s"))

@@ -148,6 +148,20 @@ def collect_aks(workspace, destination, summary, result, run_url, sha, stage, pr
             (dest / "diagnostics.json").write_text(json.dumps(diagnostics, sort_keys=True, allow_nan=False) + "\n")
             text += (f"- Scenario phase: {diagnostics['phase']}\n- Operation: {diagnostics['operation']}\n"
                      + f"- Reason: {diagnostics['reason']}\n- Source fencing: {diagnostics['cleanup']}\n")
+            if profile == "aks-substrate" and diagnostics["phase"] == "install":
+                try:
+                    install = proof.load_public(workspace, "install-status.json")
+                except (OSError, ValueError, RecursionError):
+                    text += "- Install status: unavailable\n"
+                else:
+                    (dest / "install-status.json").write_text(json.dumps(install, sort_keys=True, allow_nan=False) + "\n")
+                    listed = {key: ", ".join(install[key]) or "none" for key in ("eventReasons", "containerReasons", "containerStates")}
+                    text += (f"- Install step: {install['failedStep']}\n"
+                             + f"- Install resource: {install['resourceKind']}/{install['resourceName']}\n"
+                             + f"- Event reasons: {listed['eventReasons']}\n- Container reasons: {listed['containerReasons']}\n"
+                             + f"- Container states: {listed['containerStates']}\n"
+                             + "- Exit codes: " + (", ".join(map(str, install["exitCodes"])) or "none") + "\n"
+                             + f"- Install rollout: {install['rolloutStatus']}\n")
             rollout_kind = {"profile-rollout": "DaemonSet", "deployment-rollout": "Deployment"}.get(diagnostics["operation"])
             if rollout_kind is not None:
                 try:
