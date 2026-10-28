@@ -5,8 +5,8 @@
 `internal/qualification` is an **unwired internal foundation**, not an operational
 qualification service. The host executable does not open this store or expose its
 methods. No RPC accepts a verdict. A separate, unwired native execution seam in
-`internal/agentcontroller` can produce original candidate journals, but durable
-runner-to-store orchestration is not supplied. Tests use host-owned plans, real
+`internal/agentcontroller` produces original candidate journals. Its durable
+factory and `Store.Run` can retain and evaluate a complete no-judge run. Tests use host-owned plans, real
 Sessions controllers and local fake models as well as synthetic fixtures; none
 qualifies a live candidate or deployment.
 
@@ -252,8 +252,63 @@ hostile-UID sandbox. Model labels are not provider attestation.
 keep its Policy and journal backend open until that finishes, then close its own
 resources. Original partial journals remain with their owner; there is no retry,
 recovery adoption, automatic deletion or GC. No host entry point calls this seam;
-durable run ownership, retention/completion and authenticated request handling
-remain unwired. Registration, activation and Ready behavior are unchanged.
+authenticated request handling remains unwired. Durable ownership and evidence
+completion are separate host-only operations below. Registration, activation and Ready behavior are unchanged.
+
+## Durable no-judge orchestration
+
+`Store.Run(ctx, recordID, factory)` starts an admitted record once, then supplies a
+non-authorizing `ExecutionScope` to a trusted host `ExecutorFactory`. The run ID
+hashes store lineage, record ID and lease generation; session IDs additionally
+bind each planned slot. Different records may have identical plan/slot IDs but
+must own different ledgers and journals. The runner compares the executor's
+plan, model labels and complete ordered no-judge inventory before execution. Each
+returned journal is checked against its scope, slot, original anchors, target
+model and input digest and retained before another call. Existing completion
+logic re-verifies the original chains and derives assertions and thresholds; it
+does not accept a pass flag. Wrong answers do not truncate the inventory.
+
+`agentcontroller.NewDurableCandidateExecutor` reconstructs the verified native
+plan and shared reservation, exclusively creates its NEW `Directory` under a
+private parent and owns one Sessions SQLite backend plus one v4 budget Policy.
+Its private version-1 `scope.json` freezes scope, authored/effective model labels
+and the immutable policy snapshot, without credentials. Roots are 0700, database
+and manifest files 0600, including active journal WAL sidecars. Existing roots,
+including partial initialization artifacts, are not adopted or deleted. Close
+cancels/drains execution before closing policy and journal storage.
+
+The host factory must derive the new root deterministically from its configured
+private parent and the scope's 64 lowercase run-ID hex digits, stripping the
+`sha256:` prefix. `ExecutionScopeForRecord` recovers the original scope on status
+readback, including the preceding lease generation fenced by interruption. For
+example the factory sets `Directory = filepath.Join(privateParent,
+strings.TrimPrefix(scope.RunID, "sha256:"))`. Persist the configured parent with
+host configuration. Readback does not construct an executor or adopt a directory.
+
+Terminal repeated calls are readback only. Concurrent Run calls conflict without
+starting another executor. An explicit Run after reopen interrupts an orphaned
+Running record to Incomplete; a retained Verifying intent is re-evaluated without
+calling the factory or model. Open and Read alone neither recover nor dispatch.
+Factory failure after start also ends Incomplete, permanently: no return to
+Admitted. On completion failure a retained Verifying intent is preserved, rather
+than being discarded by blanket interruption. Store.Close gates new runs,
+cancels active ones and waits without holding its database mutex, then releases
+the database and ownership lock.
+
+Partial/error journals and budget ledgers remain in their private run root.
+Completed original record sets are additionally retained as qualification blobs.
+The existing 256 KiB per-blob limit is unchanged: an oversized journal ends
+Incomplete and is not resent. There is no GC, migration, automatic retry or
+execution resumption. Literal filenames containing `?`, `#`, `%` or non-ASCII
+characters are URI-escaped at SQLite connection boundaries, never interpreted as
+caller connection options. Existing ordinary ledger snapshots and schemas remain
+unchanged; old empty ledger artifacts still refuse and are never repaired from a
+guessed prefix filename.
+
+This path is tested with actual verified packages, native controllers, SQLite
+and fake TLS models, not a live deployment. It changes no host entry point,
+registration, chart, activation permission, judge execution, Ready state or
+monetary/token/slot limit.
 
 ## Prerequisites for an operational runner
 
@@ -263,15 +318,14 @@ The following remain separate work, not functionality supplied by this package:
   exact runner renderer/harness/runtime profile matching the intended live target.
 - Durable candidate/live isolation and journal ownership wiring, deny-effects
   dispatch, scoped request/read/service authorization and no service self-approval.
-- Runtime use of the library's planned-call identities and shared run budget,
-  binding each runner call to the prepared semantic slot and frozen target.
+- Authenticated request integration of the host-only execution and budget path.
   Multiple independent per-deployment caps are not one bounded run. Failed or
   unknown calls remain stop conditions, not ordinary assertion failures.
 - Package-derived judge binding provenance, complete judge prompt/rubric contract,
   and verification of the full retained binding before dispatch. The pure budget
   preflight does not close these runner boundaries.
-- Real runner-to-store evidence, current-policy activation integration and
-  separately approved live-model/deployment/restore qualification.
+- Current-policy activation integration and separately approved
+  live-model/deployment/restore qualification.
 
 Until those boundaries are implemented and tested, an internal synthetic pass
 cannot make an unactivated suite eligible on the running host.

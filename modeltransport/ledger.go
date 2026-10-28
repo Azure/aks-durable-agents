@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -82,7 +83,9 @@ func openBudgetLedger(path, snapshot string, maxAttempts, inputLimit int, planne
 	if err != nil {
 		return nil, ledgerError()
 	}
-	db, err := sql.Open("sqlite", path)
+	// LedgerPath is a literal filesystem name, never a caller-supplied DSN.
+	uri := url.URL{Scheme: "file", Path: path}
+	db, err := sql.Open("sqlite", uri.String())
 	if err != nil {
 		return nil, ledgerError()
 	}

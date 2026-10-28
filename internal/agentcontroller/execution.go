@@ -3,7 +3,6 @@ package agentcontroller
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -153,8 +152,7 @@ func (x *CandidateExecutor) Execute(ctx context.Context, slot string) (qualifica
 
 func (x *CandidateExecutor) execute(ctx context.Context, call qualification.BudgetCall) (qualification.ExecutionJournal, error) {
 	slot := call.SlotID
-	data, _ := json.Marshal(struct{ Domain, RunID, SlotID string }{"qualification-candidate-session-v1", x.info.RunID, slot})
-	uid := fmt.Sprintf("candidate-%x", sha256.Sum256(data))
+	uid := qualification.CandidateSessionID(x.info.RunID, slot)
 	log, err := x.config.Journal(uid)
 	if err != nil {
 		return qualification.ExecutionJournal{}, err

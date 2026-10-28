@@ -25,6 +25,13 @@ type BudgetCall struct {
 	Run, JudgeSample                       int
 }
 
+func budgetSlotID(planDigest, caseID, assertionID string, run, sample int) string {
+	return objectDigest("qualification-budget-slot-v1", struct {
+		PlanDigest, CaseID, AssertionID string
+		Run, Sample                     int
+	}{planDigest, caseID, assertionID, run, sample})
+}
+
 type PreparedBudget struct {
 	Config modeltransport.RunConfig
 	Calls  []BudgetCall
@@ -61,10 +68,7 @@ func PrepareRunBudget(r BudgetRequest) (PreparedBudget, error) {
 		return PreparedBudget{}, ErrInvalid
 	}
 	appendCall := func(caseID string, run int, assertionID string, sample int, bindingID string) {
-		id := objectDigest("qualification-budget-slot-v1", struct {
-			PlanDigest, CaseID, AssertionID string
-			Run, Sample                     int
-		}{result.Config.PlanDigest, caseID, assertionID, run, sample})
+		id := budgetSlotID(result.Config.PlanDigest, caseID, assertionID, run, sample)
 		result.Calls = append(result.Calls, BudgetCall{SlotID: id, BindingID: bindingID, CaseID: caseID, AssertionID: assertionID, Run: run, JudgeSample: sample})
 		result.Config.Slots = append(result.Config.Slots, modeltransport.RunSlot{ID: id, BindingID: bindingID})
 	}
