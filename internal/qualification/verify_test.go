@@ -26,8 +26,6 @@ func journalRecords(t *testing.T, execution, input, output string, models ...str
 	events := []api.Event{{Kind: api.EventExecutionStart, ExecutionStart: &api.ExecutionStart{InputCount: &n, Harness: "text", HarnessVersion: "1"}}, {Kind: api.EventInput, Message: api.TextMessage("user", input)}, {Kind: api.EventModelCall, ModelCall: &api.ModelCall{ID: "call", Model: model}}, {Kind: api.EventOutput, Message: api.TextMessage("assistant", output)}, {Kind: api.EventEnd, End: &api.HarnessEnd{State: "COMPLETED"}}}
 	for i, e := range events {
 		e.ExecutionID = execution
-		e.SchemaVersion = 1
-		e.Timestamp = time.Date(2026, 1, 1, 0, 0, i, 0, time.UTC)
 		if _, err := log.Append(int64(i), 0, e); err != nil {
 			t.Fatal(err)
 		}

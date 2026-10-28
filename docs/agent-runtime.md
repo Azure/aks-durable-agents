@@ -65,3 +65,22 @@ Only current matching ACTIVE registrations publish `Registered=True` and
 `servedDigest=packageDigest`; `PackageVerified` alone does not mean runnable.
 Status is last observed admission, not liveness or inference success. No model
 calls are made by reconciliation or status reads. No tools, updates or qualification.
+
+## Unwired native candidate execution
+
+`NewCandidateExecutor` is a separate host-only preparation/execution seam. It
+reuses the verified native renderer, frozen target binding and complete planned
+no-judge inventory, with one shared v4 policy across all repetitions. A private
+journal factory supplies fresh per-slot Sessions logs; no registration, service,
+listener or socket is created. Ordinary serving admission and journals are not
+used for staging. The factory/backing and unique host run ID remain trusted
+caller responsibilities, not filesystem or producer attestation by the adapter.
+
+The executor returns original schema-0 native journals, not pass flags. It stops
+after mechanical failure/cancellation/unknown outcomes and drains active work on
+Close without closing caller-owned Policy/storage. Credentials are explicitly
+injected into host-side modeltransport, never passed to the harness. Isolation is
+logical Session/data separation for the existing tool-free built-in profile, not
+process/pod/network sandboxing. Durable orchestration, retained evidence completion
+and host request wiring remain separate; this seam changes neither Registered nor
+Ready. See the [qualification contract](qualification.md#native-execution-seam).

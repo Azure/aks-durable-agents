@@ -3,10 +3,12 @@
 [Docs index](README.md) · [Host boundaries](host.md)
 
 `internal/qualification` is an **unwired internal foundation**, not an operational
-candidate runner. The host executable does not open this store or expose its
-methods. No RPC accepts a verdict, no suite is loaded, and no model or tool is
-called. Tests use synthetic host-owned plans and Sessions journals; they do not
-qualify a candidate or deployment.
+qualification service. The host executable does not open this store or expose its
+methods. No RPC accepts a verdict. A separate, unwired native execution seam in
+`internal/agentcontroller` can produce original candidate journals, but durable
+runner-to-store orchestration is not supplied. Tests use host-owned plans, real
+Sessions controllers and local fake models as well as synthetic fixtures; none
+qualifies a live candidate or deployment.
 
 ## Trusted inputs and verified references
 
@@ -42,6 +44,15 @@ does not establish those bindings. The
 narrow journal profile requires execution start, one input, one model call, one
 text output, optional usage and a completed end. Tool/approval/lifecycle/error
 records, incomplete executions or alternate payloads cannot pass.
+
+Normal qualifying events must have the native reference host's unset schema tag
+(`0`), as specified by Sessions LOG-4. The former schema-1 normal-event fixtures
+were synthetic, not a supported producer compatibility profile. They are no
+longer eligible; existing record integrity readback does not replace
+`VerifyForActivation`'s current evidence check. No stored records are retagged or
+migrated. LOG-4's `LIFECYCLE_DELETE` marker legitimately carries tag `1` in a
+Sessions journal, but lifecycle/deletion tails are outside this narrow execution
+profile. This is not a blanket rule that mixed tags invalidate a Sessions journal.
 
 Text contains/notContains/RE2 checks are recomputed. Tool-not-called checks require
 the entire tool-free profile. Each judge assertion needs two separate retained
@@ -110,8 +121,9 @@ time is consulted. Returned plans and summaries are independently owned.
 `qualification.ValidatePlan` reuses admission validation without storage or
 schema changes. It reserves worst-case JSON-escaped valid request identities
 alongside the plan, including the existing request/record metadata bounds.
-Preparation does not qualify or activate anything; isolated execution, budgets,
-evidence production and current-policy authorization remain separate work.
+Preparation does not qualify or activate anything. Run-budget preflight and the
+native execution seam below are separate library operations; durable evidence
+orchestration and current-policy authorization remain separate work.
 
 ## Storage and recovery
 
@@ -208,14 +220,49 @@ future runner/record linkage belongs outside that immutable Plan. Creating a
 budget is not qualification, eligibility or authority to send. See the
 [transport budget contract](../modeltransport/README.md#shared-run-budget-library-only-version-4).
 
+## Native execution seam
+
+`agentcontroller.NewCandidateExecutor` takes a verified package, frozen
+expectations and trusted `ExecutionConfig`: an explicit run ID, already-open v4
+Policy, injected model credential, optional transport and private journal factory.
+It reconstructs the native renderer and complete no-judge inventory, then compares
+the entire compiled v4 snapshot to the supplied immutable policy before any
+journal, token or provider I/O. It does not accept a mutable preparation summary
+as executable instructions. Prices are frozen operator inputs, not verified
+provider billing.
+
+`Execute` accepts only the next planned slot. Each repetition uses a fresh,
+run-scoped Session UID, empty journal and actual native harness/controller, with
+the frozen deployment and host-side 25-second model callback. Legitimate identical
+bodies use distinct slots in the same shared ledger. Returned original records,
+head and execution anchors carry no verdict. Mechanical failure, cancellation or
+unknown dispatch stops later calls; completed wrong answers remain observations
+for the qualification evaluator, not an execution short circuit.
+
+The host-owned journal factory must supply candidate backing, never the serving
+store. The adapter checks freshness, not the physical identity of an opaque
+`eventlog.Store`. It creates no registry entry, Sessions service, listener or
+runtime socket and exposes no ordinary Exec/Resume/Fork path. It executes only
+the existing tool-free built-in harness; packages cannot run scripts or select
+credentials/routes. Model credentials stay behind modeltransport. This is logical
+Session/data separation inside the trusted process, not an OS, pod, network or
+hostile-UID sandbox. Model labels are not provider attestation.
+
+`Close` rejects new work, cancels and drains its active execution. The caller must
+keep its Policy and journal backend open until that finishes, then close its own
+resources. Original partial journals remain with their owner; there is no retry,
+recovery adoption, automatic deletion or GC. No host entry point calls this seam;
+durable run ownership, retention/completion and authenticated request handling
+remain unwired. Registration, activation and Ready behavior are unchanged.
+
 ## Prerequisites for an operational runner
 
 The following remain separate work, not functionality supplied by this package:
 
 - Verified immutable artifact handoff and suite-derived complete inventory;
   exact runner renderer/harness/runtime profile matching the intended live target.
-- Candidate/live isolation, deny-effects dispatch, scoped request/read/service
-  authorization and no service self-approval.
+- Durable candidate/live isolation and journal ownership wiring, deny-effects
+  dispatch, scoped request/read/service authorization and no service self-approval.
 - Runtime use of the library's planned-call identities and shared run budget,
   binding each runner call to the prepared semantic slot and frozen target.
   Multiple independent per-deployment caps are not one bounded run. Failed or
