@@ -4,8 +4,22 @@
 and GitHub comment intent/outcome evidence. It is not the
 [decision ledger](decision-ledger.md): that ledger stays non-executing and its
 parallel records must not become native Approve/Resume authority. Neither store
-replaces Sessions' native decision or exact-call checks. This package has no
-host route, credentials or provider-call integration.
+replaces Sessions' native decision or exact-call checks. The store and client
+are not wired into the serving host.
+
+## GitHub client
+
+`NewClient` loads an operator-provided RSA PEM key for one App/installation/repo.
+`Preflight` requests only that repository and Issues read or write, validates the
+returned scope/expiry, and returns in-memory `Access`. Its `GetIssue` and
+`CommentOnIssue` never mint/refresh credentials. The host must preflight before
+recovery and bind access to native evidence; access alone is not approval.
+Requests use only `https://api.github.com`, with no redirects or automatic retry,
+fresh HTTP/1 connections, a 10-second deadline and 1 MiB JSON-body limits.
+A lost/malformed comment response is `ErrUnknownOutcome`, never permission to
+repost. Explicit comment rejections are `ErrGitHubRejected`; failed reads are
+`ErrGitHubRead`. Access unavailable before the issue/comment operation is sent
+is `ErrGitHubAccess`. Tests use fake GitHub and qualify no live App deployment.
 
 ## Evidence and recovery
 
