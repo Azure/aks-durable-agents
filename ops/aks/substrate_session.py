@@ -126,6 +126,7 @@ class SubstrateScenario(nightly.Scenario):
         self.app_attempted, self.space_attempted, self.native_cleanup_passed = False, False, False
         self.session, self.first, self.checkpoint = None, None, None
         self.native_passed = False
+        self.install_status, self.install_where = None, ("other", "other", "other")
 
     def native(self, *args, data=None, cleanup=False):
         with substrate.setup_environment(self.source):
@@ -158,18 +159,34 @@ class SubstrateScenario(nightly.Scenario):
         self.pool, self.template = application_bundle(self.bundle, self.pins["harness"])
 
     def install(self):
+        self.install_status, self.install_where = {}, ("other", "other", "other")
+        try:
+            self.install_steps(self.install_status)
+        except BaseException as error:
+            # Client keeps the first installer snapshot; later exceptions get a fixed enclosing step.
+            nightly.record_install_failure(self.install_status, *self.install_where, error,
+                lambda args, namespace, limit: self.kube(*args, namespace=namespace, limit=limit), lambda: self.deadlines.remaining())
+            raise
+
+    def install_steps(self, status):
         args = SimpleNamespace(source=self.source, nodes=",".join(sorted(self.nodes)), kubeconfig=self.kubeconfig, context=nightly.CONTEXT,
             ate_setup=self.tools / "ate-setup", ate=self.tools / "kubectl-ate", evidence_dir=self.workdir / "installer-evidence")
         # Mirror the original clock; no new start epoch or grace window.
         clock = SimpleNamespace(remaining=self.deadlines.remaining, now=lambda: max(self.deadlines.clock(), self.deadlines.anchor + time.monotonic() - self.deadlines.monotonic))
-        substrate.install(args, self.bundle, self.mapping, self.env, clock=clock)
+        substrate.install(args, self.bundle, self.mapping, self.env, clock=clock, status=status)
+        self.install_where = ("sessions-install", "other", "other")
         super().install()
+        # The Sessions install labels are finished; do not report one for application setup.
+        self.operation = "phase"
+        self.install_where = ("application", "other", "other")
         self.kube("label", "namespace", nightly.NAMESPACE, "ate.dev/api-access=true")
         self.app_attempted = True
         self.create({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": APP, "labels": {"pod-security.kubernetes.io/enforce": "privileged"}}})
         self.create({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": PROBES}})
+        self.install_where = ("application", "WorkerPool", APP)
         self.create(self.pool, namespace=APP)
         self.wait("workerpool/" + APP, "jsonpath={.status.readyReplicas}=1", namespace=APP)
+        self.install_where = ("application", "other", "other")
         self.space_attempted = True
         self.native("create", "atespace", APP)
         self.native("create", "actor-template", "-f", "-", data=json.dumps(self.template).encode())

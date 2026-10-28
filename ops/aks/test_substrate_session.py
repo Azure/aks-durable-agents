@@ -1,19 +1,27 @@
 """Actor variant boundaries. All external execution is synthetic here."""
 import contextlib
 import copy
+import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock, patch
 
+import proof
 import substrate_session as s
 
 P = {"atespace": s.APP, "actor": "session-test", "actorUID": "actor-uid", "templateAtespace": s.APP, "template": "release-notes", "worker": "worker", "namespace": s.APP, "pool": s.APP, "pod": "worker-pod", "podUID": "pod-uid", "node": "node-a", "runtime": "gvisor", "runtimeSchema": "v1", "runtimeDigest": "a" * 64}
 POD = {"metadata": {"uid": "pod-uid", "labels": {"ate.dev/worker-pool": s.APP}}, "spec": {"nodeName": "node-a"}}
 CHECKPOINT = {"version": 1, "actor": "session-test", "uri": "s3://snapshots/held", "memory": False}
 ACTOR: dict[str, Any] = {"metadata": {"atespace": s.APP, "name": "session-test", "uid": "actor-uid"}, "actorTemplate": {"atespace": s.APP, "name": "release-notes"}, "status": {"state": "ACTOR_STATE_SUSPENDED", "snapshots": [{"generation": 1, "fidelity": "SNAPSHOT_FIDELITY_VOLUMES", "durableSnapshot": {"status": "SNAPSHOT_STORAGE_STATUS_COMPLETED", "object": {"snapshotUri": "s3://snapshots/held"}}}]}}
+
+
+def proof_status(step, kind="other", name="other"):
+    return {"version": 1, "failedStep": step, "resourceKind": kind, "resourceName": name, "eventReasons": [],
+            "containerReasons": [], "containerStates": [], "exitCodes": [], "rolloutStatus": "unknown"}
 
 
 class NativeBindingTests(unittest.TestCase):
@@ -72,6 +80,105 @@ class NativeBindingTests(unittest.TestCase):
             adapter.SubstrateScenario.assert_called_once()
             legacy.assert_not_called()
             self.assertEqual(substrate_proof.load_public(public, "proof.json")["profile"], "aks-substrate")
+
+    def install_api(self, native=None, **overrides):
+        api: Any = object.__new__(s.SubstrateScenario)
+        api.source, api.tools, api.kubeconfig, api.workdir, api.env = Path("/s"), Path("/t"), Path("/k"), Path("/w"), {}
+        api.nodes, api.bundle, api.mapping, api.pool, api.template = {"node-a"}, {}, {}, {"kind": "WorkerPool"}, {"containers": [], "workerSelector": {}}
+        api.deadlines, api.operation, api.install_status = SimpleNamespace(remaining=lambda cleanup=False: 100), "phase", None
+        api.create, api.wait, api.native, api.kube = Mock(), Mock(), Mock(return_value=b"{}"), Mock(return_value=b"not-json")
+        for name, value in overrides.items():
+            setattr(api, name, value)
+        return api
+
+    def test_later_install_exceptions_keep_one_closed_step_and_reset_stale_operation(self):
+        def native_fails(*args, **kwargs):
+            if args[0] == "create" and args[1] == "atespace":
+                raise ValueError("PRIVATE-message")
+            return b"{}"
+        def wait_fails(resource, *args, **kwargs):
+            raise ValueError("PRIVATE-message")
+        def client_recorded(*args, **kwargs):
+            kwargs["status"].update(proof_status("workload-rollout", "Deployment", "ate-api-server"))
+            raise ValueError("PRIVATE-message")
+        def stale(api):
+            def install(self):
+                api.operation = "fixture-init-remove"
+            return install
+        cases = [
+            ("recorded", {"substrate": client_recorded}, ("workload-rollout", "Deployment", "ate-api-server"), None),
+            ("unrecorded", {"substrate": ValueError("PRIVATE-message")}, ("other", "other", "other"), None),
+            ("sessions", {"base": ValueError("PRIVATE-message")}, ("sessions-install", "other", "other"), None),
+            ("namespace", {"create": ValueError("PRIVATE-message")}, ("application", "other", "other"), "phase"),
+            ("pool", {"wait": wait_fails}, ("application", "WorkerPool", s.APP), "phase"),
+            ("atespace", {"native": native_fails}, ("application", "other", "other"), "phase"),
+            ("template-drift", {"drift": True}, ("application", "other", "other"), "phase")]
+        for label, failure, expected, operation in cases:
+            with self.subTest(label):
+                api = self.install_api()
+                if "create" in failure:
+                    api.create.side_effect = failure["create"]
+                if "wait" in failure:
+                    api.wait.side_effect = failure["wait"]
+                if "native" in failure:
+                    api.native.side_effect = failure["native"]
+                if failure.get("drift"):
+                    api.native.return_value = b'{"containers":[{"name":"drift"}],"workerSelector":{}}'
+                with patch.object(s.substrate, "install", side_effect=failure.get("substrate")), \
+                        patch.object(s.nightly.Scenario, "install", autospec=True, side_effect=failure.get("base") or stale(api)), \
+                        self.assertRaises(ValueError):
+                    api.install()
+                self.assertEqual((api.install_status["failedStep"], api.install_status["resourceKind"], api.install_status["resourceName"]), expected)
+                self.assertEqual(api.install_status, proof.validate_install_status(api.install_status))
+                self.assertNotIn("PRIVATE", json.dumps(api.install_status))
+                if operation:
+                    self.assertEqual(api.operation, operation)
+        api = self.install_api()
+        with patch.object(s.substrate, "install"), patch.object(s.nightly.Scenario, "install", autospec=True), \
+                patch.object(s.nightly, "strict_json", return_value={"containers": [], "workerSelector": {}}):
+            api.install()
+        self.assertEqual(api.install_status, {})
+
+    def test_executor_cancellation_skips_install_reads(self):
+        api, commands = self.install_api(), []
+        with tempfile.TemporaryDirectory() as directory:
+            api.deadlines = s.nightly.Deadlines(time.time() + 600, time.time() + 900)
+            api.executor = s.nightly.Executor(Path(directory), {}, api.deadlines)
+            api.prefix = ["kubectl", "--kubeconfig", "/k", "--context", "test", "--namespace", "agents"]
+            api.kube = s.nightly.Scenario.kube.__get__(api)
+            del api.wait  # Exercise the real wait -> executor -> SafeFailure translation.
+
+            def spawn(argv, **kwargs):
+                commands.append(argv)
+                process = Mock(returncode=0)
+                if "wait" in argv:
+                    process.communicate.side_effect = KeyboardInterrupt()
+                return process
+
+            with patch.object(s.nightly.subprocess, "Popen", side_effect=spawn), patch.object(api.executor, "kill"), \
+                    patch.object(s.substrate, "install"), patch.object(s.nightly.Scenario, "install", autospec=True), \
+                    self.assertRaises(s.nightly.SafeFailure) as raised:
+                api.install()
+        self.assertEqual(raised.exception.reason, "interrupted")
+        self.assertFalse(any("get" in args for args in commands))
+        self.assertEqual(api.install_status, proof_status("application", "WorkerPool", s.APP))
+
+    def test_application_pool_capture_is_scoped_budgeted_and_skipped_after_interruption(self):
+        api = self.install_api()
+        api.wait.side_effect = ValueError("PRIVATE-message")
+        with patch.object(s.substrate, "install"), patch.object(s.nightly.Scenario, "install", autospec=True), self.assertRaises(ValueError):
+            api.install()
+        args, kwargs = api.kube.call_args
+        self.assertEqual(args[:2], ("get", "workerpool/" + s.APP))
+        self.assertEqual((kwargs["namespace"], args[-2:-1]), (s.APP, ("json",)))
+        self.assertTrue(0 < kwargs["limit"] <= 5 and args[-1].startswith("--request-timeout="))
+        self.assertEqual(api.install_status["rolloutStatus"], "unknown")
+        api = self.install_api()
+        api.create.side_effect = KeyboardInterrupt()
+        with patch.object(s.substrate, "install"), patch.object(s.nightly.Scenario, "install", autospec=True), self.assertRaises(KeyboardInterrupt):
+            api.install()
+        self.assertFalse([call for call in api.kube.call_args_list if call.args[0] == "get"])
+        self.assertEqual(api.install_status["failedStep"], "application")
 
     def test_runtime_cilium_policy_cannot_bypass_owned_router_inventory(self):
         api: Any = object.__new__(s.SubstrateScenario)
