@@ -249,7 +249,7 @@ func (s *Store) journal(j Journal, used map[string]bool, expectedModel string) (
 	input, output := "", ""
 	for i, rec := range records {
 		e := rec.Event
-		if rec.Seq != int64(i+1) || e.ExecutionID != j.ExecutionID || e.SchemaVersion != 1 || payloadCount(e) != 1 {
+		if rec.Seq != int64(i+1) || e.ExecutionID != j.ExecutionID || e.SchemaVersion != 0 || payloadCount(e) != 1 {
 			return "", "", ErrIntegrity
 		}
 		switch {
