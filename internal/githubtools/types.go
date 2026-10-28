@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"net/url"
 	"strings"
 	"time"
 	"unicode"
@@ -136,13 +135,12 @@ func (r ApprovalRecord) valid() bool {
 	if r.AbandonedAt.IsZero() {
 		return r.AbandonedHead == 0
 	}
-	return r.DecisionSeq == 0 && r.AbandonedHead >= r.Call.RequestSeq && !r.AbandonedAt.Before(r.PreparedAt)
+	return r.DecisionSeq == 0 && r.AbandonedHead >= r.Call.RequestSeq
 }
 func (o Outcome) valid() bool {
 	switch o.Status {
 	case "succeeded":
-		u, err := url.Parse(o.URL)
-		return decimalID(o.CommentID) && textOK(o.URL, 2048) && err == nil && u.Scheme == "https" && u.Host == "github.com" && u.User == nil && u.RawQuery == "" && strings.HasPrefix(u.Path, "/") && u.Fragment == "issuecomment-"+o.CommentID && o.FailureCode == ""
+		return decimalID(o.CommentID) && textOK(o.URL, 2048) && o.FailureCode == ""
 	case "failed":
 		return o.CommentID == "" && o.URL == "" && o.FailureCode == "provider_rejected"
 	case "unknown":
@@ -151,5 +149,5 @@ func (o Outcome) valid() bool {
 	return false
 }
 func (i Intent) valid(a ApprovalRecord) bool {
-	return i.Call == a.Call && i.ApprovalID == a.ID && a.Approved && a.AbandonedAt.IsZero() && a.DecisionSeq > 0 && i.DecisionSeq == a.DecisionSeq && textOK(i.ReservationID, 64) && !i.ReservedAt.IsZero() && !i.ReservedAt.Before(a.PreparedAt) && (i.Outcome == nil || i.Outcome.valid())
+	return i.Call == a.Call && i.ApprovalID == a.ID && a.Approved && a.AbandonedAt.IsZero() && a.DecisionSeq > 0 && i.DecisionSeq == a.DecisionSeq && textOK(i.ReservationID, 64) && !i.ReservedAt.IsZero() && (i.Outcome == nil || i.Outcome.valid())
 }

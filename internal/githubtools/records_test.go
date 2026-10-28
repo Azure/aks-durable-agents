@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/agent-primitives/sessions/api"
 )
@@ -61,6 +62,95 @@ func TestApprovalEscapedBoundsRoundtrip(t *testing.T) {
 	got, err = s.Approval(t.Context(), a.Call)
 	if err != nil || got.Approval != a {
 		t.Fatalf("escaped record reopen: %+v %v", got, err)
+	}
+}
+
+func TestAuditClockRollbackDoesNotRefuseTransitions(t *testing.T) {
+	for _, transition := range []string{"reserve", "abandon"} {
+		t.Run(transition, func(t *testing.T) {
+			s := testStore(t)
+			preparedAt := time.Date(2026, 10, 27, 20, 0, 0, 0, time.UTC)
+			s.now = func() time.Time { return preparedAt }
+			a := prepared(t, s)
+			rolledBack := preparedAt.Add(-time.Hour)
+			s.now = func() time.Time { return rolledBack }
+			if transition == "reserve" {
+				if err := s.CommitApproval(t.Context(), a.Call, a.Approver, 5); err != nil {
+					t.Fatal(err)
+				}
+				intent, created, err := s.Reserve(t.Context(), a.Call, 5)
+				if err != nil || !created || !intent.ReservedAt.Equal(rolledBack) {
+					t.Fatalf("clock rollback refused reservation or changed audit sample: %+v %v %v", intent, created, err)
+				}
+			} else {
+				if err := s.AbandonApproval(t.Context(), a.Call, a.Approver, 4); err != nil {
+					t.Fatal(err)
+				}
+				var raw string
+				if err := s.db.QueryRow("SELECT record FROM approvals WHERE state='abandoned'").Scan(&raw); err != nil {
+					t.Fatal(err)
+				}
+				var record ApprovalRecord
+				if decode(raw, &record) != nil || !record.AbandonedAt.Equal(rolledBack) || record.AbandonedHead != 4 {
+					t.Fatalf("clock rollback changed abandonment evidence: %+v", record)
+				}
+			}
+			path, id := s.path, s.ID()
+			s.Close()
+			reopened, err := Open(path, id, "host-lineage", testBinding)
+			if err != nil {
+				t.Fatalf("clock rollback refused reopen: %v", err)
+			}
+			defer reopened.Close()
+		})
+	}
+}
+
+func TestSuccessDisplayURLIsRetainedWithoutGrammarPolicy(t *testing.T) {
+	for _, displayURL := range []string{
+		"https://github.com/example/repo/issues/1?view=full#comment-42",
+		"https://api.github.com/repos/example/repo/issues/comments/42",
+	} {
+		t.Run(displayURL, func(t *testing.T) {
+			s := testStore(t)
+			a := committed(t, s)
+			intent, _, err := s.Reserve(t.Context(), a.Call, 5)
+			if err != nil {
+				t.Fatal(err)
+			}
+			outcome := success
+			outcome.URL = displayURL
+			if err := s.Finish(t.Context(), a.Call, intent.ReservationID, outcome); err != nil {
+				t.Fatal(err)
+			}
+			stored, err := s.Intent(t.Context(), a.Call)
+			if err != nil || stored.Outcome == nil || *stored.Outcome != outcome {
+				t.Fatalf("display URL not retained verbatim: %+v %v", stored, err)
+			}
+			path, id := s.path, s.ID()
+			s.Close()
+			reopened, err := Open(path, id, "host-lineage", testBinding)
+			if err != nil {
+				t.Fatalf("display URL refused on reopen: %v", err)
+			}
+			defer reopened.Close()
+		})
+	}
+}
+
+func TestSuccessDisplayURLStillRequiresBoundedText(t *testing.T) {
+	s := testStore(t)
+	a := committed(t, s)
+	intent, _, err := s.Reserve(t.Context(), a.Call, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, displayURL := range []string{"", strings.Repeat("x", 2049), "unsafe\x00text", string([]byte{0xff})} {
+		outcome := success
+		outcome.URL = displayURL
+		if err := s.Finish(t.Context(), a.Call, intent.ReservationID, outcome); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("invalid display representation accepted: %v", err)
+		}
 	}
 }
 
