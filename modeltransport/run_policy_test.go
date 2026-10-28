@@ -21,8 +21,13 @@ import (
 
 func runConfig(t *testing.T, n int) RunConfig {
 	t.Helper()
+	// Prepare operator-private storage independently of the test runner's umask.
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	zero := int64(0)
-	c := RunConfig{RunID: "run", LedgerPath: filepath.Join(t.TempDir(), "budget.sqlite"), PlanDigest: "sha256:" + strings.Repeat("a", 64), Bindings: []RunBinding{{ID: "candidate", Endpoint: "https://example.invalid/openai/v1/", Scope: DefaultScope, Deployment: "test-deployment", Pricing: RunPricing{Input: 100000, Output: 500000, Extra: &zero, Source: "https://example.invalid/prices", AsOf: "2026-09-22"}}}}
+	c := RunConfig{RunID: "run", LedgerPath: filepath.Join(dir, "budget.sqlite"), PlanDigest: "sha256:" + strings.Repeat("a", 64), Bindings: []RunBinding{{ID: "candidate", Endpoint: "https://example.invalid/openai/v1/", Scope: DefaultScope, Deployment: "test-deployment", Pricing: RunPricing{Input: 100000, Output: 500000, Extra: &zero, Source: "https://example.invalid/prices", AsOf: "2026-09-22"}}}}
 	for i := 0; i < n; i++ {
 		c.Slots = append(c.Slots, RunSlot{ID: fmt.Sprintf("case/%d", i), BindingID: "candidate"})
 	}
