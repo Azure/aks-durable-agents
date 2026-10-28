@@ -324,6 +324,195 @@ class InvariantTests(unittest.TestCase):
             self.assertEqual(next(root.glob("command-*.stdout")).stat().st_mode & 0o777, 0o600)
 
 
+class InstallObservationTests(unittest.TestCase):
+    """Hand-authored apps/batch/ate API shapes; every dynamic name and message is a canary."""
+    SECRET = "PRIVATE-CANARY-message"
+    FIELDS = ("eventReasons", "containerReasons", "containerStates", "exitCodes", "rolloutStatus")
+
+    def setUp(self):
+        self.n = module()
+
+    def shapes(self, kind, name):
+        def ref(api, owner_kind, owner_name, uid):
+            return {"apiVersion": api, "kind": owner_kind, "name": owner_name, "uid": uid, "controller": True}
+        labels = {"Job": {"job-name": name}, "WorkerPool": {"ate.dev/worker-pool": name}}.get(kind, {"app": name})
+        api = {"Job": "batch/v1", "WorkerPool": "ate.dev/v1alpha1"}.get(kind, "apps/v1")
+        controller = {"apiVersion": api, "kind": kind, "metadata": {"name": name, "uid": "controller-uid", "generation": 3},
+                      "spec": {"replicas": 1, "selector": {"matchLabels": labels}}, "status": {"observedGeneration": 3}}
+        deployment_like = {"apiVersion": "apps/v1", "kind": kind, "metadata": dict(controller["metadata"]), "spec": controller["spec"],
+                           "status": {"observedGeneration": 3, "replicas": 1, "readyReplicas": 0}}
+        if kind == "DaemonSet":
+            controller["status"] = {"observedGeneration": 3, "desiredNumberScheduled": 2, "numberReady": 1}
+        elif kind in ("Deployment", "StatefulSet"):
+            controller["status"] = deployment_like["status"]
+        elif kind == "Job":
+            controller["status"] = {"conditions": [{"type": "Failed", "status": "True", "message": self.SECRET}]}
+        responses, owner, owners = {kind.lower() + "/" + name: controller}, ref(api, kind, name, "controller-uid"), {"controller-uid"}
+        if kind in ("Deployment", "WorkerPool"):
+            if kind == "WorkerPool":
+                deployment = {"apiVersion": "apps/v1", "kind": "Deployment", "spec": controller["spec"],
+                              "metadata": {"name": name, "uid": "deployment-uid", "generation": 2, "ownerReferences": [owner]},
+                              "status": {"observedGeneration": 2, "replicas": 1, "updatedReplicas": 1, "readyReplicas": 1, "availableReplicas": 1}}
+                responses["deployment/" + name] = deployment
+                owner, owners = ref("apps/v1", "Deployment", name, "deployment-uid"), owners | {"deployment-uid"}
+            responses["replicasets"] = {"apiVersion": "apps/v1", "kind": "ReplicaSetList", "items": [
+                {"apiVersion": "apps/v1", "kind": "ReplicaSet", "metadata": {"name": self.SECRET + "-rs", "uid": "rs-uid", "ownerReferences": [owner]}},
+                {"apiVersion": "apps/v1", "kind": "ReplicaSet", "metadata": {"name": "foreign", "uid": "foreign-rs", "ownerReferences": [ref("apps/v1", "Deployment", name, "other")]}}]}
+            owner, owners = ref("apps/v1", "ReplicaSet", self.SECRET + "-rs", "rs-uid"), owners | {"rs-uid"}
+        def pod(uid, owner, **extra):
+            return {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": self.SECRET + uid, "uid": uid, "labels": labels, "ownerReferences": [owner], **extra},
+                    "status": {"containerStatuses": [{"state": {"waiting": {"reason": "ImagePullBackOff", "message": self.SECRET}}, "lastState": {}}],
+                               "initContainerStatuses": [{"state": {"terminated": {"reason": "OOMKilled", "exitCode": 137}},
+                                                          "lastState": {"terminated": {"reason": self.SECRET, "exitCode": 1}}}]}}
+        responses["pods"] = {"apiVersion": "v1", "kind": "PodList", "items": [
+            pod("pod-uid", owner), pod("foreign-owner", dict(owner, uid="other")), pod("deleted", owner, deletionTimestamp="now"),
+            {**pod("foreign-state", dict(owner, apiVersion="v2")), "status": {"containerStatuses": [{"state": {"terminated": {"exitCode": 99}}}]}}]}
+        def event(uid, reason, kind="Warning"):
+            return {"type": kind, "reason": reason, "message": self.SECRET, "involvedObject": {"uid": uid, "name": self.SECRET}}
+        responses["events"] = {"apiVersion": "v1", "kind": "EventList", "items": [
+            event("pod-uid", "BackOff"), event("controller-uid", "FailedScheduling"), event("pod-uid", self.SECRET),
+            event("pod-uid", "Pulled", "Normal"), event("foreign-owner", "Evicted"), event("unrelated", "FailedMount")]}
+        return responses
+
+    def reader(self, responses, calls=None):
+        def read(resource, *args, namespace=None):
+            if calls is not None:
+                calls.append((resource, args, namespace))
+            return copy.deepcopy(responses[resource])
+        return read
+
+    def test_resource_matrix_projects_only_owned_structured_enums(self):
+        for kind, name, namespace, rollout in (
+                ("Deployment", "ate-api-server", "ate-system", "incomplete"), ("StatefulSet", "postgres", "ate-system", "incomplete"),
+                ("DaemonSet", "atelet", "ate-system", "incomplete"), ("Job", "rustfs-bucket-init", "ate-system", "failed"),
+                ("WorkerPool", "substrate-smoke", "substrate-smoke", "complete")):
+            with self.subTest(kind=kind):
+                calls = []
+                result = self.n.install_observations(kind, name, self.reader(self.shapes(kind, name), calls))
+                self.assertEqual(result, {"eventReasons": ["BackOff", "FailedScheduling", "other"], "containerReasons": ["ImagePullBackOff", "OOMKilled", "other"],
+                                          "containerStates": ["terminated", "waiting"], "exitCodes": [1, 137], "rolloutStatus": rollout})
+                self.assertNotIn(self.SECRET, json.dumps(result))
+                self.assertEqual({namespace_ for _, _, namespace_ in calls}, {namespace})
+                self.assertEqual([c[0] for c in calls][0], kind.lower() + "/" + name)
+                self.assertEqual("deployment/" + name in [c[0] for c in calls], kind in ("Deployment", "WorkerPool"))
+                self.assertEqual("replicasets" in [c[0] for c in calls], kind in ("Deployment", "WorkerPool"))
+                selector = next(c[1] for c in calls if c[0] == "pods")
+                self.assertEqual(selector[0], "-l")
+                self.assertEqual(selector[1], {"Job": "job-name=" + name, "WorkerPool": "ate.dev/worker-pool=" + name}.get(kind, "app=" + name))
+
+    def test_identity_and_ownership_are_strict_and_malformed_shapes_raise(self):
+        base = self.shapes("Deployment", "ate-api-server")
+        for label, change in (
+                ("controller-name", lambda r: r["deployment/ate-api-server"]["metadata"].update(name="other")),
+                ("controller-kind", lambda r: r["deployment/ate-api-server"].update(kind="StatefulSet")),
+                ("controller-api", lambda r: r["deployment/ate-api-server"].update(apiVersion="v1")),
+                ("selector", lambda r: r["deployment/ate-api-server"]["spec"].update(selector={"matchLabels": {"app": "x"}})),
+                ("pods", lambda r: r.update(pods={"apiVersion": "v1", "kind": "Secret", "items": []})),
+                ("events", lambda r: r.update(events={"apiVersion": "v1", "kind": "EventList", "items": {}})),
+                ("event-item", lambda r: r["events"]["items"].append("SECRET")),
+                ("exit-list", lambda r: r["pods"]["items"][0]["status"].update(containerStatuses={})),
+                ("rs", lambda r: r["replicasets"].update(items=None))):
+            responses = copy.deepcopy(base)
+            change(responses)
+            with self.subTest(label), self.assertRaises((self.n.SafeFailure, KeyError, TypeError, AttributeError)):
+                self.n.install_observations("Deployment", "ate-api-server", self.reader(responses))
+        responses = self.shapes("Job", "rustfs-bucket-init")
+        responses["pods"]["items"][0]["metadata"]["ownerReferences"][0]["apiVersion"] = "apps/v1"
+        self.assertEqual(self.n.install_observations("Job", "rustfs-bucket-init", self.reader(responses))["containerStates"], [])
+        responses = self.shapes("WorkerPool", "substrate-smoke")
+        responses["deployment/substrate-smoke"]["metadata"]["ownerReferences"][0]["uid"] = "other"
+        with self.assertRaises(self.n.SafeFailure):
+            self.n.install_observations("WorkerPool", "substrate-smoke", self.reader(responses))
+
+    def test_rollout_enum_requires_current_generation_and_integer_status(self):
+        def deployment(**status):
+            return {"metadata": {"generation": 3}, "spec": {"replicas": 2}, "status": status}
+        state = self.n.rollout_state
+        current = dict(observedGeneration=3, replicas=2, updatedReplicas=2, readyReplicas=2, availableReplicas=2)
+        self.assertEqual(state("Deployment", deployment(**current)), "complete")
+        # Ready/available counts can still describe old pods during a rollout or scale-down.
+        for stale in ({"replicas": 3}, {"updatedReplicas": 1}, {"readyReplicas": 1}, {"availableReplicas": 1}, {"availableReplicas": 3}):
+            self.assertEqual(state("Deployment", deployment(**{**current, **stale})), "incomplete", stale)
+        self.assertEqual(state("Deployment", deployment(observedGeneration=3, readyReplicas=2)), "incomplete")
+        self.assertEqual(state("Deployment", deployment(observedGeneration=3, conditions=[
+            {"type": "Progressing", "status": "False", "reason": "ProgressDeadlineExceeded"}])), "failed")
+        for status in ({"readyReplicas": 2}, {"observedGeneration": 2, "readyReplicas": 2}, {"observedGeneration": True, "readyReplicas": 2},
+                       {"observedGeneration": 3, "readyReplicas": True}, {"observedGeneration": 3, "readyReplicas": "2"}, None, []):
+            with self.subTest(status=status):
+                self.assertEqual(state("Deployment", {**deployment(), "status": status}), "unknown")
+        self.assertEqual(state("Deployment", {"metadata": {}, "spec": {"replicas": 2}, "status": {"observedGeneration": 3, "readyReplicas": 2}}), "unknown")
+        daemon = {"observedGeneration": 1, "desiredNumberScheduled": 2, "numberReady": 2, "updatedNumberScheduled": 2, "numberAvailable": 2}
+        self.assertEqual(state("DaemonSet", {"metadata": {"generation": 1}, "status": daemon}), "complete")
+        for stale in ({"updatedNumberScheduled": 1}, {"numberAvailable": 1}, {"numberReady": 1}):
+            self.assertEqual(state("DaemonSet", {"metadata": {"generation": 1}, "status": {**daemon, **stale}}), "incomplete", stale)
+        stateful = {"observedGeneration": 1, "replicas": 1, "updatedReplicas": 1, "readyReplicas": 1, "currentRevision": "a", "updateRevision": "a"}
+        self.assertEqual(state("StatefulSet", {"metadata": {"generation": 1}, "spec": {"replicas": 1}, "status": stateful}), "complete")
+        for stale in ({"updateRevision": "b"}, {"updateRevision": None, "currentRevision": None}, {"updatedReplicas": 0}):
+            self.assertEqual(state("StatefulSet", {"metadata": {"generation": 1}, "spec": {"replicas": 1}, "status": {**stateful, **stale}}), "incomplete", stale)
+        self.assertEqual(state("Job", {"status": {"conditions": [{"type": "Complete", "status": "True"}]}}), "complete")
+        self.assertEqual(state("Job", {"status": {}}), "incomplete")
+        self.assertEqual(state("Job", {"status": "SECRET"}), "unknown")
+        self.assertEqual(state("Job", {}), "unknown")
+
+    def record(self, status, step="workload-rollout", kind="Deployment", name="ate-api-server", error=None, responses=None, remaining=None, **kw):
+        calls = []
+        responses = responses if responses is not None else self.shapes("Deployment", "ate-api-server")
+        def run(args, namespace, limit):
+            calls.append((args, namespace, limit))
+            return json.dumps(responses[args[1]]).encode() if isinstance(responses[args[1]], dict) else responses[args[1]]
+        self.n.record_install_failure(status, step, kind, name, error or ValueError(self.SECRET), run, remaining or (lambda: 100), **kw)
+        return calls
+
+    def test_first_failure_wins_and_falls_back_without_reads_or_raw_values(self):
+        status = {}
+        calls = self.record(status)
+        self.assertEqual({k: v for k, v in status.items() if k in self.FIELDS}, {
+            "eventReasons": ["BackOff", "FailedScheduling", "other"], "containerReasons": ["ImagePullBackOff", "OOMKilled", "other"],
+            "containerStates": ["terminated", "waiting"], "exitCodes": [1, 137], "rolloutStatus": "incomplete"})
+        self.assertEqual([c[0][:2] for c in calls], [["get", "deployment/ate-api-server"], ["get", "replicasets"], ["get", "pods"], ["get", "events"]])
+        for args, namespace, limit in calls:
+            self.assertEqual((args[-3], args[-2], namespace), ("-o", "json", "ate-system"))
+            self.assertTrue(0 < limit <= 5 and args[-1].startswith("--request-timeout="))
+        before = copy.deepcopy(status)
+        self.assertEqual(self.record(status, step="cleanup", kind="other", name="other"), [])
+        self.assertEqual(status, before)
+        fallback = {"version": 1, "failedStep": "other", "resourceKind": "other", "resourceName": "other", "eventReasons": [],
+                    "containerReasons": [], "containerStates": [], "exitCodes": [], "rolloutStatus": "unknown"}
+        for label, kwargs in (("unknown-step", {"step": self.SECRET, "kind": "other", "name": "other"}),
+                              ("unsupported-resource", {"kind": "Deployment", "name": self.SECRET}),
+                              ("interrupt", {"error": KeyboardInterrupt()}), ("system-exit", {"error": SystemExit()}),
+                              ("exhausted", {"remaining": lambda: (_ for _ in ()).throw(self.n.SafeFailure("deadline-exhausted"))}),
+                              ("malformed", {"responses": {"deployment/ate-api-server": b"not-json"}}),
+                              ("oversize", {"responses": {"deployment/ate-api-server": b" " * (16 * 1024 * 1024 + 1)}}),
+                              ("wrong-shape", {"responses": {"deployment/ate-api-server": {"kind": "Deployment"}}})):
+            status = {}
+            calls = self.record(status, **kwargs)
+            expected = dict(fallback, **({"failedStep": "workload-rollout", "resourceKind": "Deployment", "resourceName": "ate-api-server"}
+                                         if label not in ("unknown-step", "unsupported-resource") else {}))
+            if label == "unsupported-resource":
+                expected["failedStep"] = "workload-rollout"
+            self.assertEqual(status, expected, label)
+            self.assertEqual(len(calls), {"malformed": 1, "oversize": 1, "wrong-shape": 1}.get(label, 0), label)
+            self.assertNotIn(self.SECRET, json.dumps(status))
+
+    def test_reads_share_one_five_second_budget_and_leave_no_partial_status(self):
+        clock = [100.0]
+        responses = self.shapes("Deployment", "ate-api-server")
+        for expire_after, reads in ((1, 1), (4, 4)):
+            status, calls = {}, []
+            def run(args, namespace, limit, calls=calls):
+                calls.append(limit)
+                if len(calls) == expire_after:
+                    clock[0] += 6
+                return json.dumps(responses[args[1]]).encode()
+            with patch.object(self.n.time, "monotonic", lambda: clock[0]):
+                self.n.record_install_failure(status, "workload-rollout", "Deployment", "ate-api-server", ValueError(), run, lambda: 100)
+            self.assertEqual(len(calls), reads)
+            self.assertTrue(all(0 < limit <= 5 for limit in calls))
+            self.assertEqual((status["containerStates"], status["rolloutStatus"]), ([], "unknown"))
+            clock[0] = 100.0
+
+
 class DiagnosticTests(unittest.TestCase):
     SECRET = "PRIVATE-CREDENTIAL-path-ID-command-timeout"
 
@@ -766,6 +955,40 @@ class DiagnosticTests(unittest.TestCase):
                 if operation == "fixture-init-wait":
                     self.assertEqual(sum("scale" in args for args, _ in calls), 2)
                 self.clear_work()
+
+    def test_real_main_publishes_only_validated_install_status_to_real_collector(self):
+        from types import SimpleNamespace
+        collector = self.n.local_module("install_collector", ROOT / "ops/demo/e2e.py")
+        good = {"version": 1, "failedStep": "workload-rollout", "resourceKind": "Deployment", "resourceName": "ate-api-server",
+                "eventReasons": ["BackOff"], "containerReasons": ["ImagePullBackOff"], "containerStates": ["waiting"],
+                "exitCodes": [137], "rolloutStatus": "incomplete"}
+        original, run_url = self.n.local_module, "https://github.com/Azure/aks-durable-agents/actions/runs/123"
+        argv = self.argv + ["--variant", "substrate-gvisor", "--substrate-source", "/s", "--substrate-image-map", "/m", "--substrate-tools", "/t"]
+        for label, status, accepted in (("valid", good, True), ("free-text-name", dict(good, resourceName=self.SECRET), False),
+                                        ("extra-field", dict(good, message=self.SECRET), False), ("bool-exit", dict(good, exitCodes=[True]), False),
+                                        ("unsorted", dict(good, eventReasons=["other", "BackOff"]), False), ("empty", {}, False), ("none", None, False)):
+            with self.subTest(label):
+                api = SimpleNamespace(phase_name="install", operation="phase", cleanup_status="succeeded", diagnostics=None,
+                                      rollout_status=None, install_status=status)
+                adapter = SimpleNamespace(SubstrateScenario=lambda *args: api, run=lambda _api: (_ for _ in ()).throw(ValueError(self.SECRET)))
+                load = lambda name, path: adapter if path.name == "substrate_session.py" else original(name, path)
+                with patch.dict(os.environ, self.env, clear=True), patch.object(self.n, "local_module", load), \
+                        contextlib.redirect_stderr(io.StringIO()) as stderr:
+                    self.assertEqual(self.n.main(argv), 1)
+                self.assertEqual(json.loads((self.public / "diagnostics.json").read_text())["operation"], "phase")
+                self.assertEqual((self.public / "install-status.json").exists(), accepted)
+                dest, summary = self.root / ("collected-" + label), self.root / "summary.md"
+                self.assertEqual(collector.collect_aks(self.public, dest, summary, "failure", run_url, "a" * 40, "scenario", "aks-substrate"), 0)
+                text = summary.read_text()
+                self.assertIn("- Install step: workload-rollout\n" if accepted else "- Install status: unavailable\n", text)
+                if accepted:
+                    self.assertEqual(json.loads((dest / "install-status.json").read_text()), good)
+                    self.assertIn("- Exit codes: 137\n", text)
+                self.assertNotIn(self.SECRET, stderr.getvalue() + text + "".join(path.read_text() for path in dest.iterdir()))
+                self.clear_work()
+        external, _ = self.external("profile-rollout")
+        self.assertEqual(self.invoke(external)[0], 1)
+        self.assertFalse((self.public / "install-status.json").exists())
 
     def clear_work(self):
         for path in self.work.iterdir():

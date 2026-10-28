@@ -9,6 +9,7 @@ Cluster/FIC/node-RG teardown belongs to the workflow, not this program.
 import argparse
 import contextlib
 import datetime
+import functools
 import hashlib
 import importlib.util
 import json
@@ -102,14 +103,14 @@ def rollout_fallback(kind, name):
             "podReasons": ["other"], "readyNodes": None, "desiredNodes": None}
 
 
-def controller_uid(obj, kind, name):
-    require(obj["apiVersion"] == "apps/v1" and obj["kind"] == kind and obj["metadata"]["name"] == name)
+def controller_uid(obj, kind, name, api="apps/v1"):
+    require(obj["apiVersion"] == api and obj["kind"] == kind and obj["metadata"]["name"] == name)
     uid = obj["metadata"]["uid"]
     require(type(uid) is str and bool(uid))
     return uid
 
 
-def controlled_by(obj, kind, owners):
+def controlled_by(obj, kind, owners, api="apps/v1"):
     references = obj["metadata"].get("ownerReferences", [])
     require(type(references) is list)
     controllers = [ref for ref in references if ref.get("controller") is True]
@@ -117,7 +118,7 @@ def controlled_by(obj, kind, owners):
     if not controllers:
         return False
     ref = controllers[0]
-    return (ref.get("apiVersion") == "apps/v1" and ref.get("kind") == kind
+    return (ref.get("apiVersion") == api and ref.get("kind") == kind
             and type(ref.get("name")) is str and type(ref.get("uid")) is str
             and ref["name"] in owners and ref["uid"] == owners[ref["name"]])
 
@@ -144,13 +145,10 @@ def pod_reason_codes(pod):
     return reasons or {"other"}
 
 
-def project_rollout(kind, name, labels, controller, pods, replicasets=None):
-    if controller.get("kind") != kind or controller.get("metadata", {}).get("name") != name:
-        return rollout_schema.validate_rollout_status(rollout_fallback("other", "other"))
-    uid = controller_uid(controller, kind, name)
-    # Selectors are trusted constants/chart labels, never taken from the API.
-    require(controller["spec"]["selector"] == {"matchLabels": labels})
-    owners, owner_kind = {name: uid}, kind
+def owned_pods(kind, name, labels, controller, pods, replicasets=None, api="apps/v1"):
+    """Pods verified by labels plus controller UID ownership; returns (identity UIDs, pods)."""
+    uid = controller_uid(controller, kind, name, api)
+    uids, owners, owner_kind = {uid}, {name: uid}, kind
     if kind == "Deployment":
         if type(replicasets) is not dict:
             raise SafeFailure("invariant-failed", "invalid ReplicaSet list")
@@ -164,9 +162,10 @@ def project_rollout(kind, name, labels, controller, pods, replicasets=None):
                 owners[rs_name] = controller_uid(replica, "ReplicaSet", rs_name)
         # RS selectors contain private pod-template-hash labels in addition to
         # the Deployment core selector. Ownership, not selector equality, binds.
+        uids.update(owners.values())
     require(pods["apiVersion"] == "v1" and pods["kind"] in ("PodList", "List"))
     require(type(pods["items"]) is list)
-    reasons = set()
+    owned = []
     for pod in pods["items"]:
         require(pod["apiVersion"] == "v1" and pod["kind"] == "Pod")
         metadata = pod["metadata"]
@@ -175,8 +174,21 @@ def project_rollout(kind, name, labels, controller, pods, replicasets=None):
         pod_labels = metadata.get("labels", {})
         require(type(pod_labels) is dict)
         if (all(pod_labels.get(key) == value for key, value in labels.items())
-                and controlled_by(pod, owner_kind, owners)):
-            reasons.update(pod_reason_codes(pod))
+                and controlled_by(pod, owner_kind, owners, api if owner_kind == kind else "apps/v1")):
+            owned.append(pod)
+            uids.add(metadata["uid"])
+    return uids, owned
+
+
+def project_rollout(kind, name, labels, controller, pods, replicasets=None):
+    if controller.get("kind") != kind or controller.get("metadata", {}).get("name") != name:
+        return rollout_schema.validate_rollout_status(rollout_fallback("other", "other"))
+    controller_uid(controller, kind, name)
+    # Selectors are trusted constants/chart labels, never taken from the API.
+    require(controller["spec"]["selector"] == {"matchLabels": labels})
+    reasons = set()
+    for pod in owned_pods(kind, name, labels, controller, pods, replicasets)[1]:
+        reasons.update(pod_reason_codes(pod))
     report = rollout_fallback(kind, name)
     report["podReasons"] = sorted(reasons or {"other"})
     if kind == "DaemonSet":
@@ -185,6 +197,137 @@ def project_rollout(kind, name, labels, controller, pods, replicasets=None):
             count = status.get(source)
             report[key] = count if type(count) is int and 0 <= count <= 2147483647 else None
     return rollout_schema.validate_rollout_status(report)
+
+
+def budgeted_reader(work_remaining, run, budget=5):
+    """One shared diagnostic budget inside the work deadline; every read and parse is re-checked."""
+    end = time.monotonic() + min(budget, work_remaining())
+
+    def remaining():
+        seconds = min(work_remaining(), end - time.monotonic())
+        require(seconds >= .001)
+        return seconds
+
+    def read(resource, *args, namespace=None):
+        seconds = remaining()
+        # Round down, never let kubectl's request timeout exceed authority.
+        timeout = int(seconds * 1000) / 1000
+        raw = run(["get", resource, *args, "-o", "json", f"--request-timeout={timeout:.3f}s"], namespace, seconds)
+        remaining()
+        require(len(raw) <= 16 * 1024 * 1024)
+        value = strict_json(raw)
+        remaining()
+        return value
+
+    return read, remaining
+
+
+def rollout_state(kind, controller):
+    """Complete/failed only from current-generation integer status; anything else is unknown."""
+    status = controller.get("status")
+    if type(status) is not dict:
+        return "unknown"
+    if kind == "Job":
+        conditions = status.get("conditions", [])
+        if type(conditions) is not list:
+            return "unknown"
+        for state, wanted in (("failed", "Failed"), ("complete", "Complete")):
+            if any(type(c) is dict and c.get("type") == wanted and c.get("status") == "True" for c in conditions):
+                return state
+        return "incomplete"
+    generation = controller.get("metadata", {}).get("generation")
+    observed = status.get("observedGeneration")
+    if type(generation) is not int or type(observed) is not int or generation != observed:
+        return "unknown"
+    if kind == "DaemonSet":
+        wanted, keys = status.get("desiredNumberScheduled"), ("numberReady", "updatedNumberScheduled", "numberAvailable")
+    else:
+        wanted = controller.get("spec", {}).get("replicas")
+        keys = ("replicas", "updatedReplicas", "readyReplicas") + (("availableReplicas",) if kind == "Deployment" else ())
+    counts = [status.get(key, 0) for key in keys]
+    if type(wanted) is not int or any(type(count) is not int for count in counts):
+        return "unknown"
+    if kind == "Deployment" and any(type(c) is dict and c.get("type") == "Progressing" and c.get("status") == "False"
+                                    and c.get("reason") == "ProgressDeadlineExceeded" for c in status.get("conditions", []) or []):
+        return "failed"
+    # Ready count alone can be old pods: every current/updated/available count must reach the desired count.
+    current = kind != "StatefulSet" or (type(status.get("updateRevision")) is str and status.get("updateRevision") == status.get("currentRevision"))
+    return "complete" if current and all(count == wanted for count in counts) else "incomplete"
+
+
+def container_facts(pod):
+    """Closed container states, bounded exit codes and the existing reason projection for one pod."""
+    status, states, exits = pod.get("status", {}), set(), set()
+    for field in ("containerStatuses", "initContainerStatuses"):
+        containers = status.get(field, [])
+        require(type(containers) is list)
+        for container in containers:
+            state, last = container.get("state", {}), container.get("lastState", {})
+            states.update(key for key in rollout_schema.CONTAINER_STATES if key in state)
+            for source in (state.get("terminated"), last.get("terminated")):
+                code = source.get("exitCode") if type(source) is dict else None
+                if type(code) is int and 0 <= code <= 255:
+                    exits.add(code)
+    reasons = pod_reason_codes(pod)
+    # "other" alone is the rollout projection's no-observation sentinel, not an install reason.
+    return states, (set() if reasons == {"other"} and not states & {"waiting", "terminated"} else reasons), exits
+
+
+def install_observations(kind, name, read):
+    """Read-only, ownership-verified controller/pod/event projection for one pinned install resource."""
+    namespace = rollout_schema.INSTALL_RESOURCES[(kind, name)]
+    api = {"Job": "batch/v1", "WorkerPool": "ate.dev/v1alpha1"}.get(kind, "apps/v1")
+    labels = {"Job": {"job-name": name}, "WorkerPool": {"ate.dev/worker-pool": name}}.get(kind, {"app": name})
+    selector = ",".join(key + "=" + value for key, value in labels.items())
+    controller = read(kind.lower() + "/" + name, namespace=namespace)
+    uid, base, base_kind = controller_uid(controller, kind, name, api), controller, kind
+    if kind == "WorkerPool":
+        # Pinned Substrate source: Deployment has the pool's name/namespace and a controller ref to the pool UID.
+        base, base_kind = read("deployment/" + name, namespace=namespace), "Deployment"
+        require(controlled_by(base, "WorkerPool", {name: uid}, api))
+    if base_kind != "Job":
+        require(base["spec"]["selector"] == {"matchLabels": labels})
+    replicasets = read("replicasets", "-l", selector, namespace=namespace) if base_kind == "Deployment" else None
+    pods = read("pods", "-l", selector, namespace=namespace)
+    events = read("events", namespace=namespace)
+    uids, owned = owned_pods(base_kind, name, labels, base, pods, replicasets, api if base is controller else "apps/v1")
+    uids.add(uid)
+    require(events["apiVersion"] == "v1" and events["kind"] in ("EventList", "List") and type(events["items"]) is list)
+    choices = rollout_schema.EVENT_REASONS
+    event_reasons = set()
+    for event in events["items"]:
+        if event["type"] == "Warning" and event["involvedObject"]["uid"] in uids:
+            event_reasons.add(event["reason"] if type(event["reason"]) is str and event["reason"] in choices else "other")
+    states, reasons, exits = set(), set(), set()
+    for pod in owned:
+        pod_states, pod_reasons, pod_exits = container_facts(pod)
+        states |= pod_states
+        reasons |= pod_reasons
+        exits |= pod_exits
+    return {"eventReasons": sorted(event_reasons), "containerReasons": sorted(reasons), "containerStates": sorted(states),
+            "exitCodes": sorted(exits), "rolloutStatus": rollout_state(base_kind, base)}
+
+
+def record_install_failure(status, step, kind, name, error, run, work_remaining):
+    """First failure wins. Unsupported context and failed or interrupted reads leave fixed unknown status."""
+    if status:
+        return
+    if step not in rollout_schema.INSTALL_STEPS:
+        step = "other"
+    if (kind, name) not in rollout_schema.INSTALL_RESOURCES:
+        kind, name = "other", "other"
+    status.update(version=1, failedStep=step, resourceKind=kind, resourceName=name, eventReasons=[], containerReasons=[],
+                  containerStates=[], exitCodes=[], rolloutStatus="unknown")
+    # Optional reads never follow cancellation or a spent deadline, and cannot replace the error.
+    if kind == "other" or not isinstance(error, Exception):
+        return
+    try:
+        read, remaining = budgeted_reader(work_remaining, run)
+        observed = install_observations(kind, name, read)
+        remaining()
+        status.update(observed)
+    except (Exception, KeyboardInterrupt):  # noqa: BLE001, S110 — optional reads cannot replace the install failure.
+        pass
 
 
 def json_records(raw):
@@ -616,24 +759,9 @@ class Scenario:
             roles = [role for role, deployment in self.deployments.items() if deployment == name]
             require(len(roles) == 1)
             labels = self.labels[roles[0]]
-        end = time.monotonic() + min(5, self.deadlines.remaining())
-
-        def remaining():
-            seconds = min(self.deadlines.remaining(), end - time.monotonic())
-            require(seconds >= .001)
-            return seconds
-
-        def read(resource, *args):
-            seconds = remaining()
-            # Round down, never let kubectl's request timeout exceed authority.
-            timeout = int(seconds * 1000) / 1000
-            raw = self.kube("get", resource, *args, "-o", "json", f"--request-timeout={timeout:.3f}s",
-                            namespace=namespace, limit=seconds)
-            remaining()
-            require(len(raw) <= 16 * 1024 * 1024)
-            value = strict_json(raw)
-            remaining()
-            return value
+        read, remaining = budgeted_reader(lambda: self.deadlines.remaining(),
+            lambda args, space, limit: self.kube(*args, namespace=space, limit=limit))
+        read = functools.partial(read, namespace=namespace)
 
         selector = ",".join(key + "=" + value for key, value in labels.items())
         controller = read(kind.lower() + "/" + name)
@@ -1069,6 +1197,13 @@ def main(argv=None):
                 validator = local_module("aks_safe_proof", HERE / "proof.py")
                 write_json(args.public_dir / "rollout-status.json", validator.validate_rollout_status(api.rollout_status))
         except (Exception, KeyboardInterrupt):
+            pass
+        try:
+            install_status = getattr(api, "install_status", None)
+            if public_ready and install_status:
+                validator = local_module("aks_safe_proof", HERE / "proof.py")
+                write_json(args.public_dir / "install-status.json", validator.validate_install_status(install_status))
+        except (Exception, KeyboardInterrupt):  # noqa: BLE001, S110 — optional publication cannot replace the failure.
             pass
         return 1
     return 0

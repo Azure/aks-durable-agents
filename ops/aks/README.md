@@ -326,7 +326,7 @@ Orphan managed node RGs still require exact-scope operator recovery.
 ### Evidence and failure tracker
 
 Only closed-schema `proof.json`, eight-record `network-proof.json`, `timings.json`,
-failure-only `diagnostics.json` and optional `rollout-status.json`, and fixed
+failure-only `diagnostics.json` and optional `rollout-status.json` / Substrate `install-status.json`, and fixed
 status/summary metadata are retained for seven days. The AKS collector ignores
 console input entirely and refuses unknown
 fields, malformed or incomplete proof, symlinks/nonregular files and oversized
@@ -387,6 +387,25 @@ before loading this optional file; missing/unsafe status says
 `Rollout status: unavailable` only for a known rollout operation. Success ignores
 it and still needs all three proofs. These categories are not a functional fix or
 a root-cause determination, and source-fence status is not cloud teardown proof.
+
+A Substrate-gVisor install failure may also publish `install-status.json`, read only for
+the `aks-substrate` profile when diagnostics say `install`. It is a closed v1 summary:
+`failedStep` (a fixed installer step, or one of the seven fixed `setup-*` helpers),
+a pinned `resourceKind`/`resourceName` pair or `other/other`, sorted unique
+`eventReasons` (Warning events only), `containerReasons`, `containerStates`, sorted
+unique `exitCodes` (integers 0..255) and a `rolloutStatus` of `complete`, `incomplete`,
+`failed` or `unknown`. It is built from ownership-verified read-only GETs
+(Job→Pod; WorkerPool→Deployment→ReplicaSet→Pod; events matched by verified UID) before
+cleanup, with at most five seconds of the existing work deadline in total; none occur after
+interruption or deadline exhaustion. The first classified failure wins; unsupported
+context or any read/parse error leaves the fixed step with empty lists and `unknown`.
+Controller rollouts require current-generation status; `complete` also requires the
+updated, ready and available counts to match the desired count, not ready pods alone.
+Jobs use their structured terminal conditions. No dynamic pod/node names, messages,
+arguments, event objects or exception text are published. These are classified
+observations, not a root cause.
+The private installer evidence stays on the runner and is not uploaded. A missing or unsafe
+summary says `Install status: unavailable` and never hides a valid rollout panel.
 
 The separate bot-owned tracker is titled **AKS e2e regression**. Its managed body
 contains only allowlisted stage, workflow URL and commit SHA; existing kind bot

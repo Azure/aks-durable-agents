@@ -3,6 +3,7 @@ import json
 import math
 import os
 import stat
+from itertools import pairwise
 from pathlib import Path
 
 MAX_BYTES = 16 * 1024
@@ -20,6 +21,22 @@ ROLLOUT_CONTROLLERS = frozenset((("DaemonSet", "nightly-profile"),
     ("Deployment", "kaimahi-aks-durable-agents-harness"), ("other", "other")))
 POD_REASONS = frozenset(("ImagePullBackOff", "ErrImagePull", "CrashLoopBackOff", "CreateContainerConfigError",
                          "ContainerCreating", "FailedMount", "OOMKilled", "Unschedulable", "readiness probe failing", "other"))
+# Closed install-failure vocabulary: static steps and pinned resources only, never live object names.
+SETUP_STEPS = tuple("setup-" + name for name in ("jwt-authority-pool", "actor-id-ca-pool", "actor-id-ca-certs", "egress-mitm-ca-pool",
+                                                "podcertificate-controller-cas", "api-authentication-config", "api-server-env-vars"))
+INSTALL_STEPS = frozenset((*SETUP_STEPS, "source", "tools", "preflight", "foundation", "manifest", "secret", "workload-create",
+                           "workload-rollout", "trust", "database", "workerpool", "smoke", "cleanup", "sessions-install",
+                           "application", "other"))
+INSTALL_RESOURCES = {("other", "other"): None, ("Deployment", "ate-api-server"): "ate-system",
+    ("Deployment", "ate-controller"): "ate-system", ("Deployment", "atenet-egress"): "ate-system",
+    ("Deployment", "atenet-router"): "ate-system", ("Deployment", "rustfs"): "ate-system",
+    ("Deployment", "podcertificate-controller"): "podcertificate-controller-system", ("DaemonSet", "atelet"): "ate-system",
+    ("StatefulSet", "postgres"): "ate-system", ("Job", "rustfs-bucket-init"): "ate-system",
+    ("WorkerPool", "substrate-smoke"): "substrate-smoke", ("WorkerPool", "substrate-sessions"): "substrate-sessions"}
+EVENT_REASONS = frozenset(("BackOff", "Evicted", "Failed", "FailedAttachVolume", "FailedCreate", "FailedCreatePodSandBox",
+                           "FailedMount", "FailedScheduling", "Unhealthy", "other"))
+CONTAINER_STATES = frozenset(("running", "terminated", "waiting"))
+ROLLOUT_STATES = frozenset(("complete", "failed", "incomplete", "unknown"))
 _FINAL = {
     "version": 1, "profile": "aks", "model": "real", "approval": "simulated", "entra": "not-run",
     "modelCalls": 1, "fakeModelCalls": 0, "published": 1, "receipts": 1, "artifacts": 1,
@@ -123,8 +140,40 @@ def validate_rollout_status(value):
             "podReasons": list(reasons), "readyNodes": value["readyNodes"], "desiredNodes": value["desiredNodes"]}
 
 
+def _ascending(items):
+    # Strictly increasing is exactly sorted and unique, without relying on set/sort typing.
+    return all(left < right for left, right in pairwise(items))
+
+
+def _sorted_unique(items, choices):
+    if type(items) is not list or any(type(item) is not str or item not in choices for item in items) or not _ascending(items):
+        raise ValueError("invalid AKS install status")
+    return list(items)
+
+
+def validate_install_status(value):
+    """Classified observations only; unknown identities or reasons are rejected, never copied."""
+    _closed(value, ("version", "failedStep", "resourceKind", "resourceName", "eventReasons", "containerReasons",
+                    "containerStates", "exitCodes", "rolloutStatus"))
+    _literals(value, {"version": 1})
+    step, kind, name, status = value["failedStep"], value["resourceKind"], value["resourceName"], value["rolloutStatus"]
+    if (type(step) is not str or step not in INSTALL_STEPS or type(kind) is not str or type(name) is not str
+            or (kind, name) not in INSTALL_RESOURCES or type(status) is not str or status not in ROLLOUT_STATES):
+        raise ValueError("invalid AKS install status")
+    exits = value["exitCodes"]
+    if (type(exits) is not list or any(type(code) is not int or not 0 <= code <= 255 for code in exits)
+            or not _ascending(exits)):
+        raise ValueError("invalid AKS install exits")
+    return {"version": 1, "failedStep": step, "resourceKind": kind, "resourceName": name,
+            "eventReasons": _sorted_unique(value["eventReasons"], EVENT_REASONS),
+            "containerReasons": _sorted_unique(value["containerReasons"], POD_REASONS - {"readiness probe failing"}),
+            "containerStates": _sorted_unique(value["containerStates"], CONTAINER_STATES),
+            "exitCodes": list(exits), "rolloutStatus": status}
+
+
 VALIDATORS = {"proof.json": validate, "network-proof.json": validate_network, "timings.json": validate_timings,
-              "diagnostics.json": validate_diagnostics, "rollout-status.json": validate_rollout_status}
+              "diagnostics.json": validate_diagnostics, "rollout-status.json": validate_rollout_status,
+              "install-status.json": validate_install_status}
 
 
 def _object(pairs):

@@ -19,6 +19,9 @@ GOOD = {
 TIMINGS = {"version": 1, "phases": {"preflight": 0, "replay": 2.5}, "totalSeconds": 3}
 DIAGNOSTICS = {"version": 1, "phase": "install", "operation": "profile-rollout",
                "reason": "command-failed", "cleanup": "succeeded"}
+INSTALL = {"version": 1, "failedStep": "workload-rollout", "resourceKind": "Deployment", "resourceName": "ate-api-server",
+           "eventReasons": ["BackOff", "FailedScheduling"], "containerReasons": ["ImagePullBackOff", "other"],
+           "containerStates": ["terminated", "waiting"], "exitCodes": [1, 137], "rolloutStatus": "incomplete"}
 
 
 def network():
@@ -140,6 +143,45 @@ class ProofTests(unittest.TestCase):
                 proof.validate_rollout_status(missing)
         with self.assertRaises(ValueError):
             proof.validate_rollout_status(dict(good, message="SECRET-CANARY"))
+
+    def test_install_status_closed_steps_resources_enums_and_bounded_exits(self):
+        self.assertEqual(proof.validate_install_status(INSTALL), INSTALL)
+        for step in proof.INSTALL_STEPS:
+            proof.validate_install_status(dict(INSTALL, failedStep=step))
+        for (kind, name), namespace in proof.INSTALL_RESOURCES.items():
+            self.assertEqual(namespace is None, (kind, name) == ("other", "other"))
+            proof.validate_install_status(dict(INSTALL, resourceKind=kind, resourceName=name))
+        for kind, name in (("Job", "rustfs-bucket-init"), ("WorkerPool", "substrate-smoke"), ("WorkerPool", "substrate-sessions"),
+                           ("StatefulSet", "postgres"), ("DaemonSet", "atelet"), ("Deployment", "podcertificate-controller")):
+            self.assertIn((kind, name), proof.INSTALL_RESOURCES)
+        proof.validate_install_status(dict(INSTALL, eventReasons=[], containerReasons=[], containerStates=[], exitCodes=[],
+                                          rolloutStatus="unknown"))
+        proof.validate_install_status(dict(INSTALL, exitCodes=list(range(256))))
+        invalid = [("version", v) for v in (True, 1.0, 2)] + [("failedStep", v) for v in ("SECRET-CANARY", "", None, [])]
+        invalid += [("resourceName", "atelet"), ("resourceKind", "Job"), ("resourceName", "pod-abc123")]
+        invalid += [(key, value) for key in ("eventReasons", "containerReasons", "containerStates")
+                    for value in ("BackOff", ["SECRET-CANARY"], ["other", "other"], ["z", "a"], [None], [[]], [True])]
+        invalid += [("eventReasons", ["FailedScheduling", "BackOff"]), ("eventReasons", ["Failed to pull image: SECRET"]),
+                    ("containerReasons", ["readiness probe failing"]), ("containerStates", ["Waiting"])]
+        invalid += [("exitCodes", v) for v in ([True], [1.0], ["1"], [-1], [256], [2**64], [2, 1], [1, 1], 1, None)]
+        invalid += [("rolloutStatus", v) for v in ("ready", "SECRET", None, True)]
+        for key, value in invalid:
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                proof.validate_install_status(dict(INSTALL, **{key: value}))
+        for key in INSTALL:
+            with self.subTest(missing=key), self.assertRaises(ValueError):
+                proof.validate_install_status({k: v for k, v in INSTALL.items() if k != key})
+        with self.assertRaises(ValueError):
+            proof.validate_install_status(dict(INSTALL, message="SECRET-CANARY"))
+
+    def test_install_status_uses_existing_bounded_reader(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "install-status.json").write_text(json.dumps(INSTALL))
+            self.assertEqual(proof.load_public(root, "install-status.json"), INSTALL)
+            (root / "install-status.json").write_text(json.dumps(dict(INSTALL, exitCodes=[1, 1])))
+            with self.assertRaises(ValueError):
+                proof.load_public(root, "install-status.json")
 
     def test_rollout_reader_uses_existing_descriptor_and_strict_json_guards(self):
         good = {"version": 1, "controllerKind": "DaemonSet", "controllerName": "nightly-profile",
