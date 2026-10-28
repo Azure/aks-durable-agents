@@ -42,7 +42,7 @@ type Config struct {
 	Transport *http.Transport
 	// Policy optionally enforces bounded Chat requests and a durable run budget.
 	Policy *Policy
-	// CallSlot selects one declared v3 slot at trusted host construction time.
+	// CallSlot selects one declared v3/v4 slot at trusted host construction time.
 	// Requests cannot select slots. Empty is required for nil or legacy Policy.
 	CallSlot string
 }
@@ -72,9 +72,8 @@ type refresh struct {
 // Credential construction errors are deliberately not wrapped: SDK errors can
 // contain authentication response bodies or sensitive configuration.
 func NewTransport(c Config) (*Transport, error) {
-	u, err := url.Parse(c.Endpoint)
-	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Opaque != "" ||
-		u.Path != "/openai/v1/" || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.TrimSpace(c.Deployment) == "" {
+	u, err := parseEndpoint(c.Endpoint)
+	if err != nil || strings.TrimSpace(c.Deployment) == "" {
 		return nil, errors.New("modeltransport: invalid endpoint or missing deployment")
 	}
 	if c.Scope == "" {
@@ -85,7 +84,7 @@ func NewTransport(c Config) (*Transport, error) {
 	}
 	if c.Policy != nil {
 		c.Policy.mu.Lock()
-		valid := !c.Policy.closed && c.Policy.ledger != nil && c.Policy.config.Deployment == c.Deployment && c.Policy.acceptsCallSlot(c.CallSlot)
+		valid := !c.Policy.closed && c.Policy.ledger != nil && c.Policy.matchesBinding(c)
 		c.Policy.mu.Unlock()
 		if !valid {
 			return nil, errors.New("modeltransport: policy deployment, slot, or lifecycle mismatch")
@@ -118,6 +117,15 @@ func NewTransport(c Config) (*Transport, error) {
 	base.Protocols = new(http.Protocols)
 	base.Protocols.SetHTTP1(true)
 	return &Transport{endpoint: u, scope: c.Scope, credential: cred, base: base, now: time.Now, policy: c.Policy, callSlot: c.CallSlot}, nil
+}
+
+func parseEndpoint(endpoint string) (*url.URL, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Opaque != "" ||
+		u.Path != "/openai/v1/" || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return nil, errors.New("modeltransport: invalid endpoint")
+	}
+	return u, nil
 }
 
 // NewClient returns a bounded client that refuses every redirect. RoundTrip also

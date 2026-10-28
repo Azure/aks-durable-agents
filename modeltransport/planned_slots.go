@@ -17,20 +17,31 @@ func validCallSlots(slots []string) bool {
 	}
 	seen := make(map[string]bool, len(slots))
 	for _, slot := range slots {
-		if len(slot) == 0 || len(slot) > 128 || seen[slot] {
+		if !validCallID(slot) || seen[slot] {
 			return false
-		}
-		for _, c := range slot {
-			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("_-.:/", c)) {
-				return false
-			}
 		}
 		seen[slot] = true
 	}
 	return true
 }
 
+func validCallID(id string) bool {
+	if len(id) == 0 || len(id) > 128 {
+		return false
+	}
+	for _, c := range id {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("_-.:/", c)) {
+			return false
+		}
+	}
+	return true
+}
+
 func (p *Policy) acceptsCallSlot(slot string) bool {
+	if p.run != nil {
+		_, ok := p.runBinding(slot)
+		return ok
+	}
 	if p.config.Version == 3 {
 		return slices.Contains(p.config.PlannedCallSlots, slot)
 	}

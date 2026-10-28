@@ -61,7 +61,11 @@ decoding. Streamed content frames reach the adapter as they arrive; a missing or
 non-`stop` finish fails the call, but callers may already have seen streamed prefixes.
 The [policy reference](../modeltransport/README.md) defines complete-input schema
 accounting, streamed finish rules, opt-in policy-version-2 three-attempt budgets,
-and the explicit 32768 input bound (omission retains 8192; completion stays 4096).
+library-only v3 planned-call identity and programmatic v4 shared run budgets.
+V4 freezes slot-selected endpoints/scopes/deployments and prices in one policy;
+it is not a host/chart policy-file profile and does not qualify a package.
+The explicit 32768 input bound remains optional (omission retains 8192;
+completion stays 4096), with the same USD 2 run cap and no reservation discounts.
 These are fake-provider-tested contracts, not live model/schema compatibility or
 AKS qualification.
 

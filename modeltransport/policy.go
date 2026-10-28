@@ -45,11 +45,33 @@ type pricing struct {
 	AsOf   string `json:"asOf"`
 }
 
+func validatePricing(p pricing) error {
+	if p.Input <= 0 || p.Output <= 0 || p.Extra == nil || *p.Extra != 0 {
+		return errors.New("modeltransport: invalid policy values or pricing")
+	}
+	u, err := url.Parse(p.Source)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
+		return errors.New("modeltransport: pricing requires an HTTPS source")
+	}
+	date, err := time.Parse("2006-01-02", p.AsOf)
+	if err != nil || date.Format("2006-01-02") != p.AsOf {
+		return errors.New("modeltransport: pricing requires a valid asOf date")
+	}
+	return nil
+}
+
+func priceReservation(p pricing, inputLimit int) *big.Int {
+	input := new(big.Int).Mul(big.NewInt(p.Input), big.NewInt(int64(inputLimit)))
+	output := new(big.Int).Mul(big.NewInt(p.Output), big.NewInt(maxOutputTokens))
+	return new(big.Int).Add(input, output)
+}
+
 // Policy owns a private SQLite ledger for one immutable run. It may be shared by
 // transports, but must remain open until all their response bodies are closed.
 // A zero Policy is not usable. A nil Config.Policy preserves the legacy API.
 type Policy struct {
 	config policySnapshot
+	run    *runSnapshot
 	ledger *budgetLedger
 	mu     sync.Mutex
 	closed bool
@@ -75,16 +97,11 @@ func OpenPolicyFile(path string) (*Policy, error) {
 	validVersion := ((c.Version == 1 && c.MaxAttempts == nil) || (c.Version == 2 && c.MaxAttempts != nil && *c.MaxAttempts == 3)) && c.PlannedCallSlots == nil
 	validVersion = validVersion || (c.Version == 3 && c.MaxAttempts != nil && *c.MaxAttempts == 3 && validCallSlots(c.PlannedCallSlots))
 	validInput := c.MaxInputTokens == nil || *c.MaxInputTokens == 32768
-	if !validVersion || !validInput || strings.TrimSpace(c.RunID) == "" || len(c.RunID) > 256 || strings.TrimSpace(c.RunID) != c.RunID || strings.TrimSpace(c.Deployment) == "" || len(c.Deployment) > 256 || strings.TrimSpace(c.Deployment) != c.Deployment || !filepath.IsAbs(c.LedgerPath) || filepath.Clean(c.LedgerPath) != c.LedgerPath || c.Pricing.Input <= 0 || c.Pricing.Output <= 0 || c.Pricing.Extra == nil || *c.Pricing.Extra != 0 {
+	if !validVersion || !validInput || strings.TrimSpace(c.RunID) == "" || len(c.RunID) > 256 || strings.TrimSpace(c.RunID) != c.RunID || strings.TrimSpace(c.Deployment) == "" || len(c.Deployment) > 256 || strings.TrimSpace(c.Deployment) != c.Deployment || !filepath.IsAbs(c.LedgerPath) || filepath.Clean(c.LedgerPath) != c.LedgerPath {
 		return nil, errors.New("modeltransport: invalid policy values or pricing")
 	}
-	u, err := url.Parse(c.Pricing.Source)
-	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
-		return nil, errors.New("modeltransport: pricing requires an HTTPS source")
-	}
-	date, err := time.Parse("2006-01-02", c.Pricing.AsOf)
-	if err != nil || date.Format("2006-01-02") != c.Pricing.AsOf {
-		return nil, errors.New("modeltransport: pricing requires a valid asOf date")
+	if err = validatePricing(c.Pricing); err != nil {
+		return nil, err
 	}
 	limit := 2
 	if c.MaxAttempts != nil {
@@ -96,9 +113,7 @@ func OpenPolicyFile(path string) (*Policy, error) {
 	}
 	// Reserve every attempt at the selected input bound and 4096 output tokens.
 	// Compare rational microUSD against USD2 without rounding or int64 overflow.
-	input := new(big.Int).Mul(big.NewInt(c.Pricing.Input), big.NewInt(int64(inputLimit)))
-	output := new(big.Int).Mul(big.NewInt(c.Pricing.Output), big.NewInt(maxOutputTokens))
-	reservation := new(big.Int).Mul(new(big.Int).Add(input, output), big.NewInt(int64(limit)))
+	reservation := new(big.Int).Mul(priceReservation(c.Pricing, inputLimit), big.NewInt(int64(limit)))
 	if reservation.Cmp(big.NewInt(2000000000000)) > 0 {
 		return nil, errors.New("modeltransport: full run reservation exceeds USD 2")
 	}
@@ -110,14 +125,21 @@ func OpenPolicyFile(path string) (*Policy, error) {
 	return &Policy{config: c, ledger: ledger}, nil
 }
 
-// Snapshot returns fresh JSON bytes of the entire immutable parsed operator policy.
+// Snapshot returns fresh JSON bytes of the entire immutable policy.
 func (p *Policy) Snapshot() []byte {
+	if p.run != nil {
+		data, _ := json.Marshal(p.run)
+		return data
+	}
 	data, _ := json.Marshal(p.config)
 	return data
 }
 
 // InputLimit reports the immutable input bound; omission preserves the legacy bound.
 func (p *Policy) InputLimit() int {
+	if p.run != nil {
+		return runInputLimit(p.run.RunConfig)
+	}
 	if p.config.MaxInputTokens != nil {
 		return *p.config.MaxInputTokens
 	}
@@ -126,6 +148,9 @@ func (p *Policy) InputLimit() int {
 
 // AttemptLimit reports the immutable policy's total dispatch-attempt ceiling.
 func (p *Policy) AttemptLimit() int {
+	if p.run != nil {
+		return len(p.run.Slots)
+	}
 	if p.config.MaxAttempts != nil {
 		return *p.config.MaxAttempts
 	}
@@ -234,7 +259,15 @@ type chatStreamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
-func (p *Policy) prepare(req *http.Request) ([]byte, string, bool, bool, error) {
+func (p *Policy) prepare(req *http.Request, slot string) ([]byte, string, bool, bool, error) {
+	deployment := p.config.Deployment
+	if p.run != nil {
+		binding, ok := p.runBinding(slot)
+		if !ok {
+			return nil, "", false, false, errors.New("modeltransport: policy slot mismatch")
+		}
+		deployment = binding.Deployment
+	}
 	if req.Method != http.MethodPost || req.URL.Path != "/openai/v1/chat/completions" || req.URL.RawQuery != "" || req.URL.ForceQuery || req.Body == nil || req.Header.Get("Content-Encoding") != "" {
 		return nil, "", false, false, errors.New("modeltransport: policy requires plain Chat POST")
 	}
@@ -243,7 +276,7 @@ func (p *Policy) prepare(req *http.Request) ([]byte, string, bool, bool, error) 
 		return nil, "", false, false, errors.New("modeltransport: request too large or unreadable")
 	}
 	var c boundedChat
-	if err = decodeClosed(data, &c); err != nil || c.Model != p.config.Deployment || len(c.Messages) == 0 || (c.MaxCompletionTokens != nil && *c.MaxCompletionTokens != maxOutputTokens) {
+	if err = decodeClosed(data, &c); err != nil || c.Model != deployment || len(c.Messages) == 0 || (c.MaxCompletionTokens != nil && *c.MaxCompletionTokens != maxOutputTokens) {
 		return nil, "", false, false, errors.New("modeltransport: unsupported Chat request")
 	}
 	// One token per UTF-8 byte of every role/content string and the encoded

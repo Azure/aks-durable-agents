@@ -18,7 +18,7 @@ func (t *Transport) policyRoundTrip(req *http.Request) (*http.Response, error) {
 			cancel()
 		}
 	}()
-	body, hash, stream, structured, err := t.policy.prepare(req)
+	body, hash, stream, structured, err := t.policy.prepare(req, t.callSlot)
 	if err != nil {
 		return nil, err
 	}

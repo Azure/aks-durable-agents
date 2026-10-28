@@ -87,11 +87,59 @@ identities on open. An existing v1/v2 ledger cannot be adopted as v3, nor vice
 versa; changed plans also refuse. No migration, reset, general suite-sized budget,
 judge execution or production wiring is supplied by this profile.
 
+## Shared run budget (library-only version 4)
+
+`ValidateRunConfig(RunConfig) error` performs pure preflight;
+`OpenRunPolicy(RunConfig) (*Policy, error)` freezes a deep copy and opens one
+private run ledger. This programmatic API is not a new operator file profile:
+`OpenPolicyFile` rejects its version-4 snapshot. The host and chart do not wire it.
+
+`RunConfig` holds `RunID`, absolute private `LedgerPath`, a canonical SHA-256
+`PlanDigest`, optional `MaxInputTokens: 32768`, explicit `Bindings`, and `Slots`.
+Every `RunBinding` has an opaque `ID`, explicit HTTPS `Endpoint`, `Scope`,
+`Deployment`, and `RunPricing` with the same units/source/date/zero-extra rules
+as v1–v3. Every `RunSlot` has an `ID` and `BindingID`. IDs use the v3 character and
+length contract. There must be 1–64 unique slots and unique bindings, all bindings
+referenced. Encoded run snapshots are bounded to 64 KiB.
+
+One shared `Policy` owns all candidate and judge transports. Construct each with
+`Config{Policy: p, CallSlot: slotID, Endpoint: ..., Scope: ..., Deployment: ...}`.
+The tuple must match that slot's frozen binding before credential construction;
+the request's model must then match the selected deployment. The same run-wide
+input bound applies to every request and response. `AttemptLimit()` is the total
+slot count, not a per-binding allowance. `Close()` fences every attached transport.
+The existing global unfinished/failed/unknown stop and once-per-slot rules apply.
+Calls are sequential; a fresh transport or second process handle does not refill
+slots. A new arbitrary ledger is not retry or recovery authority.
+
+V4 reuses the v3 slotted table schema but stores a distinct immutable snapshot.
+Changed plan, prices, slots, ordering, bindings or run identity refuse reopen;
+v1/v2/v3 and v4 cannot adopt each other's ledgers. No reset or migration exists.
+`PlanDigest` ties this separate budget to the original qualification plan; the run
+snapshot is never written back into that plan's serving `PolicyDigest`.
+
+For heterogeneous bindings the reservation is the sum over **all** slots:
+
+    sum(inputLimit * slotBinding.inputMicroUSDPerMillionTokens
+        + 4096 * slotBinding.outputMicroUSDPerMillionTokens)
+        / 1,000,000 microUSD
+
+The numerator must still be at most 2,000,000,000,000 (USD 2). Nothing discounts
+reservation to actual prompt length or usage. At illustrative USD 2.50/10 per
+million input/output tokens, only 32 slots fit at 8192 input, or 16 at 32768.
+64 is a maximum envelope, not a promise every price/model fits. Combined overflow
+or over-cap inventories refuse before any ledger, credential or model request.
+
+The qualification adapter derives complete repetitions and two slots per judge
+assertion. It reserves host-supplied bindings, not package judge provenance,
+prompts/scoring, candidate execution, activation or Ready. See
+[qualification preflight](../docs/qualification.md#run-budget-preflight).
+
 ## Reservation and input accounting
 
 Before any model call, the immutable snapshot reserves the full rational amount
-using the selected attempt count (2 or 3, including v3's fixed 3) and input bound
-(8192 or 32768):
+for v1–v3 using the selected attempt count (2 or 3, including v3's fixed 3) and
+input bound (8192 or 32768):
 
     attempts * (inputLimit * inputMicroUSDPerMillionTokens
               + 4096 * outputMicroUSDPerMillionTokens) / 1,000,000 microUSD
@@ -166,9 +214,9 @@ deployment/path configuration. The v1/v2 fixed tables are:
 Attempts transition reserved -> dispatching -> succeeded/failed/unknown.
 Reservation is committed before credentials; dispatching is committed before any
 possible POST. A transaction serializes reservations across processes. The selected
-two- or three-attempt ceiling survives restart; any non-succeeded earlier attempt blocks every
-subsequent reservation. Canonical outgoing JSON is SHA-256 hashed, never stored;
-duplicate hashes are refused even after success in v1/v2. V3 instead refuses
+attempt ceiling (two/three for v1–v3, total slots for v4) survives restart; any
+non-succeeded earlier attempt blocks every subsequent reservation. Canonical outgoing JSON is SHA-256 hashed, never stored;
+duplicate hashes are refused even after success in v1/v2. V3/v4 instead refuse
 duplicate slots, retaining a separate hash for each slot as described above.
 No prompts or bearer credentials are written to the ledger. Timestamps use UTC RFC3339Nano.
 
