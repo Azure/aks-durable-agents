@@ -142,7 +142,7 @@ func (o Outcome) valid() bool {
 	case "succeeded":
 		return decimalID(o.CommentID) && textOK(o.URL, 2048) && o.FailureCode == ""
 	case "failed":
-		return o.CommentID == "" && o.URL == "" && o.FailureCode == "provider_rejected"
+		return o.CommentID == "" && o.URL == "" && (o.FailureCode == "provider_rejected" || o.FailureCode == "access_unavailable" || o.FailureCode == "invalid_request")
 	case "unknown":
 		return o.CommentID == "" && o.URL == "" && o.FailureCode == "response_unknown"
 	}

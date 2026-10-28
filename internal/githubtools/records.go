@@ -47,6 +47,9 @@ func (s *Store) PrepareApproval(ctx context.Context, a Approval) error {
 		return ErrInvalid
 	}
 	return s.transaction(ctx, func(c *sql.Conn) error {
+		if err := noReadKey(ctx, c, a.Call.SessionUID, a.Call.Key); err != nil {
+			return err
+		}
 		rows, err := c.QueryContext(ctx, "SELECT record FROM approvals WHERE slot=? OR (session_uid=? AND request_key=?)", a.Call.slot(), a.Call.SessionUID, a.Call.Key)
 		if err != nil {
 			return ErrUnavailable
@@ -159,6 +162,9 @@ func (s *Store) Reserve(ctx context.Context, call Call, decisionSeq int64) (inte
 		return intent, false, ErrInvalid
 	}
 	err = s.transaction(ctx, func(c *sql.Conn) error {
+		if err := noReadKey(ctx, c, call.SessionUID, call.Key); err != nil {
+			return err
+		}
 		old, err := readIntent(ctx, c, call)
 		if err == nil {
 			if old.DecisionSeq != decisionSeq {

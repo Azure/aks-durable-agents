@@ -165,7 +165,7 @@ func openStore(path, id, lineage, binding string, create bool) (*Store, error) {
 			if err := createSchema(context.Background(), c); err != nil {
 				return err
 			}
-			_, err := c.ExecContext(context.Background(), "INSERT INTO metadata VALUES(1,1,?,?,?)", s.id, lineage, binding)
+			_, err := c.ExecContext(context.Background(), "INSERT INTO metadata VALUES(1,2,?,?,?)", s.id, lineage, binding)
 			return err
 		})
 		if err != nil {
