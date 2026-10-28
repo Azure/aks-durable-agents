@@ -191,7 +191,7 @@ class Client:
     def __init__(self, args, clock, run, evidence, status=None):
         self.args, self.clock, self.run, self.evidence = args, clock, run, evidence
         # Caller-owned classified first-failure snapshot; never exception text, argv or API names.
-        self.status, self.where = {} if status is None else status, ("other", "other", "other")
+        self.status, self.where = status, ("other", "other", "other")
         self.native_result = {"status": "notReached"}
         self.cleanup_interrupted = False
         self.cleanup_state = {name: {"resource": name, "status": "notReached"}
@@ -201,6 +201,9 @@ class Client:
         self.where = (step, kind, name)
 
     def record(self, error):
+        # Standalone installs have no public consumer; do not spend their deadline on unused reads.
+        if self.status is None:
+            return
         # The first classified failure wins; capture precedes cleanup and never replaces the error.
         try:
             import nightly

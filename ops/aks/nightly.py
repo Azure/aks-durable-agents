@@ -319,7 +319,8 @@ def record_install_failure(status, step, kind, name, error, run, work_remaining)
     status.update(version=1, failedStep=step, resourceKind=kind, resourceName=name, eventReasons=[], containerReasons=[],
                   containerStates=[], exitCodes=[], rolloutStatus="unknown")
     # Optional reads never follow cancellation or a spent deadline, and cannot replace the error.
-    if kind == "other" or not isinstance(error, Exception):
+    if (kind == "other" or not isinstance(error, Exception)
+            or isinstance(error, SafeFailure) and error.reason in ("interrupted", "deadline-exhausted")):
         return
     try:
         read, remaining = budgeted_reader(work_remaining, run)

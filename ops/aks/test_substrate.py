@@ -12,7 +12,7 @@ import unittest
 import uuid
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import substrate
 import yaml
@@ -419,6 +419,12 @@ class InstallerTests(RendererTests):
                 self.assertFalse([a for a, _, _ in self.boundary.calls if "get" in a and "pods" in a])
 
     def test_standalone_installer_stays_failed_closed_and_publishes_nothing(self):
+        client = substrate.Client(self.args, self.clock, Mock(), Mock())
+        with patch("nightly.record_install_failure") as capture:
+            client.at("workload-rollout", "Deployment", "ate-api-server")
+            client.record(ValueError("PRIVATE-message"))
+        capture.assert_not_called()
+        client.run.assert_not_called()
         mapping = self.root / "images.json"
         mapping.write_text(json.dumps(self.images))
         stdout, stderr = io.StringIO(), io.StringIO()

@@ -3,6 +3,7 @@ import contextlib
 import copy
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -137,6 +138,30 @@ class NativeBindingTests(unittest.TestCase):
                 patch.object(s.nightly, "strict_json", return_value={"containers": [], "workerSelector": {}}):
             api.install()
         self.assertEqual(api.install_status, {})
+
+    def test_executor_cancellation_skips_install_reads(self):
+        api, commands = self.install_api(), []
+        with tempfile.TemporaryDirectory() as directory:
+            api.deadlines = s.nightly.Deadlines(time.time() + 600, time.time() + 900)
+            api.executor = s.nightly.Executor(Path(directory), {}, api.deadlines)
+            api.prefix = ["kubectl", "--kubeconfig", "/k", "--context", "test", "--namespace", "agents"]
+            api.kube = s.nightly.Scenario.kube.__get__(api)
+            del api.wait  # Exercise the real wait -> executor -> SafeFailure translation.
+
+            def spawn(argv, **kwargs):
+                commands.append(argv)
+                process = Mock(returncode=0)
+                if "wait" in argv:
+                    process.communicate.side_effect = KeyboardInterrupt()
+                return process
+
+            with patch.object(s.nightly.subprocess, "Popen", side_effect=spawn), patch.object(api.executor, "kill"), \
+                    patch.object(s.substrate, "install"), patch.object(s.nightly.Scenario, "install", autospec=True), \
+                    self.assertRaises(s.nightly.SafeFailure) as raised:
+                api.install()
+        self.assertEqual(raised.exception.reason, "interrupted")
+        self.assertFalse(any("get" in args for args in commands))
+        self.assertEqual(api.install_status, proof_status("application", "WorkerPool", s.APP))
 
     def test_application_pool_capture_is_scoped_budgeted_and_skipped_after_interruption(self):
         api = self.install_api()
