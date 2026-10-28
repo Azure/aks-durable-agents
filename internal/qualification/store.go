@@ -24,6 +24,10 @@ type Store struct {
 	db           *sql.DB
 	lock         *os.File
 	dir, lineage string
+	active       map[string]*runJob
+	closing      bool
+	closeDone    chan struct{}
+	closeErr     error
 }
 
 // Serial tests override these seams; production uses the real identity and sync.
@@ -310,9 +314,32 @@ func Open(dir, lineage string) (_ *Store, err error) {
 	return s, nil
 }
 func (s *Store) Lineage() string { return s.lineage }
+
+// Close cancels and drains active Run calls before releasing storage ownership.
 func (s *Store) Close() error {
 	s.mu.Lock()
+	if s.closeDone != nil {
+		done := s.closeDone
+		s.mu.Unlock()
+		<-done
+		return s.closeErr
+	}
+	s.closing = true
+	s.closeDone = make(chan struct{})
+	jobs := make([]*runJob, 0, len(s.active))
+	for _, job := range s.active {
+		jobs = append(jobs, job)
+	}
+	s.mu.Unlock()
+	for _, job := range jobs {
+		job.cancel()
+	}
+	for _, job := range jobs {
+		<-job.done
+	}
+	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer close(s.closeDone)
 	var err error
 	if s.db != nil {
 		err = s.db.Close()
@@ -326,9 +353,9 @@ func (s *Store) Close() error {
 		s.lock = nil
 	}
 	if err != nil {
-		return ErrUnavailable
+		s.closeErr = ErrUnavailable
 	}
-	return nil
+	return s.closeErr
 }
 func (s *Store) read(ctx context.Context, id string) (Record, error) {
 	var r Record

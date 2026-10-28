@@ -81,6 +81,13 @@ after mechanical failure/cancellation/unknown outcomes and drains active work on
 Close without closing caller-owned Policy/storage. Credentials are explicitly
 injected into host-side modeltransport, never passed to the harness. Isolation is
 logical Session/data separation for the existing tool-free built-in profile, not
-process/pod/network sandboxing. Durable orchestration, retained evidence completion
-and host request wiring remain separate; this seam changes neither Registered nor
-Ready. See the [qualification contract](qualification.md#native-execution-seam).
+process/pod/network sandboxing. This seam changes neither Registered nor Ready.
+
+The host-only `NewDurableCandidateExecutor` owns a fresh private journal backend
+and run ledger; `qualification.Store.Run` retains original journals and derives a
+no-judge result through the existing evaluator. The trusted factory derives a
+NEW run directory from the scope under configured private storage. Completed
+wrong answers finish the inventory; mechanical failures stop it. Readback and
+restart never resend. Close drains execution before releasing owned storage.
+Host request wiring, credentials/activation authority and Ready integration are
+still separate. See [durable qualification](qualification.md#durable-no-judge-orchestration).
