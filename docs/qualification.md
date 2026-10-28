@@ -176,6 +176,38 @@ Private journals may contain sensitive inputs/outputs: do not log them or publis
 them as default diagnostics. Production retention/export/deletion remains a
 release gate; this foundation does not garbage-collect evidence.
 
+## Run-budget preflight
+
+`qualification.PrepareRunBudget(BudgetRequest)` validates the existing Plan
+bounds and derives the entire ordered call inventory: case, repetition (1-based),
+candidate, then each judge assertion with samples 1 and 2. Missing/extra judge
+bindings, conflicting binding IDs, over-budget or oversized inventory refuse
+intact. Repeated equal requests retain distinct opaque semantic slot IDs; no
+prompt nonces or per-case budgets. This is pure preparation, not model execution.
+
+The result includes a typed `modeltransport.RunConfig` and semantic `BudgetCall`
+mapping. One version-4 run policy reserves all calls across all supplied candidate
+and judge bindings under the unchanged USD 2 ceiling and conservative per-call
+8192 input (or explicit 32768) / 4096 output bounds. The existing 64-slot,
+256-KiB blob and metadata/row bounds remain. Expensive plans may fit fewer than
+64 slots; failure does not reduce inventory or allocate another cap.
+
+Native callers use `agentcontroller.PrepareRunBudget` to take inventory from the
+PreparedCandidate and check the candidate endpoint/deployment/scope against its
+frozen native ModelDigest before delegating. The generic qualification function
+alone does not verify that native tuple. Judge request labels must match explicit
+host-supplied deployments, but the package-derived judge binding/digest preimage
+is still undefined. Neither function proves judge provenance or supplies a
+production judge prompt/rubric. Native PrepareCandidate still refuses judged
+packages; synthetic judged plans exercise budget accounting only.
+
+The run's PlanDigest is the existing normalized `qualification-plan-v1` digest,
+matching Record.PlanDigest. Plan.Subject.PolicyDigest stays the original serving
+policy digest. Dependencies go plan → run snapshot, never back into Plan; any
+future runner/record linkage belongs outside that immutable Plan. Creating a
+budget is not qualification, eligibility or authority to send. See the
+[transport budget contract](../modeltransport/README.md#shared-run-budget-library-only-version-4).
+
 ## Prerequisites for an operational runner
 
 The following remain separate work, not functionality supplied by this package:
@@ -184,15 +216,13 @@ The following remain separate work, not functionality supplied by this package:
   exact runner renderer/harness/runtime profile matching the intended live target.
 - Candidate/live isolation, deny-effects dispatch, scoped request/read/service
   authorization and no service self-approval.
-- Reviewed repeated/duplicate-call identity and retry semantics in the model
-  ledger **without weakening double-spend protection**. Current normalized-body
-  hash uniqueness blocks identical repetitions and independent identical judge
-  requests; fresh session IDs do not fix that. No prompt nonce or fresh ledger per
-  duplicate may silently evade the restriction.
-- An explicit aggregate qualification budget for separate candidate/judge model
-  deployments. Multiple independent per-deployment caps are not one bounded run.
-  Host-created policies and ledgers must bind to the run and frozen binding;
-  failed/unknown calls remain stop conditions, not ordinary assertion failures.
+- Runtime use of the library's planned-call identities and shared run budget,
+  binding each runner call to the prepared semantic slot and frozen target.
+  Multiple independent per-deployment caps are not one bounded run. Failed or
+  unknown calls remain stop conditions, not ordinary assertion failures.
+- Package-derived judge binding provenance, complete judge prompt/rubric contract,
+  and verification of the full retained binding before dispatch. The pure budget
+  preflight does not close these runner boundaries.
 - Real runner-to-store evidence, current-policy activation integration and
   separately approved live-model/deployment/restore qualification.
 

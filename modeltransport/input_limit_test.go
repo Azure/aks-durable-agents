@@ -81,7 +81,7 @@ func TestInputLimitHistoricalSnapshotsAndRequests(t *testing.T) {
 						body = structuredChat("historical", format, f.stream)
 					}
 					req, _ := http.NewRequest("POST", "https://example.invalid/openai/v1/chat/completions", strings.NewReader(body))
-					got, hash, _, _, err := p.prepare(req)
+					got, hash, _, _, err := p.prepare(req, "")
 					if err != nil || string(got) != f.body || hash != f.hash {
 						t.Fatalf("historical request changed: %s %s %v", got, hash, err)
 					}
