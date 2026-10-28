@@ -2,9 +2,23 @@ package qualification
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 
 	"github.com/agent-primitives/sessions/eventlog"
 )
+
+// ExecutionScope is a non-authorizing identity supplied by the durable runner.
+type ExecutionScope struct{ RunID, PlanDigest string }
+
+type ExecutorFactory func(context.Context, ExecutionScope) (Executor, error)
+
+// CandidateSessionID binds a semantic slot to one run; it is not admission authority.
+func CandidateSessionID(runID, slotID string) string {
+	data, _ := json.Marshal(struct{ Domain, RunID, SlotID string }{"qualification-candidate-session-v1", runID, slotID})
+	return fmt.Sprintf("candidate-%x", sha256.Sum256(data))
+}
 
 // ExecutionInfo describes a trusted host executor, not qualification or authority.
 // Deployment is the selected host binding, not a provider attestation.
