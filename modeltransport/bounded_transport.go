@@ -25,7 +25,7 @@ func (t *Transport) policyRoundTrip(req *http.Request) (*http.Response, error) {
 	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
-	id, err := t.policy.reserve(hash)
+	id, err := t.policy.reserve(hash, t.callSlot)
 	if err != nil {
 		return nil, err
 	}

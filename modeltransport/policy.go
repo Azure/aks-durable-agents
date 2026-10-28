@@ -28,13 +28,14 @@ const (
 )
 
 type policySnapshot struct {
-	Version        int     `json:"version"`
-	MaxAttempts    *int    `json:"maxAttempts,omitempty"`
-	MaxInputTokens *int    `json:"maxInputTokens,omitempty"`
-	RunID          string  `json:"runID"`
-	LedgerPath     string  `json:"ledgerPath"`
-	Deployment     string  `json:"deployment"`
-	Pricing        pricing `json:"pricing"`
+	Version          int      `json:"version"`
+	PlannedCallSlots []string `json:"plannedCallSlots,omitempty"`
+	MaxAttempts      *int     `json:"maxAttempts,omitempty"`
+	MaxInputTokens   *int     `json:"maxInputTokens,omitempty"`
+	RunID            string   `json:"runID"`
+	LedgerPath       string   `json:"ledgerPath"`
+	Deployment       string   `json:"deployment"`
+	Pricing          pricing  `json:"pricing"`
 }
 type pricing struct {
 	Input  int64  `json:"inputMicroUSDPerMillionTokens"`
@@ -71,7 +72,8 @@ func OpenPolicyFile(path string) (*Policy, error) {
 	if err = decodeClosed(data, &c); err != nil {
 		return nil, errors.New("modeltransport: invalid policy schema")
 	}
-	validVersion := (c.Version == 1 && c.MaxAttempts == nil) || (c.Version == 2 && c.MaxAttempts != nil && *c.MaxAttempts == 3)
+	validVersion := ((c.Version == 1 && c.MaxAttempts == nil) || (c.Version == 2 && c.MaxAttempts != nil && *c.MaxAttempts == 3)) && c.PlannedCallSlots == nil
+	validVersion = validVersion || (c.Version == 3 && c.MaxAttempts != nil && *c.MaxAttempts == 3 && validCallSlots(c.PlannedCallSlots))
 	validInput := c.MaxInputTokens == nil || *c.MaxInputTokens == 32768
 	if !validVersion || !validInput || strings.TrimSpace(c.RunID) == "" || len(c.RunID) > 256 || strings.TrimSpace(c.RunID) != c.RunID || strings.TrimSpace(c.Deployment) == "" || len(c.Deployment) > 256 || strings.TrimSpace(c.Deployment) != c.Deployment || !filepath.IsAbs(c.LedgerPath) || filepath.Clean(c.LedgerPath) != c.LedgerPath || c.Pricing.Input <= 0 || c.Pricing.Output <= 0 || c.Pricing.Extra == nil || *c.Pricing.Extra != 0 {
 		return nil, errors.New("modeltransport: invalid policy values or pricing")
@@ -101,7 +103,7 @@ func OpenPolicyFile(path string) (*Policy, error) {
 		return nil, errors.New("modeltransport: full run reservation exceeds USD 2")
 	}
 	snapshot, _ := json.Marshal(c)
-	ledger, err := openBudgetLedger(c.LedgerPath, string(snapshot), limit, inputLimit)
+	ledger, err := openBudgetLedger(c.LedgerPath, string(snapshot), limit, inputLimit, c.PlannedCallSlots)
 	if err != nil {
 		return nil, err
 	}
@@ -281,13 +283,16 @@ func (p *Policy) prepare(req *http.Request) ([]byte, string, bool, bool, error) 
 	return body, hex.EncodeToString(hash[:]), c.Stream, c.ResponseFormat != nil, nil
 }
 
-func (p *Policy) reserve(hash string) (int64, error) {
+func (p *Policy) reserve(hash, slot string) (int64, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed || p.ledger == nil {
 		return 0, errors.New("modeltransport: policy closed or uninitialized")
 	}
-	return p.ledger.reserve(hash)
+	if !p.acceptsCallSlot(slot) {
+		return 0, ledgerError()
+	}
+	return p.ledger.reserve(hash, slot)
 }
 func (p *Policy) dispatch(id int64) error { return p.change(id, "dispatching", tokenUsage{}) }
 func (p *Policy) change(id int64, outcome string, usage tokenUsage) error {
