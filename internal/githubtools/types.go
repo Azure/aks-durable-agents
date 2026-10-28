@@ -1,5 +1,5 @@
-// Package githubtools retains native Sessions adapter and GitHub release evidence.
-// It does not authenticate callers, apply native approvals or dispatch effects.
+// Package githubtools provides GitHub App access and native Sessions release evidence.
+// Caller authorization and native approval enforcement remain the host's job.
 // This is not decisionledger: that package's records remain non-executing.
 package githubtools
 
